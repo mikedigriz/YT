@@ -1,0 +1,25 @@
+server {
+	listen 80;
+	listen [::]:80;
+	root /var/www/YT;
+	index index.html index.php index.htm index.nginx-debian.html;
+	server_name _;
+	gzip on;
+	gzip_types text/plain application/xml;
+	error_page  403 /404.html;
+	error_page 404 /404.html;
+
+
+	location / {
+		# First attempt to serve request as file, then
+		# as directory, then fall back to displaying a 404.
+		try_files $uri $uri/ /404.html$is_args$args;
+	}
+	# pass PHP scripts to FastCGI server
+	#
+	location ~ \.php$ {
+		include snippets/fastcgi-php.conf;
+		fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+}
+}
+

@@ -1,0 +1,9 @@
+@font-face {
+    font-family: 'Baskervville';
+    src: local('Baskervville Regular'), local('Baskervville-Regular'),
+        url('Baskervville-Regular.woff2') format('woff2'),
+        url('Baskervville-Regular.woff') format('woff'),
+        url('Baskervville-Regular.ttf') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+  }
