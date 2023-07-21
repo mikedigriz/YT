@@ -87,7 +87,7 @@ return array(
    *
    * 'logPath' => '/var/www/tubedl/tmp'
    */
-  'logPath' => 'tmp',
+  'logPath' => '/var/www/YT/tmp',
 
   /**
    * If you the path you have set with logPath is accessible through your webserver,
