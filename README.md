@@ -21,6 +21,9 @@
 ## Docker
 _Предполагается что docker установлен и вы умеете пользоваться гуглом._
 
+_Готовый образ забрать можно [тут](https://hub.docker.com/r/mikedigriz/yt)_
+
+---
 Установка:
 ```
 git clone https://github.com/mikedigriz/YT.git && cd YT
