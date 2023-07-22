@@ -12,7 +12,7 @@
     <link rel="stylesheet" href="css/<?php echo($siteTheme); ?>.min.css" media="screen">
     <link rel="stylesheet" href="css/baskerstyle.css">
     <link rel="stylesheet" media="screen and (min-width: 600px)" href="css/animate.css">
-    <script type="text/javascript" src="js/jquery-3.4.1.min.js"></script>
+    <script type="text/javascript" src="js/jquery-3.7.0.min.js"></script>
     <script type="text/javascript" src="js/bootstrap.min.js"></script>
     <script type="text/javascript" src="js/youtubedlwebui.js"></script>
 <!--    <script type="text/javascript" src="js/snow.js"></script> -->
