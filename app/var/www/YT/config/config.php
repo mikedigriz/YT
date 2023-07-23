@@ -108,7 +108,7 @@ return array(
    *
    * 'youtubedlExe' => '/usr/bin/youtube-dl'
    */
-  'youtubedlExe' => '/usr/local/bin/yt-dlp',
+  'youtubedlExe' => '/.yt_env/bin/yt-dlp',
 
   /**
    * Specify if .part files should be kept when cliking on Stop All on
