@@ -31,7 +31,7 @@ docker build -t yt .
 ```
 Запуск:
 ```
-docker run -it -p 80:80 yt
+docker run -it -p 8000:80 yt
 ```
 Чистая пересборка:
 ```
