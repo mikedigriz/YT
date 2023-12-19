@@ -10,12 +10,8 @@
   <div id="myTabContent" class="tab-content">
     <div class="tab-pane fade active in" id="home">
 <div class="wow pulse" id="snej" data-wow-offset="2"  data-wow-iteration="1" style="pointer-events: none">
-  <input type="image" src="img/snej2.png" title="Снежик">
+  <input type="image" src="img/snej.webp" title="Снежик">
 </div>
-<!--<div class="wow zoomInRight" id="cat" data-wow-duration="2s" data-wow-delay="0.2s" style="pointer-events: none">
-  <input type="image" src="img/cat.gif" title="Кися">
-</div>
--->
       <div class="row">
         <br />
         <h1 style="text-align: center;"><?php echo($config['siteName']); ?></h1><br />
