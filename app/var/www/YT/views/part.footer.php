@@ -1,6 +1,6 @@
 <?php if (!isset($GLOBALS['config'])) { die("No direct script access");
 } ?>
-    <footer class="footer" style="max-height: 100%; overflow-y: auto; position: fixed;bottom: 0;padding: 0;margin: 0;width: 99.5%;margin-left: -4px;">
+    <footer class="footer" style="max-height: 90%; overflow-y: auto; position: fixed; bottom: 0%; left: 50%; transform: translate(-50%); text-align: center; width:99.5%;">
             <div class="text-center" style="padding: 0;margin: 0; border-top-left-radius:80px 80px; border-top-right-radius:80px 80px;">
 
     <div class="panel panel-info" style="margin: 0;border-top-left-radius: 50px 60px;border-top-right-radius:50px 60px">
