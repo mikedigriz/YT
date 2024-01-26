@@ -1,5 +1,6 @@
 FROM debian:bookworm-20230703-slim
 ENV VIRTUAL_ENV=/.yt_env
+RUN echo 'apt::install-recommends "false";' > /etc/apt/apt.conf.d/00recomends
 RUN apt-get update && apt-get install -y \
 	apt-utils  \
 	ffmpeg \
