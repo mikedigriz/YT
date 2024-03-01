@@ -26,25 +26,22 @@
             </td>
           </tr>-->
           <tr>
-            <td>
+	    <td>
               <b>Как это работает?</b>
             </td>
             <td>
-              Вставить линк в поле, <b>"Скачать"</b><br /><br />
-              Вкладка видео - там лежат готовые файлы <br />
-              Вкладка загрузки - история загрузок, их статус <br /><br />
+            <li>Вставьте ссылку в поле "Скачать"</li>
+            <li>Во вкладке "Видео" находятся готовые файлы</li>
+            <li>Во вкладке "Загрузки" можно увидеть историю загрузок и их статус</li>
               Загрузка файлов списком:
-              vk.com/xx1||vk.com/xx2||vk.com/xx3</i><br />
-              Ссылки соединить символом || без пробелов
+              vk.com/xx1||vk.com/xx2||vk.com/xx3</i><br>
             </td>
           <tr>
             <td>
               <b>Как забрать файлы с сервера?</b>
             </td>
             <td>
-               <b>PC:</b> нажми на <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">файл</a><br>
-                  или ПКМ по файлу => "Сохранить объект как ..." <br><br>
-               <b>IPHONE:</b> Зажать нужный <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">файл</a>, скачать видео по ссылке
+               Нажать на <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">файл</a> или открыть в новой вкладке
             </td>
           </tr>
           <tr>
@@ -52,11 +49,11 @@
               <b>Ошибка?</b>
             </td>
             <td>
-              Проверить корректность URL<br />
-              Ссылка должна быть прямой и указывать на видео или плейлист<br />
-              Файл уже скачан - <a href="Загрузки" onclick="$('#dl_link').click()" data-toggle="tab" aria-expanded="false">проверь историю</a> или <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">имя файла</a><br />
-              "В процессе" - файл конвертируется в mp4<br />
-              Бэкенд еще не поддерживает ваш ресурс<br />
+              Проверить корректность URL<br>
+              Ссылка должна быть прямой и указывать на видео или плейлист<br>
+              Файл уже скачан - <a href="Загрузки" onclick="$('#dl_link').click()" data-toggle="tab" aria-expanded="false">проверь историю</a> или <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">имя файла</a><br>
+              "В процессе" - файл конвертируется в mp4<br>
+              Бэкенд еще не поддерживает ваш ресурс<br>
             </td>
           </tr>
           <tr>
@@ -64,7 +61,9 @@
               <b>Полезные ссылки</b>
             </td>
             <td>
-              <a target="_blank" rel="noopener noreferrer" href="https://ezgif.com/video-to-gif">Видео в гиф</a>
+              <a target="_blank" rel="noopener noreferrer" href="https://ezgif.com/video-to-gif">Видео в гиф</a> &nbsp;\&nbsp;
+              <a target="_blank" rel="noopener noreferrer" href="https://www.downloadvideosfrom.com/ru/">Альтернативная качалка для ВК</a> &nbsp;\&nbsp;
+              <a target="_blank" href="https://github.com/mikedigriz/YT">GitHub</a> &nbsp;\&nbsp;
             </td>
           </tr>
             </table>
