@@ -1,2 +1,2 @@
 #!/bin/bash
-service php8.2-fpm start && service nginx start && bash
+php-fpm83 && nginx && bash
