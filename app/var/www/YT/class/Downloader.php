@@ -450,6 +450,13 @@ class Downloader
         $cmd .= escapeshellarg("%(title)s_%(id)s.%(ext)s");
         $cmd .= " --restrict-filenames";
         $cmd .= " ".$onedownload['dl_format'];
+        if($this->config['socks5'] !== '') {
+            $cmd .= " --proxy ".$this->config['socks5'];
+        }
+        else {
+            echo 'no proxy';
+        }
+        $cmd .= " -x";        
         if($onedownload['audio_only']) {
             $cmd .= " -x";
             $cmd .= " ".$onedownload['audio_format'];
