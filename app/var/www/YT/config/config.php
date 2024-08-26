@@ -144,6 +144,13 @@ return array(
    *
    * 'debug' => false
    */
-  'debug' => false
+  'debug' => false,
+
+  /**
+   * Setup socks5 proxy
+   * Leave it empty to disable
+   * 'socks5' => 'socks5://user:pa$$w0rd@111.11.111.111:1111'
+   */
+  'socks5' => ''
   );
 ?>
