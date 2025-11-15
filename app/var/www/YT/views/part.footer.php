@@ -1,5 +1,6 @@
 <?php if (!isset($GLOBALS['config'])) { die("No direct script access");
 } ?>
+<?php $yt_dlp_version = file_get_contents('yt_dlp_version'); ?>
     <footer class="footer" style="max-height: 90%; overflow-y: auto; position: fixed; bottom: 0%; left: 50%; transform: translate(-50%); text-align: center; width:99.5%;">
             <div class="text-center" style="padding: 0;margin: 0; border-top-left-radius:80px 80px; border-top-right-radius:80px 80px;">
 
@@ -11,10 +12,11 @@
         <table class="table table-striped table-hover" style="text-align: left;">
           <tr>
             <td>
-              <b>Свободно места на сервере:</b>
+              <b>О сервере:</b>
             </td>
             <td>
-                <?php echo $file->free_space(); ?>iB
+                <div id="disk" class="text-muted small">disk: <?php echo $file->free_space(); ?></div>
+                <div id="yt-dlp-version" class="text-muted small">yt-dlp: <?php echo htmlspecialchars(trim($yt_dlp_version)); ?></div>
             </td>
           </tr>
           <!--<tr>
@@ -62,7 +64,6 @@
             </td>
             <td>
               <a target="_blank" rel="noopener noreferrer" href="https://ezgif.com/video-to-gif">Видео в гиф</a> &nbsp;\&nbsp;
-              <a target="_blank" rel="noopener noreferrer" href="https://www.downloadvideosfrom.com/ru/">Альтернативная качалка для ВК</a> &nbsp;\&nbsp;
               <a target="_blank" href="https://github.com/mikedigriz/YT">GitHub</a> &nbsp;\&nbsp;
             </td>
           </tr>
