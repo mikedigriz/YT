@@ -40,14 +40,6 @@ return array(
   'max_dl' => 3,
 
   /**
-   * Specify the tab to redirect to after submitting a download URL.
-   * allowed values are: 'downloads','home','videos','music'
-   *
-   * 'redirectAfterSubmit' => 'downloads'
-   */
-  'redirectAfterSubmit' => 'downloads',
-
-  /**
    * The full absolute path where downloads will be saved to
    * without trailing slash.
    * Make sure that the user running your webserver has write

@@ -23,7 +23,14 @@
         <form id="download-form" class="form-horizontal" action="index.php" method="post">
           <div class="form-group">
             <div class="col-md-12">
-              <input class="form-control wow flipInX" id="url" data-wow-iteration="1" data-wow-delay="0.6s" name="urls"<?php echo($urlvalue); ?> placeholder="Вставь URL: https://youtu.be/VDEtP9woMN8" type="text">
+              <input class="form-control wow flipInX" 
+                    id="url" 
+                    data-wow-iteration="1" 
+                    data-wow-delay="0.6s" 
+                    name="urls" 
+                    value="<?php echo htmlspecialchars($urlvalue ?? '', ENT_QUOTES, 'UTF-8'); ?>" 
+                    placeholder="Вставь URL: https://youtu.be/VDEtP9woMN8" 
+                    type="text">
             </div>
             <div class="col-md-12">
               <div style="text-align: center;" class="checkbox">

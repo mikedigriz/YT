@@ -35,12 +35,12 @@ class Downloader
 
     public static function background_jobs()
     {
-        return shell_exec("ps aux | grep -v grep | grep -v \"yt-dlp -U\" | grep yt-dlp | wc -l");
+        return (int) trim(shell_exec("ps aux | grep -v grep | grep -v \"yt-dlp -U\" | grep yt-dlp | wc -l"));
     }
 
-    public static function max_background_jobs()
+    public function max_background_jobs()
     {
-        return $this->config["max_dl"];
+        return $this->config['max_dl'] ?? 3;
     }
 
     public static function get_current_background_jobs()
@@ -166,7 +166,7 @@ class Downloader
                 }
                 if (substr($line, 0, 7) !== "queueid") {
                     $corrupt_queue = true;
-                    $break;
+                    break;
                 }
                 $url = substr($line, strpos($line,"=")+1);
                 $pid = substr($line, 0, strpos($line,"="));
@@ -393,7 +393,7 @@ class Downloader
 
     private function check_requirements()
     {
-        $this->check_outuput_folder();
+        $this->check_output_folder();
 
         if(isset($this->errors) && count($this->errors) > 0) {
             $_SESSION['errors'] = $this->errors;
@@ -408,7 +408,7 @@ class Downloader
         return filter_var($url, FILTER_VALIDATE_URL);
     }
 
-    private function check_outuput_folder()
+    private function check_output_folder()
     {
         if(!is_dir($this->download_path)) {
             //Folder doesn't exist
