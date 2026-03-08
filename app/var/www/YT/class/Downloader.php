@@ -256,7 +256,18 @@ class Downloader
                     }
                     if ($filename == "Дундук :)") {
                         $type = "unknown";
-                        $jobstatus = "Ошибка, не та ссылка, либо отменено !!!";
+                        // Читаем лог-файл для проверки причины ошибки
+                        $log_content = file_get_contents($fileinfo->getPathname());
+
+                        // Проверяем, была ли ссылка отклонена фильтром yt-dlp
+                        if (preg_match('/does not pass filter.*skipping/i', $log_content) || 
+                            strpos($log_content, 'webpage_url!~=') !== false) {
+                            $jobstatus = "Порнографию я вам не дам";
+                        } 
+                        // TODO: можно добавить другие специфичные проверки здесь
+                        else {
+                            $jobstatus = "Ошибка, не та ссылка, либо отменено !!!";
+                        }
                     }
                     $bjs[] = array(
                     'file' => json_encode($filename),
@@ -402,12 +413,12 @@ class Downloader
         if(!is_dir($this->download_path)) {
             //Folder doesn't exist
             if(!mkdir($this->download_path, 0775)) {
-                $this->errors[] = "Output folder doesn't exist and creation failed !";
+                $this->errors[] = "Папка для сохранения загрузки не существует!";
             }
         } else {
             //Exists but can I write ?
             if(!is_writable($this->download_path)) {
-                $this->errors[] = "Output folder isn't writable !";
+                $this->errors[] = "В папку загрузки невозможно записать!";
             }
         }
     }
@@ -431,13 +442,13 @@ class Downloader
                     $this->addOneDownload($onedownload);
                 } else {
                     if ($this->config["disableQueue"]) {
-                        $this->errors[] = "Simultaneous downloads limit reached. ".$onedownload['url']." will not be downloaded.";
+                        $this->errors[] = "Достигнут лимит одновременных загрузок. ".$onedownload['url']." не был загружен.";
                     } else {
                         $this->addToQueue($onedownload);
                     }
                 }
             } else {
-                $this->errors[] = "The max_dl value in config.php is invalid.";
+                $this->errors[] = "Значение max_dl value в config.php указано неверно.";
             }
         }
     }
@@ -455,8 +466,7 @@ class Downloader
         }
         else {
             echo 'no proxy';
-        }
-        $cmd .= " -x";        
+        }    
         if($onedownload['audio_only']) {
             $cmd .= " -x";
             $cmd .= " ".$onedownload['audio_format'];
@@ -519,7 +529,7 @@ class Downloader
                 }
             }
         } else {
-            $this->errors[] = "Could not open queue file. Please check permissions.";
+            $this->errors[] = "Не удалось открыть файл очереди. Пожалуйста, проверьте разрешения.";
         }
         fclose($handle);
         if ($corrupt_queue) {
@@ -569,7 +579,7 @@ class Downloader
                 }
             }
         } else {
-            $_SESSION['errors'] = "Could not open queue file. Please check permissions.";
+            $_SESSION['errors'] = "Не удалось открыть файл очереди. Пожалуйста, проверьте разрешения.";
             return;
         }
         fclose($handle);
