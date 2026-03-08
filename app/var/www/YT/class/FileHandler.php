@@ -66,11 +66,15 @@ class FileHandler
 
     public function delete($id)
     {
-        $file = $this->get_downloads_folder().'/'.$id;
-        if (file_exists($file)) {
+        $id = basename($id);
+        $folder = rtrim($this->get_downloads_folder(), '/');
+        $file = $folder . '/' . $id;
+        $real_folder = realpath($folder);
+        $real_file = realpath($file);
+        if ($real_file && $real_folder && strpos($real_file, $real_folder . '/') === 0 && file_exists($file)) {
             unlink($file);
         } else {
-            $_SESSION['errors'] = "File does not exist";
+            $_SESSION['errors'] = "Файл не существует";
         }
     }
 
@@ -89,7 +93,7 @@ class FileHandler
     public function to_human_filesize($bytes, $decimals = 0)
     {
         $sz = 'BKMGTP';
-        $factor = floor((strlen($bytes) - 1) / 3);
+        $factor = $bytes > 0 ? floor(log($bytes, 1024)) : 0;
         return sprintf("%.{$decimals}f", $bytes / pow(1024, $factor)) . @$sz[$factor];
     }
 
