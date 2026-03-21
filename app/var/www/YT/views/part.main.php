@@ -1,32 +1,31 @@
-<?php if (!isset($GLOBALS['config'])) { die("No direct script access");
-} ?>
+<?php if (!isset($GLOBALS['config'])) { die("No direct script access"); } ?>
 <div class="container" style="margin-bottom: 50px;">
   <ul id="mainnav" class="nav nav-tabs ">
-    <li class="active"><a id="home_link" href="#home" data-toggle="tab"  aria-expanded="true">Домой</a></li>
+    <li class="active"><a id="home_link" href="#home" data-toggle="tab" aria-expanded="true">Домой</a></li>
     <li><a id="dl_link" href="#downloads" data-toggle="tab" aria-expanded="false">Загрузки</a></li>
     <li><a id="vid_link" href="#videos" data-toggle="tab" aria-expanded="false">Видео</a></li>
     <li><a id="music_link" href="#music" data-toggle="tab" aria-expanded="false">Музыка</a></li>
   </ul>
   <div id="myTabContent" class="tab-content">
     <div class="tab-pane fade active in" id="home">
-<div class="wow pulse" id="snej" data-wow-offset="2"  data-wow-iteration="1" style="pointer-events: none">
-  <input type="image" src="img/snej.webp" title="Снежик">
-</div>
+      <div class="wow pulse" id="snej" data-wow-offset="2" data-wow-iteration="1" style="pointer-events: none">
+        <input type="image" src="img/snej.webp" title="Снежик">
+      </div>
       <div class="row">
         <br />
         <h1 style="text-align: center;"><?php echo($config['siteName']); ?></h1><br />
-<?php if(isset($_SESSION['errors']) && $_SESSION['errors'] > 0) : ?>
-    <?php foreach ($_SESSION['errors'] as $e): ?>
-    <div class="alert alert-warning" role="alert"><?php echo ($e); ?></div>
-    <?php endforeach; ?>
-<?php endif; ?>
+        <?php if(isset($_SESSION['errors']) && $_SESSION['errors'] > 0) : ?>
+            <?php foreach ($_SESSION['errors'] as $e): ?>
+            <div class="alert alert-warning" role="alert"><?php echo ($e); ?></div>
+            <?php endforeach; ?>
+        <?php endif; ?>
         <form id="download-form" class="form-horizontal" action="index.php" method="post">
           <div class="form-group">
             <div class="col-md-12">
               <input class="form-control wow flipInX" 
                     id="url" 
                     data-wow-iteration="1" 
-                    data-wow-delay="0.6s" 
+                    data-wow-delay="0.3s" 
                     name="urls" 
                     value="<?php echo htmlspecialchars($urlvalue ?? '', ENT_QUOTES, 'UTF-8'); ?>" 
                     placeholder="Вставь URL: https://youtu.be/VDEtP9woMN8" 
@@ -36,7 +35,7 @@
               <div style="text-align: center;" class="checkbox">
                 <button style="width: 90px;" type="submit" class="btn btn-primary">Скачать</button><br />
                 <label<?php echo($config['disableExtraction'] ? " style=\"display: none;\"" : ""); ?>>
-                  <input id="audio_convert" onclick="checkControls();"<?php echo($audio_check); ?>  type="checkbox" name="audio"> Конвертировать в Аудио
+                  <input id="audio_convert" onclick="checkControls();"<?php echo($audio_check); ?> type="checkbox" name="audio"> Конвертировать в Аудио
                 </label>
                 <label id="audio_group"<?php echo($audio_form_style); ?>>
                   Формат Аудио:
@@ -79,7 +78,7 @@
           </tbody>
         </table>
         <br /><br />
-<?php if(!$config['disableQueue']) : ?>
+        <?php if(!$config['disableQueue']) : ?>
         <h4>Очередь</h4>
         <table style="text-align: left;" class="table table-striped table-hover ">
           <thead>
@@ -96,7 +95,7 @@
           </tbody>
         </table>
         <br /><br />
-<?php endif; ?>
+        <?php endif; ?>
         <h4>Последние Загрузки</h4>
         <table style="text-align: left;" class="table table-striped table-hover ">
           <thead>
@@ -136,8 +135,7 @@
           </tr>
         </tbody>
       </table>
-      <br/>
-      <br/>
+      <br/><br/>
     </div>
     <div class="tab-pane fade" id="music">
       <br /><br />
@@ -160,19 +158,20 @@
           </tr>
         </tbody>
       </table>
-      <br/>
-      <br/>
+      <br/><br/>
     </div>
   </div>
 </div>
 <script>
   $('#mainnav a').click(function(e) {
     e.preventDefault();
-    var id = $(e.target).attr("href").substr(1);
+    var id = $(this).attr("href").substr(1);
     window.location.hash = id;
     $(this).tab('show');
   });
 
   var hash = window.location.hash;
-  $('#mainnav a[href="' + hash + '"]').tab('show');
+  if (hash) {
+    $('#mainnav a[href="' + hash + '"]').tab('show');
+  }
 </script>
