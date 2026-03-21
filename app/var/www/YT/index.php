@@ -181,7 +181,7 @@ if(isset($_GET['restart']) && !empty($_GET['restart'])) {
 
 // Download a video
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
-    $get_parms = "?";
+    $get_params = "?";
     $audio_only = false;
     $audio_format = "--audio-format mp3 --audio-quality 0";
     //$dl_format = "-f best";
@@ -189,7 +189,7 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
 
     if(isset($_POST['audio']) && !empty($_POST['audio'])) {
         $audio_only = true;
-        $get_parms .= "audio=true&";
+        $get_params .= "audio=true&";
     }
 
     if(isset($_POST['audio_format']) && !empty($_POST['audio_format'])) {
@@ -198,13 +198,13 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         } else {
             $audio_format = "--audio-format " . $_POST['audio_format'];
         }
-        $get_parms .= "audio_format=".$_POST['audio_format']."&";
+        $get_params .= "audio_format=".$_POST['audio_format']."&";
     }
 
     if(isset($_POST['format']) && !empty($_POST['format'])) {
         if($_POST['format'] != "best") {
-            $dl_format = "-f " . $_POST['format'];
-            $get_parms .= "format=".$_POST['format']."&";
+            $dl_format = "" . $_POST['format'];
+            $get_params .= "format=".$_POST['format']."&";
         }
     }
 
@@ -218,7 +218,7 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     $downloader = new Downloader($dl_list);
 
     if(!isset($_SESSION['errors']) || count($_SESSION['errors']) === 0) {
-        header("Location: index.php".$get_params."#".$config['redirectAfterSubmit']);
+        header("Location: index.php#".$config['redirectAfterSubmit']);
         die();
     }
 }
@@ -226,7 +226,7 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
 // Download or autopopulate from bookmarklet
 $urlvalue = "";
 if (isset($_GET['url'])) {
-    $urlvalue = " value=\"".urldecode($_GET['url'])."\"";
+    $urlvalue = urldecode($_GET['url']);
     if (isset($_GET['auto_submit'])) {
         $audio_format = "--audio-format mp3 --audio-quality 0";
         //$dl_format = "-f best";
