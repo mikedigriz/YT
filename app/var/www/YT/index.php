@@ -223,56 +223,56 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     }
 }
 
-// Download or autopopulate from bookmarklet
-$urlvalue = "";
-if (isset($_GET['url'])) {
-    $urlvalue = urldecode($_GET['url']);
-    if (isset($_GET['auto_submit'])) {
-        $audio_format = "--audio-format mp3 --audio-quality 0";
-        //$dl_format = "-f best";
-        $dl_format = "";
-        if (isset($_GET["audio"]) && $_GET["audio"] == "true") {
-            $audio_only = true;
-        } else {
-            $audio_only = false;
-        }
+// // Download or autopopulate from bookmarklet
+// $urlvalue = "";
+// if (isset($_GET['url'])) {
+//     $urlvalue = urldecode($_GET['url']);
+//     if (isset($_GET['auto_submit'])) {
+//         $audio_format = "--audio-format mp3 --audio-quality 0";
+//         //$dl_format = "-f best";
+//         $dl_format = "";
+//         if (isset($_GET["audio"]) && $_GET["audio"] == "true") {
+//             $audio_only = true;
+//         } else {
+//             $audio_only = false;
+//         }
 
-        if(isset($_GET['audio_format']) && !empty($_GET['audio_format'])) {
-            if($_POST['audio_format'] === "mp3-high") {
-                $audio_format = "--audio-format mp3 --audio-quality 0";
-            } else {
-                $audio_format = "--audio-format " . $_POST['audio_format'];
-            }
-        }
+//         if(isset($_GET['audio_format']) && !empty($_GET['audio_format'])) {
+//             if($_POST['audio_format'] === "mp3-high") {
+//                 $audio_format = "--audio-format mp3 --audio-quality 0";
+//             } else {
+//                 $audio_format = "--audio-format " . $_POST['audio_format'];
+//             }
+//         }
 
-        if(isset($_GET['format']) && !empty($_GET['format'])) {
-            $dl_format = "-f " . $_GET['format'];
-        }
+//         if(isset($_GET['format']) && !empty($_GET['format'])) {
+//             $dl_format = "-f " . $_GET['format'];
+//         }
 
-        $dl_list = [];
-        $dl_list[] = array(
-        'url' => $_GET['url'],
-        'audio_only' => $audio_only,
-        'dl_format' => $dl_format,
-        'audio_format' => $audio_format
-        );
-        $downloader = new Downloader($dl_list);
+//         $dl_list = [];
+//         $dl_list[] = array(
+//         'url' => $_GET['url'],
+//         'audio_only' => $audio_only,
+//         'dl_format' => $dl_format,
+//         'audio_format' => $audio_format
+//         );
+//         $downloader = new Downloader($dl_list);
 
-        if(isset($_SESSION['errors']) && $_SESSION['errors'] > 0) {
-            header("Location: index.php?submitstatus=error");
-        } else {
-            header("Location: index.php?submitstatus=success");
-        }
-        die();
-    }
-}
+//         if(isset($_SESSION['errors']) && $_SESSION['errors'] > 0) {
+//             header("Location: index.php?submitstatus=error");
+//         } else {
+//             header("Location: index.php?submitstatus=success");
+//         }
+//         die();
+//     }
+// }
 
 // Show success or error if download was triggered through bookmarklet
-if (isset($_GET['submitstatus'])) {
-    include_once 'views/page.autosubmit.php';
-    unset($_SESSION['errors']);
-    die();
-}
+// if (isset($_GET['submitstatus'])) {
+//     include_once 'views/page.autosubmit.php';
+//     unset($_SESSION['errors']);
+//     die();
+// }
 
 // Prepare for display of web page
 if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
@@ -290,8 +290,8 @@ $uri_parts = explode('?', $_SERVER['REQUEST_URI'], 2);
 $uri_parts = $uri_parts[0];
 $uri_parts = explode('#', $uri_parts, 2);
 $baseuri = $protocol . $_SERVER['HTTP_HOST'] . $uri_parts[0];
-$bookmarkletvideo = "javascript:(function(){f='".$baseuri."?url='+encodeURIComponent(window.location.href);a=function(){if(!window.open(f))location.href=f};if(/Firefox/.test(navigator.userAgent)){setTimeout(a,0)}else{a()}})()";
-$bookmarkletmusic = "javascript:(function(){f='".$baseuri."?audio=true&url='+encodeURIComponent(window.location.href);a=function(){if(!window.open(f))location.href=f};if(/Firefox/.test(navigator.userAgent)){setTimeout(a,0)}else{a()}})()";
+// $bookmarkletvideo = "javascript:(function(){f='".$baseuri."?url='+encodeURIComponent(window.location.href);a=function(){if(!window.open(f))location.href=f};if(/Firefox/.test(navigator.userAgent)){setTimeout(a,0)}else{a()}})()";
+// $bookmarkletmusic = "javascript:(function(){f='".$baseuri."?audio=true&url='+encodeURIComponent(window.location.href);a=function(){if(!window.open(f))location.href=f};if(/Firefox/.test(navigator.userAgent)){setTimeout(a,0)}else{a()}})()";
 
 // Show header
 require_once 'views/part.header.php';

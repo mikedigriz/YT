@@ -28,7 +28,7 @@
                     data-wow-delay="0.3s" 
                     name="urls" 
                     value="<?php echo htmlspecialchars($urlvalue ?? '', ENT_QUOTES, 'UTF-8'); ?>" 
-                    placeholder="Вставь URL: https://youtu.be/VDEtP9woMN8" 
+                    placeholder="Вставь URL: https://youtu.be/VDEtP9woMN8"
                     type="text">
             </div>
             <div class="col-md-12">
