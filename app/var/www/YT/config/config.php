@@ -37,7 +37,7 @@ return array(
    *
    * 'max-dl' => 3
    */
-  'max_dl' => 3,
+  'max_dl' => 1,
 
   /**
    * The full absolute path where downloads will be saved to

@@ -45,13 +45,27 @@ class Downloader
 
     public static function background_jobs()
     {
-        if (!function_exists('shell_exec')) {
+        if (!function_exists('shell_exec') || !isset($GLOBALS['config']['logPath'])) {
             return 0;
         }
-        // Улучшенный grep, чтобы не считать сам процесс grep
-        $cmd = "ps aux | grep -v grep | grep -v \"yt-dlp -U\" | grep yt-dlp | wc -l";
-        $output = shell_exec($cmd);
-        return (int) trim($output);
+        
+        // Считаем только процессы, у которых есть валидные pid-файлы
+        $count = 0;
+        $logPath = $GLOBALS['config']['logPath'];
+        
+        foreach (glob($logPath . '/pid_*') as $pidFile) {
+            $content = @file_get_contents($pidFile);
+            if ($content === false) continue;
+            
+            $jpid = trim(explode("\n", $content)[0] ?? '');
+            // Проверяем, что процесс реально существует — без удаления файла!
+            if (!empty($jpid) && file_exists("/proc/$jpid")) {
+                $count++;
+            }
+            // Важно: НЕ удаляем pid-файл здесь — это делает get_current_background_jobs()
+            // с правильным вызовом finalize_job_log() для отображения в "Завершённых"
+        }
+        return $count;
     }
 
     public function max_background_jobs()
@@ -221,7 +235,7 @@ class Downloader
 
             $qjs[] = array(
                 'pid' => json_encode($pid),
-                'url' => json_encode($urlParts[0] ?? ''),
+                'url' => json_encode(trim($urlParts[0] ?? '')),
                 'dl_format' => json_encode($urlParts[1] ?? ''),
                 'audio_only' => $audio_only,
                 'audio_format' => json_encode($urlParts[3] ?? '')
@@ -537,7 +551,7 @@ class Downloader
             if ($this->config["max_dl"] == -1) {
                 $this->addOneDownload($onedownload);
             } elseif ($this->config["max_dl"] > 0) {
-                if ($this->background_jobs() < $this->config["max_dl"]) {
+                if (self::background_jobs() < $this->config["max_dl"]) {
                     $this->addOneDownload($onedownload);
                 } else {
                     if ($this->config["disableQueue"]) {
@@ -609,7 +623,7 @@ class Downloader
             return;
         }
 
-        $currently_running = $this->background_jobs();
+        $currently_running = self::background_jobs();
         $remaining_urls = [];
         $corrupt_queue = false;
         $newDownloads = [];
@@ -626,7 +640,7 @@ class Downloader
             
             $urlData = $parts[1];
             $urlParts = explode(">", $urlData);
-            $rawUrl = $urlParts[0] ?? '';
+            $rawUrl = trim($urlParts[0] ?? '');
 
             if (!$this->is_valid_url($rawUrl)) {
                 $this->errors[] = $urlData . " не верный URL, удаляю из списка очереди.";
@@ -680,7 +694,7 @@ class Downloader
         file_put_contents($queue_file, $fcontent, FILE_APPEND | LOCK_EX);
     }
 
-    public function remove_queued_job($qid)
+    public static function remove_queued_job($qid)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
         $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
@@ -728,7 +742,7 @@ class Downloader
         }
     }
 
-    public function remove_all_queued_jobs()
+    public static function remove_all_queued_jobs()
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
         $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
