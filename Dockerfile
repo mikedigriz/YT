@@ -26,7 +26,7 @@ RUN mkdir -p /var/www/YT /var/www/.config/yt-dlp/plugins/log_plugin/yt_dlp_plugi
     touch /var/log/yt_dlp.log /var/www/YT/yt_dlp_version /var/log/php8.4-fpm.log /run/nginx.pid && \
     chown -R www-data:www-data /var/www /var/log/yt_dlp.log /var/log/php8.4-fpm.log /run/nginx.pid \
     /var/run/php /var/log/nginx /var/lib/nginx /var/cache/nginx && \
-    chmod 755 /var/www/YT && \
+    chmod 750 /var/www/YT && \
     chmod 644 /var/log/yt_dlp.log /var/www/YT/yt_dlp_version /var/log/php8.4-fpm.log && \
     setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx
 
