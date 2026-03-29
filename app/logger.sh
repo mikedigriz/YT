@@ -29,7 +29,9 @@ class LogPluginPP(PostProcessor):
             
             filename = information.get('filename', information.get('title', 'Unknown'))
             url = information.get('webpage_url', 'No URL')
-            log_entry = f"{timestamp} | {filename} | {url}"
+            
+            # Убираем путь из filename прямо в log_entry
+            log_entry = f"{timestamp} | {filename.replace('/var/www/YT/download/', '')} | {url}"
 
             with open(self.log_path, 'a', encoding='utf-8') as f:
                 f.write(log_entry + "\n")
