@@ -29,17 +29,22 @@ class LogPluginPP(PostProcessor):
             
             filename = information.get('filename', information.get('title', 'Unknown'))
             url = information.get('webpage_url', 'No URL')
-            log_entry = f"{timestamp} | {filename} | {url}\n"
+            log_entry = f"{timestamp} | {filename} | {url}"
 
             with open(self.log_path, 'a', encoding='utf-8') as f:
-                f.write(log_entry)
+                f.write(log_entry + "\n")
                 f.flush()
+            
+            print(log_entry, flush=True)
             
         except Exception as e:
             err_msg = f"LogPlugin Error: {str(e)}"
+            
             with open(self.log_path, 'a', encoding='utf-8') as f:
                 f.write(f"ERROR: {err_msg}\n")
                 f.flush()
+            
+            print(f"ERROR: {err_msg}", flush=True)
 
         return [], information
 EOF
