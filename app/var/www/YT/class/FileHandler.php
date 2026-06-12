@@ -14,53 +14,60 @@ class FileHandler
     public function listVideos()
     {
         $videos = [];
-
         if(!$this->outuput_folder_exists()) {
-            return;
+            return $videos;
         }
-
         $folder = $this->get_downloads_folder().'/';
-
-        $dir_handle=opendir($folder);
+        $dir_handle = opendir($folder);
         while ($file = readdir($dir_handle)) {
             if ($file != "." && $file != "..") {
-                if(preg_match('/^.*\.('.$this->videos_ext.')$/i',$file)) {
-                    $video = [];
-                    $video["name"] = str_replace($folder, "", $file);
-                    $video["size"] = $this->to_human_filesize(filesize($folder.$file));
-                    $videos[] = $video;
+                if(preg_match('/^.*\.('.$this->videos_ext.')$/i', $file)) {
+                    $filepath = $folder . $file;
+                    $filemtime = @filemtime($filepath); // @ подавляет ошибки, если файл исчез
+                    $age_seconds = $filemtime ? (time() - $filemtime) : 0;
+                    $age_minutes = max(0, floor($age_seconds / 60));
+                    $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
+
+                    $videos[] = [
+                        "name" => str_replace($folder, "", $file),
+                        "size" => $this->to_human_filesize(filesize($filepath)),
+                        "age_minutes" => $age_minutes,
+                        "lifetime_percent" => $lifetime_percent
+                    ];
                 }
             }
         }
         closedir($dir_handle);
-
         return $videos;
     }
 
     public function listMusics()
     {
         $musics = [];
-
         if(!$this->outuput_folder_exists()) {
-            return;
+            return $musics;
         }
-
         $folder = $this->get_downloads_folder().'/';
-
-        $dir_handle=opendir($folder);
+        $dir_handle = opendir($folder);
         while ($file = readdir($dir_handle)) {
             if ($file != "." && $file != "..") {
-                if(preg_match('/^.*\.('.$this->musics_ext.')$/i',$file)) {
-                    $music= [];
-                    //$music["name"] = str_replace($folder, "", $file);
-                    $music["name"] = $file;
-                    $music["size"] = $this->to_human_filesize(filesize($folder.$file));
-                    $musics[] = $music;
+                if(preg_match('/^.*\.('.$this->musics_ext.')$/i', $file)) {
+                    $filepath = $folder . $file;
+                    $filemtime = @filemtime($filepath);
+                    $age_seconds = $filemtime ? (time() - $filemtime) : 0;
+                    $age_minutes = max(0, floor($age_seconds / 60));
+                    $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
+
+                    $musics[] = [
+                        "name" => $file,
+                        "size" => $this->to_human_filesize(filesize($filepath)),
+                        "age_minutes" => $age_minutes,
+                        "lifetime_percent" => $lifetime_percent
+                    ];
                 }
             }
         }
         closedir($dir_handle);
-
         return $musics;
     }
 

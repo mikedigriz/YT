@@ -88,7 +88,9 @@ if(isset($_GET['jobs'])) {
         }
         $jsonString .= "{ \"file\": ".json_encode($fileurl).", ";
         $jsonString .= "\"size\": ".json_encode($f["size"]).", ";
-        $jsonString .= "\"deleteurl\": ".json_encode($deleteurl);
+        $jsonString .= "\"deleteurl\": ".json_encode($deleteurl).", ";
+        $jsonString .= "\"age_minutes\": ".(int)($f["age_minutes"] ?? 0).", ";
+        $jsonString .= "\"lifetime_percent\": ".(int)($f["lifetime_percent"] ?? 100);
         $jsonString .= "},";
     }
 
@@ -107,7 +109,9 @@ if(isset($_GET['jobs'])) {
         }
         $jsonString .= "{ \"file\": ".json_encode($fileurl).", ";
         $jsonString .= "\"size\": ".json_encode($f["size"]).", ";
-        $jsonString .= "\"deleteurl\": ".json_encode($deleteurl);
+        $jsonString .= "\"deleteurl\": ".json_encode($deleteurl).", ";
+        $jsonString .= "\"age_minutes\": ".(int)($f["age_minutes"] ?? 0).", ";
+        $jsonString .= "\"lifetime_percent\": ".(int)($f["lifetime_percent"] ?? 100);
         $jsonString .= "},";
     }
     $jsonString = trim($jsonString, ",");

@@ -89,12 +89,65 @@ function renderFinishedRow(item, logURL) {
 }
 
 function renderFileRow(file) {
+    if (typeof showFileLifetime !== 'undefined' && !showFileLifetime) {
+        return `
+            <tr>
+                <td style="vertical-align: middle; padding: 10px 8px;">${file.file}</td>
+                <td style="vertical-align: middle; padding: 10px 8px; color: #6c757d; font-size: 13px; white-space: nowrap;">${file.size}</td>
+                <td style="vertical-align: middle; padding: 10px 8px; white-space: nowrap;">${file.deleteurl}</td>
+            </tr>
+        `;
+    }
+    // 1. Защита от отсутствия данных
+    const age = (typeof file.age_minutes === 'number' && !isNaN(file.age_minutes)) ? file.age_minutes : 0;
+    const percent = (typeof file.lifetime_percent === 'number' && !isNaN(file.lifetime_percent)) ? file.lifetime_percent : 100;
+
+    let timeText = '';
+    let barColor = '#5cb85c'; // Зеленый по умолчанию
+
+    // 2. Расчет оставшегося времени
+    const remainingMinutes = Math.max(0, 120 - age);
+
+    // 3. Определение цвета
+    if (percent > 60) {
+        barColor = '#28a745'; // Насыщенный зеленый
+    } else if (percent > 30) {
+        barColor = '#ffc107'; // Теплый желтый
+    } else if (percent > 0) {
+        barColor = '#dc3545'; // Насыщенный красный
+    } else {
+        barColor = '#6c757d'; // Серый
+    }
+
+    // 4. Форматирование текста времени
+    if (remainingMinutes > 60) {
+        const hours = Math.floor(remainingMinutes / 60);
+        const mins = remainingMinutes % 60;
+        timeText = `${hours}ч ${mins}м`;
+    } else if (remainingMinutes > 0) {
+        timeText = `${remainingMinutes}м`;
+    } else {
+        timeText = 'скоро';
+    }
+
+    const progressBar = `
+        <div style="display: inline-flex; flex-direction: column; width: 85px; margin-right: 12px; vertical-align: middle; background: #f8f9fa; border-radius: 6px; padding: 5px 6px; border: 1px solid #e9ecef; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+            <div style="font-size: 11px; font-weight: 600; color: #495057; text-align: center; line-height: 1.2; margin-bottom: 4px; white-space: nowrap;">
+                ⏱ ${timeText}
+            </div>
+            <div style="background: #e9ecef; border-radius: 2px; height: 3px; overflow: hidden;">
+                <div style="background: ${barColor}; width: ${percent}%; height: 100%; transition: width 0.5s ease-out;"></div>
+            </div>
+        </div>
+    `;
+
     return `
-    <tr>
-        <td>${file.file}</td>
-        <td>${file.size}</td>
-        <td>${file.deleteurl}</td>
-    </tr>`;
+      <tr>
+            <td style="vertical-align: middle; padding: 8px;">${progressBar} ${file.file}</td>
+            <td style="vertical-align: middle; padding: 8px; color: #6c757d; font-size: 13px;">${file.size}</td>
+            <td style="vertical-align: middle; padding: 8px;">${file.deleteurl}</td>
+      </tr>  
+    `;
 }
 
 // ============================================

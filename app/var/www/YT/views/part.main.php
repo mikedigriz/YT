@@ -1,4 +1,10 @@
 <?php if (!isset($GLOBALS['config'])) { die("No direct script access"); } ?>
+<?php
+    $showLifetime = isset($config['showFileLifetime']) && $config['showFileLifetime'];
+?>
+<script>
+    var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
+</script>
 <div class="container" style="margin-bottom: 50px;">
   <ul id="mainnav" class="nav nav-tabs ">
     <li class="active"><a id="home_link" href="#home" data-toggle="tab" aria-expanded="true">Домой</a></li>
@@ -120,7 +126,7 @@
       <table style="text-align: left;" class="table table-striped table-hover ">
         <thead>
           <tr>
-            <th style="min-width:800px; height:35px">Файл</th>
+            <th style="min-width:600px; height:35px">Файл <?php if ($showLifetime): ?><small class="text-muted" style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через 2 часа)</small></th><?php endif; ?>
             <th style="min-width:80px">Размер</th>
             <?php if ($config['allowFileDelete']) : ?>
               <th style="min-width:110px">Действия</th>
@@ -143,7 +149,8 @@
       <table style="text-align: left;" class="table table-striped table-hover ">
         <thead>
           <tr>
-            <th style="min-width:800px; height:35px">Файл</th>
+            <th style="min-width:600px; height:35px">Файл <?php if ($showLifetime): ?><small class="text-muted" style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через 2 часа)</small></th><?php endif; ?>
+            <th style="min-width:80px">Размер</th>
             <th style="min-width:80px">Размер</th>
             <?php if ($config['allowFileDelete']) : ?>
               <th style="min-width:110px">Действия</th>

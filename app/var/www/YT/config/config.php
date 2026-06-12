@@ -131,6 +131,13 @@ return array(
   'allowFileDelete' => true,
 
   /**
+   * Enable timer view for files. If you use Script for autoremove in 2h.
+   *
+   * 'showFileLifetime' => false
+   */
+  'showFileLifetime' => true,
+  
+  /**
    * If set to true, the script will output all errors.
    * DO NOT USE THIS IN PRODUCTION ON OUTSIDE FACING WEBSITES
    *
