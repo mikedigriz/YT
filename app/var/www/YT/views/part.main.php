@@ -32,7 +32,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                 <input class="form-control wow flipInX" id="url" data-wow-iteration="1"
                                     data-wow-delay="0.3s" name="urls"
                                     value="<?php echo htmlspecialchars($urlvalue ?? '', ENT_QUOTES, 'UTF-8'); ?>"
-                                    placeholder="Вставь URL: https://youtu.be/VDEtP9woMN8" type="text">
+                                    placeholder="Ссылка на видео..." type="text">
                                 <div id="url-clear" class="url-clear-btn" title="Очистить поле">
                                     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor"
                                         stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
