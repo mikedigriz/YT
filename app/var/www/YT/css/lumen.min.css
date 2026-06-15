@@ -6945,9 +6945,7 @@ button.close {
 }
 .btn:active {
  margin-top:2px;
- border-bottom-width:2px;
- -webkit-box-shadow:none;
- box-shadow:none
+ border-bottom-width:2px
 }
 .btn-lg,
 .btn-group-lg>.btn {

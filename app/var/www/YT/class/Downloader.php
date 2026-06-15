@@ -401,8 +401,6 @@ class Downloader
             }
         }
         
-        // Убрано: exec("killall ffmpeg"); - оставляем ОС завершать дочерние процессы
-
         $folder = $GLOBALS['config']['outputFolder'] ?? '';
         if (!empty($folder) && !$GLOBALS['config']['keepPartialFiles']) {
             foreach (glob($folder . '/*.part') as $file) {
