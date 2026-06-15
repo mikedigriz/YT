@@ -16,12 +16,6 @@
  -webkit-text-size-adjust:100%
 }
 
-@font-face {
-    font-family: 'Source Sans Pro';
-    src: url('/fonts/SourceSansPro-Regular.woff2') format('woff2');
-    font-display: swap;
-}
-
 ::-webkit-scrollbar {
  display: none;
  }
@@ -342,16 +336,6 @@ th {
  .table-bordered td {
   border:1px solid #ddd !important
  }
-}
-@font-face {
- font-family:'Glyphicons Halflings';
- src:url('../fonts/glyphicons-halflings-regular.eot');
- src:url('../fonts/glyphicons-halflings-regular.eot?#iefix') format('embedded-opentype'),
- url('../fonts/glyphicons-halflings-regular.woff2') format('woff2'),
- url('../fonts/glyphicons-halflings-regular.woff') format('woff'),
- url('../fonts/glyphicons-halflings-regular.ttf') format('truetype'),
- url('../fonts/glyphicons-halflings-regular.svg#glyphicons_halflingsregular') format('svg')
- font-display: swap;
 }
 .glyphicon {
  position:relative;
@@ -1167,7 +1151,7 @@ html {
  -webkit-tap-highlight-color:rgba(0,0,0,0)
 }
 body {
- font-family:"Baskervville-Regular.ttf";
+ font-family:'Baskervville',serif;
  font-size: 16px;
  line-height:1.42857143;
  color:#555555;
@@ -6168,7 +6152,7 @@ button.close {
  position:absolute;
  z-index:1070;
  display:block;
- font-family:"Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;
+ font-family:inherit;
  font-style:normal;
  font-weight:normal;
  letter-spacing:normal;
@@ -6286,7 +6270,7 @@ button.close {
  display:none;
  max-width:276px;
  padding:1px;
- font-family:"Source Sans Pro","Helvetica Neue",Helvetica,Arial,sans-serif;
+ font-family:inherit;
  font-style:normal;
  font-weight:normal;
  letter-spacing:normal;
