@@ -6,6 +6,68 @@ class Downloader
     private $download_path = "";
     private $config = [];
 
+    /**
+     * Список российских доменов для прямого доступа (без прокси).
+     * Основан на экстракторах yt-dlp. Прямое подключение предпочтительнее,
+     * так как иностранные прокси часто блокируются этими сервисами или работают нестабильно.
+     */
+    private const DIRECT_ACCESS_DOMAINS = [
+        // Социальные сети и видеохостинги
+        'vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'vkclips.ru',
+        'ok.ru', 'odnoklassniki.ru',
+        'rutube.ru', 'rutube.com',
+        'coub.com',
+        'pikabu.ru',
+        'mail.ru', 'my.mail.ru', 'video.mail.ru',
+
+        // Экосистема Яндекса
+        'yandex.ru', 'yandex.com',
+        'yandexvideo.ru', 'yandexvideo.com',
+        'music.yandex.ru', 'music.yandex.com',
+        'disk.yandex.ru', 'disk.yandex.com',
+        'dzen.ru', 'dzen.com', 'zen.yandex.ru', 'zen.yandex.com',
+
+        // Федеральные телеканалы и медиа (официальные сайты)
+        '1tv.ru',
+        'ntv.ru',
+        'matchtv.ru',
+        'tvc.ru',
+        'ctc.ru',
+        'tnt-online.ru',
+        'ren.tv',
+        'tvzvezda.ru',
+        'mir24.tv',
+        '5-tv.ru',
+        'smotrim.ru', // ВГТРК
+
+        // Стриминговые сервисы (экстракторы есть, но часто требуют авторизации)
+        'kinopoisk.ru',
+        'ivi.ru', 'ivi.tv',
+        'okko.tv', 'okko.com',
+        'more.tv', 'moretv.ru',
+        'start.ru', 'premier.one',
+        'twitch.tv', 'clips.twitch.tv',
+        'kick.com', 'goodgame.ru',
+        'vkplay.ru',
+
+        // Музыкальные и аудио сервисы
+        'zvuk.com',
+        'zaycev.fm',
+        'muzofond.fm',
+        'pleer.net',
+
+        // Социальные сети и короткие видео
+        'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com',
+        'reddit.com', 'redd.it', 'v.redd.it',
+
+        // Аудио и музыкальные платформы
+        'bandcamp.com',
+
+        // Архивы и нишевые платформы
+        'archive.org',
+
+    ];
+
     public function __construct($dl_list)
     {
         // Проверка инициализации глобальной конфигурации
@@ -543,6 +605,24 @@ class Downloader
         return $uid;
     }
 
+    private function isDirectAccessDomain($url)
+    {
+        $urlToParse = $url;
+        if (!preg_match('/^https?:\/\//i', $urlToParse)) {
+            $urlToParse = 'https://' . $urlToParse;
+        }
+        
+        $hostname = strtolower(parse_url($urlToParse, PHP_URL_HOST) ?? '');
+        $hostname = preg_replace('/^www\./i', '', $hostname);
+        
+        foreach (self::DIRECT_ACCESS_DOMAINS as $domain) {
+            if ($hostname === $domain || str_ends_with($hostname, '.' . $domain)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private function do_download()
     {
         foreach ($this->dl_list as $onedownload) {
@@ -566,13 +646,35 @@ class Downloader
 
     public function addOneDownload($onedownload)
     {
+        $urls = array_filter(array_map('trim', explode("||", $onedownload['url'])));
+        $proxyUrls = [];
+        $directUrls = [];
+        
+        foreach ($urls as $url) {
+            if ($this->isDirectAccessDomain($url)) {
+                $directUrls[] = $url;
+            } else {
+                $proxyUrls[] = $url;
+            }
+        }
+        
+        if (!empty($proxyUrls)) {
+            $this->executeDownload($onedownload, $proxyUrls, true);
+        }
+        if (!empty($directUrls)) {
+            $this->executeDownload($onedownload, $directUrls, false);
+        }
+    }
+
+    private function executeDownload($onedownload, $urls, $useProxy)
+    {
         $suffix = "";
         $cmd = $this->config['youtubedlExe'];
         $cmd .= " -o " . escapeshellarg($this->download_path . "/%(title)s_%(id)s.%(ext)s");
         $cmd .= " --restrict-filenames";
         $cmd .= " " . $onedownload['dl_format'];
         
-        if (!empty($this->config['socks5'])) {
+        if ($useProxy && !empty($this->config['socks5'])) {
             $cmd .= " --proxy " . escapeshellarg($this->config['socks5']);
         }
         
@@ -582,18 +684,16 @@ class Downloader
             $suffix = "_a";
         } else {
             $cmd .= " --merge-output-format mp4";
+            $cmd .= " --recode-video mp4";
         }
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
         $fnp = str_replace("job_", "pid_", $fno);
         $urltext = "";
         
-        foreach (explode("||", $onedownload['url']) as $url) {
-            $url = trim($url);
-            if(!empty($url)){
-                $cmd .= " " . escapeshellarg($url);
-                $urltext .= $url . ",";
-            }
+        foreach ($urls as $url) {
+            $cmd .= " " . escapeshellarg($url);
+            $urltext .= $url . ",";
         }
         $urltext = trim($urltext, ",");
         

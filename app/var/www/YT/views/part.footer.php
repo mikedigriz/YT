@@ -11,13 +11,14 @@ $yt_dlp_version = ($yt_dlp_version !== false) ? trim($yt_dlp_version) : 'yt-dlp:
         <h3 id="helplink" class="panel-title">Жмак</h3>
       </div>
       <div id="helppanel" class="panel-body panel-collapsed" style="display: none;">
-        <table class="table table-striped table-hover footer-table">
+        <table class="table table-hover footer-table">
           <tr>
             <td><b>О версии:</b></td>
             <td>
               C обходом замедления YouTube!<br>
               <div id="yt-dlp-version" class="text-muted small">yt-dlp:
-                                <?php echo htmlspecialchars($yt_dlp_version, ENT_QUOTES, 'UTF-8'); ?></div>
+                <?php echo htmlspecialchars($yt_dlp_version, ENT_QUOTES, 'UTF-8'); ?>
+              </div>
             </td>
                     </tr>
                     <!--<tr>
