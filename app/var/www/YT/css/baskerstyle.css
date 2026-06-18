@@ -801,56 +801,19 @@ body {
 .alert-success { background: rgba(212, 237, 218, 0.85) !important; border: 1px solid rgba(40, 167, 69, 0.3) !important; color: #155724 !important; }
 .alert-info { background: rgba(209, 236, 241, 0.85) !important; border: 1px solid rgba(23, 162, 184, 0.3) !important; color: #0c5460 !important; }
 
-@media (max-width: 768px) {
-    #mainnav.nav-tabs {
-        display: flex;
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        border-bottom: 1px solid #ddd;
-        margin-bottom: 15px;
-        -ms-overflow-style: none;
-        scrollbar-width: none;
-    }
-    #mainnav.nav-tabs::-webkit-scrollbar { display: none; }
-    #mainnav.nav-tabs > li { flex: 1; float: none !important; text-align: center; }
-    #mainnav.nav-tabs > li > a {
-        padding: 8px 5px !important;
-        font-size: 11px !important;
-        white-space: nowrap;
-        margin-right: 0 !important;
-        border-radius: 4px 4px 0 0 !important;
-        display: block;
-        line-height: 1.4 !important;
-    }
-    #mainnav.nav-tabs > li.active > a,
-    #mainnav.nav-tabs > li.active > a:hover,
-    #mainnav.nav-tabs > li.active > a:focus { font-weight: 600 !important; }
-    
-    .footer .panel {
-        border-top-left-radius: 30px 40px;
-        border-top-right-radius: 30px 40px;
-    }
-    .footer .panel-body {
-        padding: 15px 20px;
-        backdrop-filter: blur(15px);
-        -webkit-backdrop-filter: blur(15px);
-    }
-    .footer-table td:first-child { padding: 10px 80px 10px 15px; }
-    .footer-table td { font-size: 14px; }
-}
-
-/* Убираем грубые браузерные выделения на вкладках */
 #mainnav.nav-tabs > li > a,
 .nav-tabs > li > a {
     outline: none !important;
     -webkit-tap-highlight-color: transparent !important;
     -webkit-touch-callout: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
 }
 
-/* Заменяем резкую полоску фокуса на мягкое, размытое свечение или вдавливание */
+#mainnav.nav-tabs > li > a:hover,
 #mainnav.nav-tabs > li > a:focus,
 #mainnav.nav-tabs > li > a:active,
+.nav-tabs > li > a:hover,
 .nav-tabs > li > a:focus,
 .nav-tabs > li > a:active {
     outline: none !important;
@@ -858,10 +821,130 @@ body {
     -webkit-tap-highlight-color: transparent !important;
 }
 
-/* Мягкий визуальный отклик при нажатии (опционально, для плавности) */
-#mainnav.nav-tabs > li > a:active {
-    background-color: rgba(0, 0, 0, 0.02) !important;
-    box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.04) !important;
+#mainnav.nav-tabs > li.active > a,
+#mainnav.nav-tabs > li.active > a:hover,
+#mainnav.nav-tabs > li.active > a:focus,
+#mainnav.nav-tabs > li.active > a:active,
+.nav-tabs > li.active > a,
+.nav-tabs > li.active > a:hover,
+.nav-tabs > li.active > a:focus,
+.nav-tabs > li.active > a:active {
+    outline: none !important;
+    background-color: #fff !important;
+    box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.08) !important;
+    -webkit-tap-highlight-color: transparent !important;
+}
+
+@media (max-width: 1024px), (hover: none) {
+
+    .footer .panel-body {
+        contain: layout style paint;
+        -webkit-overflow-scrolling: touch;
+        transform: translate3d(0, 0, 0);
+        backface-visibility: hidden;
+        -webkit-backface-visibility: hidden;
+    }
+
+    .footer .panel-body,
+    #url.form-control,
+    .modal-content,
+    .modal-backdrop,
+    .alert,
+    .btn-danger:not(.btn-download-minimal):not(.btn-primary),
+    .btn-default:not(.btn-download-minimal):not(.btn-primary),
+    .btn-warning:not(.btn-download-minimal):not(.btn-primary),
+    .btn-success:not(.btn-download-minimal):not(.btn-primary) {
+        will-change: auto !important;
+    }
+
+    .footer .panel-body {
+        box-shadow: none !important;
+        border-top: 1px solid rgba(0, 0, 0, 0.08) !important;
+    }
+
+    .footer-table tbody tr {
+        content-visibility: auto;
+        contain-intrinsic-size: auto 60px;
+    }
+
+    .footer-table tr {
+        transition: none !important;
+    }
+
+    .footer .panel {
+        border-top-left-radius: 24px !important;
+        border-top-right-radius: 24px !important;
+    }
+
+    @media (hover: hover) and (max-width: 1024px) {
+        .footer-table tr:hover,
+        .footer-table tr:hover td,
+        .footer-table tr:hover th {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            background: rgba(0, 0, 0, 0.03) !important;
+        }
+    }
+}
+
+@media (max-width: 768px) {
+    #mainnav.nav-tabs {
+        display: flex;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        border-bottom: none !important;
+        margin-bottom: 15px;
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+        gap: 4px;
+        align-items: flex-end;
+    }
+    #mainnav.nav-tabs::-webkit-scrollbar { display: none; }
+    
+    #mainnav.nav-tabs > li {
+        flex: 1;
+        float: none !important;
+        text-align: center;
+        margin-bottom: 0 !important;
+        position: relative;
+    }
+
+    #mainnav.nav-tabs > li > a {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 8px !important;
+        font-size: 11px !important;
+        line-height: 1.4 !important;
+        white-space: nowrap;
+        margin-right: 0 !important;
+        border-radius: 4px 4px 0 0 !important;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+        background-color: transparent !important;
+        outline: none !important;
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        will-change: transform;
+    }
+
+    #mainnav.nav-tabs > li.active {
+        z-index: 2;
+    }
+
+    #mainnav.nav-tabs > li.active > a,
+    #mainnav.nav-tabs > li.active > a:hover,
+    #mainnav.nav-tabs > li.active > a:focus,
+    #mainnav.nav-tabs > li.active > a:active {
+        transform: translateY(-6px);
+        background-color: #fff !important;
+        border: 1px solid #ddd !important;
+        border-bottom: 6px solid #fff !important;
+        box-shadow: 0 -2px 6px rgba(0, 0, 0, 0.08) !important;
+        font-weight: 600 !important;
+        margin-bottom: -6px !important;
+    }
 }
 
 @media (max-width: 600px) {
@@ -891,8 +974,6 @@ body {
     .footer .panel-body {
         padding: 12px 15px;
         max-height: 50vh;
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
     }
     .footer-table, .footer-table tbody, .footer-table tr, .footer-table td { display: block; width: 100%; }
     .footer-table tr {
@@ -940,10 +1021,6 @@ body {
     }
 }
 
-/* ============================================
-   КНОПКА УПРАВЛЕНИЯ ЗВУКОМ
-   ============================================ */
-
 .sound-toggle {
     position: fixed;
     top: 15px;
@@ -976,10 +1053,6 @@ body {
     transform: scale(0.8);
 }
 
-/* ============================================
-   ЦВЕТА ПРОГРЕСС-БАРА (LIFETIME)
-   ============================================ */
-
 .progress-lifetime {
     transition: width 0.3s ease;
 }
@@ -1000,10 +1073,6 @@ body {
     background-color: #6c757d;
 }
 
-/* ============================================
-   УТИЛИТЫ ВИДИМОСТИ
-   ============================================ */
-
 .hidden-block {
     display: none !important;
 }
@@ -1016,13 +1085,9 @@ body {
     display: block !important;
 }
 
-/* ============================================
-   ПРОГРЕСС-БАР В ТАБЛИЦЕ ФАЙЛОВ (МЯГКИЙ БЕЙДЖ)
-   ============================================ */
-
 .file-row-content {
     display: inline-flex;
-    align-items: flex-start; /* Бейдж прижат к верху, текст обтекает его при переносе */
+    align-items: flex-start;
     gap: 10px;
     width: 100%;
 }
@@ -1033,13 +1098,13 @@ body {
     align-items: center;
     justify-content: center;
     gap: 4px;
-    background: #f1f3f5; /* Мягкий светло-серый фон */
+    background: #f1f3f5;
     border: 1px solid #e9ecef;
-    border-radius: 8px; /* Мягкий скругленный квадрат */
-    padding: 6px 8px; /* Компактные внутренние отступы */
+    border-radius: 8px;
+    padding: 6px 8px;
     min-width: 70px;
     max-width: 85px;
-    flex-shrink: 0; /* Запрет на сжатие, всегда держит форму */
+    flex-shrink: 0;
 }
 
 .lifetime-badge-text {
@@ -1055,7 +1120,7 @@ body {
     height: 4px;
     margin: 0;
     background-color: #dee2e6;
-    border-radius: 4px; /* Полное скругление краев полоски */
+    border-radius: 4px;
     overflow: hidden;
 }
 
@@ -1070,13 +1135,12 @@ body {
     color: #333;
     line-height: 1.4;
     word-break: break-word;
-    padding-top: 2px; /* Небольшая коррекция для визуального выравнивания с бейджем */
+    padding-top: 2px;
 }
 
-/* Мобильная версия: бейдж ВСЕГДА слева, никакого переноса наверх */
 @media (max-width: 480px) {
     .file-row-content {
-        align-items: center; /* На узких экранах выравниваем по центру по вертикали */
+        align-items: center;
         gap: 8px;
     }
     
@@ -1088,5 +1152,143 @@ body {
     
     .lifetime-badge-text {
         font-size: 10px;
+    }
+}
+
+#mainnav.nav-tabs > li > a {
+    position: relative !important;
+}
+
+.tab-badge {
+    position: absolute !important;
+    top: 5px !important;
+    right: 5px !important;
+    width: 8px !important;
+    height: 8px !important;
+    background: radial-gradient(circle at 30% 30%, #ff9e9e, #e05555) !important;
+    border-radius: 50% !important;
+    opacity: 0;
+    transform: scale(0);
+    box-shadow: 
+        inset 0 1px 2px rgba(255, 255, 255, 0.6),
+        0 2px 6px rgba(224, 85, 85, 0.45),
+        0 0 0 1px rgba(224, 85, 85, 0.15);
+    pointer-events: none !important;
+    z-index: 5 !important;
+    transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), 
+                transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1),
+                box-shadow 0.4s ease !important;
+}
+
+.tab-badge.is-visible {
+    opacity: 1 !important;
+    transform: scale(1) !important;
+    animation: badge-pulse-premium 3s ease-in-out infinite;
+}
+
+@keyframes badge-pulse-premium {
+    0%, 100% {
+        box-shadow: 
+            inset 0 1px 2px rgba(255, 255, 255, 0.6),
+            0 2px 6px rgba(224, 85, 85, 0.45),
+            0 0 0 1px rgba(224, 85, 85, 0.15);
+    }
+    50% {
+        box-shadow: 
+            inset 0 1px 2px rgba(255, 255, 255, 0.6),
+            0 2px 12px rgba(224, 85, 85, 0.65),
+            0 0 0 2px rgba(224, 85, 85, 0.2);
+    }
+}
+
+@media (max-width: 768px) {
+    .tab-badge {
+        top: 4px !important;
+        right: 4px !important;
+        width: 7px !important;
+        height: 7px !important;
+    }
+}
+
+/* ============================================
+   МОБИЛЬНАЯ ОПТИМИЗАЦИЯ BACKDROP-FILTER
+   Изоляция слоёв + уменьшение радиуса blur
+   для снижения нагрузки на GPU.
+============================================ */
+
+@media (max-width: 768px), (hover: none) {
+
+    /* Изоляция композитных слоёв — браузер не пересчитывает
+       blur при каждом изменении подложки (скролл, анимации) */
+    #url.form-control,
+    .footer .panel-body,
+    .modal-content,
+    .modal-backdrop,
+    .alert,
+    .btn-danger:not(.btn-download-minimal):not(.btn-primary),
+    .btn-default:not(.btn-download-minimal):not(.btn-primary),
+    .btn-warning:not(.btn-download-minimal):not(.btn-primary),
+    .btn-success:not(.btn-download-minimal):not(.btn-primary) {
+        transform: translateZ(0);
+        -webkit-transform: translateZ(0);
+        will-change: backdrop-filter;
+    }
+
+    /* Уменьшаем радиус blur и убираем saturate() —
+       это снижает нагрузку квадратично */
+    #url.form-control,
+    #url.form-control:hover,
+    #url.form-control:focus {
+        backdrop-filter: blur(8px) !important;
+        -webkit-backdrop-filter: blur(8px) !important;
+    }
+
+    .footer .panel-body {
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+    }
+
+    .modal-content {
+        backdrop-filter: blur(12px) !important;
+        -webkit-backdrop-filter: blur(12px) !important;
+    }
+
+    .modal-backdrop {
+        backdrop-filter: blur(2px) !important;
+        -webkit-backdrop-filter: blur(2px) !important;
+    }
+
+    .alert,
+    .alert-warning,
+    .alert-danger,
+    .alert-success,
+    .alert-info {
+        backdrop-filter: blur(8px) !important;
+        -webkit-backdrop-filter: blur(8px) !important;
+    }
+
+    .btn-danger:not(.btn-download-minimal):not(.btn-primary),
+    .btn-default:not(.btn-download-minimal):not(.btn-primary),
+    .btn-warning:not(.btn-download-minimal):not(.btn-primary),
+    .btn-success:not(.btn-download-minimal):not(.btn-primary) {
+        backdrop-filter: blur(6px) !important;
+        -webkit-backdrop-filter: blur(6px) !important;
+    }
+
+    /* Убираем filter: blur() из анимаций — это repaint */
+    @keyframes fadeInSmooth {
+        0% { opacity: 0; transform: translateY(-6px) scale(0.98); }
+        100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    /* Убираем filter: blur() с текста */
+    .quality-switch-wrapper:has(.toggle-input-single:not(:checked)) .label-right,
+    .quality-switch-wrapper:has(.toggle-input-single:checked) .label-left {
+        filter: none !important;
+    }
+
+    .toggle-text, .side-label {
+        transition: color 0.35s cubic-bezier(0.4, 0, 0.2, 1),
+                    transform 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
     }
 }

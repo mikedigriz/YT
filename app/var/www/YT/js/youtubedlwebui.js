@@ -8,6 +8,27 @@ let previousFinishedPids = null;
 let audioSuccess = null;
 let audioError = null;
 
+function updateFileBadges(data) {
+    const videoBadge = document.getElementById('video-badge');
+    const musicBadge = document.getElementById('music-badge');
+    
+    if (videoBadge) {
+        if (data.videos && data.videos.length > 0) {
+            videoBadge.classList.add('is-visible');
+        } else {
+            videoBadge.classList.remove('is-visible');
+        }
+    }
+    
+    if (musicBadge) {
+        if (data.music && data.music.length > 0) {
+            musicBadge.classList.add('is-visible');
+        } else {
+            musicBadge.classList.remove('is-visible');
+        }
+    }
+}
+
 async function preloadNotificationSounds() {
     if (audioSuccess && audioError) return;
     
@@ -356,6 +377,7 @@ function loadList() {
 
         renderTable($ui.videos, data.videos, 3, "Видео нет.", renderFileRow);
         renderTable($ui.music, data.music, 3, "Музыки нет.", renderFileRow);
+        updateFileBadges(data);
 
     }, "json").fail(function () {
         console.error("Не удалось загрузить данные");

@@ -9,8 +9,8 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
     <ul id="mainnav" class="nav nav-tabs ">
         <li class="active"><a id="home_link" href="#home" data-toggle="tab" aria-expanded="true">Домой</a></li>
         <li><a id="dl_link" href="#downloads" data-toggle="tab" aria-expanded="false">Загрузки</a></li>
-        <li><a id="vid_link" href="#videos" data-toggle="tab" aria-expanded="false">Видео</a></li>
-        <li><a id="music_link" href="#music" data-toggle="tab" aria-expanded="false">Музыка</a></li>
+        <li><a id="vid_link" href="#videos" data-toggle="tab" aria-expanded="false">Видео<span class="tab-badge" id="video-badge"></span></a></li>
+        <li><a id="music_link" href="#music" data-toggle="tab" aria-expanded="false">Музыка<span class="tab-badge" id="music-badge"></span></a></li>
     </ul>
     <div id="myTabContent" class="tab-content">
         <div class="tab-pane fade active in" id="home">
