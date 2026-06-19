@@ -49,7 +49,9 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                         <div class="col-md-12">
                             <div class="minimal-controls-wrapper">
 
-                                <button type="submit" class="btn btn-primary btn-download-minimal">Скачать</button>
+                                <div class="btn-download-wrapper">
+                                    <button type="submit" class="btn btn-primary btn-download-minimal">Скачать</button>
+                                </div>
 
                                 <div class="controls-row">
 

@@ -454,6 +454,8 @@
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     cursor: pointer;
     margin-top: 0;
+    will-change: transform;
+    contain: layout style paint;
 }
 
 .btn-download-minimal:hover { transform: translateY(-2px); }
@@ -481,6 +483,14 @@
 
 .btn-download-minimal.btn-primary:focus {
     box-shadow: 0 0 0 3px rgba(229, 90, 82, 0.2), var(--shadow-btn);
+}
+
+.btn-download-wrapper {
+    height: var(--input-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    contain: layout style;
 }
 
 /* ============================================
