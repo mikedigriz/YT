@@ -1292,3 +1292,59 @@ body {
                     transform 0.35s cubic-bezier(0.4, 0, 0.2, 1) !important;
     }
 }
+
+/* 2K/4K — масштабирование элементов +20% */
+@media (min-width: 1920px) {
+    body {
+        zoom: 1.2;
+    }
+}
+
+@media (max-width: 570px) {
+  :root {
+    --icon-offset: 7px;
+    --input-padding-right: 75px;
+  }
+  
+  #home.tab-pane {
+    overflow-x: hidden;
+  }
+  
+  #home .container {
+    padding: 0 10px;
+  }
+  
+  .url-input-wrapper {
+    position: relative;
+  }
+  
+  .url-input-wrapper,
+  .url-input-wrapper .form-control,
+  #home .form-group .col-md-12 {
+    box-sizing: border-box;
+  }
+  
+  #home .form-control {
+    padding-right: var(--input-padding-right);
+    padding-left: 10px;
+  }
+  
+  #home .form-group .col-md-12 {
+    width: 90%;
+    padding-left: 10%;
+    padding-right: 0%;
+  }
+  
+  .url-input-wrapper .url-clear-btn,
+  .url-input-wrapper .url-favicon {
+    position: absolute;
+    top: 50%;
+    right: var(--icon-offset);
+    transform: translateY(-50%);
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
