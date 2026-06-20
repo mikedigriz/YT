@@ -31,52 +31,34 @@ if (!$config['disableQueue']) {
 if(isset($_GET['jobs'])) {
     $videofiles = $file->listVideos();
     $musicfiles = $file->listMusics();
-    $jsonString = "{ \"jobs\": [";
-    foreach(Downloader::get_current_background_jobs() as $key) {
-        $jsonString .= "{ \"file\": ".$key['file'].", ";
-        $jsonString .= "\"status\": ".$key['status'].", ";
-        $jsonString .= "\"site\": ".$key['site'].", ";
-        $jsonString .= "\"type\": ".$key['type'].", ";
-        $jsonString .= "\"pid\": ".$key['pid'].", ";
-        $jsonString .= "\"url\": ".$key['url'];
-        $jsonString .= "},";
-    }
-    $jsonString = trim($jsonString, ",");
-    $jsonString .= "],";
+    
+    $response = [
+        'jobs'     => Downloader::get_current_background_jobs(),
+        'queue'    => [],
+        'finished' => Downloader::get_finished_background_jobs(),
+        'videos'   => [],
+        'music'    => [],
+        'logURL'   => $config['logURL'] ?? ''
+    ];
 
-    $jsonString .= "\"queue\": [";
     if (!$config['disableQueue']) {
         foreach(Downloader::get_queued_jobs() as $key) {
             $dl_type = "video";
             $dl_format = str_replace("-f ", "Format: ", $key['dl_format']);
             if ($key['audio_only']) {
-              $dl_type = "audio";
-              $dl_format = str_replace("--audio-format ", "Format: ", $key['audio_format']);
-              $dl_format = str_replace(" --audio-quality ", ", Quality: ", $dl_format);
+                $dl_type = "audio";
+                $dl_format = str_replace("--audio-format ", "Format: ", $key['audio_format']);
+                $dl_format = str_replace(" --audio-quality ", ", Quality: ", $dl_format);
             }
-            $jsonString .= "{ \"pid\": ".$key['pid'].", ";
-            $jsonString .= "\"url\": ".$key['url'].", ";
-            $jsonString .= "\"dl_format\": ".$dl_format.", ";
-            $jsonString .= "\"type\": \"".$dl_type."\"";
-            $jsonString .= "},";
+            $response['queue'][] = [
+                'pid'       => $key['pid'],
+                'url'       => $key['url'],
+                'dl_format' => $dl_format,
+                'type'      => $dl_type
+            ];
         }
-        $jsonString = trim($jsonString, ",");
     }
-    $jsonString .= "],";
-    $jsonString .= "\"finished\": [";
-    foreach(Downloader::get_finished_background_jobs() as $key) {
-        $jsonString .= "{ \"file\": ".$key['file'].", ";
-        $jsonString .= "\"status\": ".$key['status'].", ";
-        $jsonString .= "\"site\": ".$key['site'].", ";
-        $jsonString .= "\"type\": ".$key['type'].", ";
-        $jsonString .= "\"pid\": ".$key['pid'].", ";
-        $jsonString .= "\"url\": ".$key['url'];
-        $jsonString .= "},";
-    }
-    $jsonString = trim($jsonString, ",");
-    $jsonString .= "],";
 
-    $jsonString .= "\"videos\": [";
     foreach($videofiles as $f) {
         $deleteurl = "";
         if (array_key_exists('allowFileDelete', $config) && $config['allowFileDelete']) {
@@ -86,18 +68,15 @@ if(isset($_GET['jobs'])) {
         if ($config['downloadPath'] != "") {
             $fileurl = '<a href="'.$file->get_downloads_link().'/'.$f["name"].'" download>'.$f["name"].'</a>';
         }
-        $jsonString .= "{ \"file\": ".json_encode($fileurl).", ";
-        $jsonString .= "\"size\": ".json_encode($f["size"]).", ";
-        $jsonString .= "\"deleteurl\": ".json_encode($deleteurl).", ";
-        $jsonString .= "\"age_minutes\": ".(int)($f["age_minutes"] ?? 0).", ";
-        $jsonString .= "\"lifetime_percent\": ".(int)($f["lifetime_percent"] ?? 100);
-        $jsonString .= "},";
+        $response['videos'][] = [
+            'file'             => $fileurl,
+            'size'             => $f["size"],
+            'deleteurl'        => $deleteurl,
+            'age_minutes'      => (int)($f["age_minutes"] ?? 0),
+            'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
+        ];
     }
 
-    $jsonString = trim($jsonString, ",");
-    $jsonString .= "],";
-
-    $jsonString .= "\"music\": [";
     foreach($musicfiles as $f) {
         $deleteurl = "";
         if (array_key_exists('allowFileDelete', $config) && $config['allowFileDelete']) {
@@ -107,26 +86,20 @@ if(isset($_GET['jobs'])) {
         if ($config['downloadPath'] != "") {
             $fileurl = '<a href="'.$file->get_downloads_link().'/'.$f["name"].'" download>'.$f["name"].'</a>';
         }
-        $jsonString .= "{ \"file\": ".json_encode($fileurl).", ";
-        $jsonString .= "\"size\": ".json_encode($f["size"]).", ";
-        $jsonString .= "\"deleteurl\": ".json_encode($deleteurl).", ";
-        $jsonString .= "\"age_minutes\": ".(int)($f["age_minutes"] ?? 0).", ";
-        $jsonString .= "\"lifetime_percent\": ".(int)($f["lifetime_percent"] ?? 100);
-        $jsonString .= "},";
+        $response['music'][] = [
+            'file'             => $fileurl,
+            'size'             => $f["size"],
+            'deleteurl'        => $deleteurl,
+            'age_minutes'      => (int)($f["age_minutes"] ?? 0),
+            'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
+        ];
     }
-    $jsonString = trim($jsonString, ",");
-    $jsonString .= "],";
 
-    $jsonString .= "\"logURL\": ".json_encode($config['logURL'])." }";
-    // If the paramter "cron" is set we don't want to do any output unless something's wrong
+    // If the parameter "cron" is set we don't want to do any output unless something's wrong
     if(!isset($_GET['cron'])) {
-    echo $jsonString;
+        header('Content-Type: application/json');
+        echo json_encode($response);
     }
-    die();
-}
-
-if(isset($_GET['cron'])) {
-    // If the paramter "cron" is set we don't want to do any output unless something's wrong
     die();
 }
 

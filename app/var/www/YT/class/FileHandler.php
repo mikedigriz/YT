@@ -14,7 +14,7 @@ class FileHandler
     public function listVideos()
     {
         $videos = [];
-        if(!$this->outuput_folder_exists()) {
+        if(!$this->output_folder_exists()) {
             return $videos;
         }
         $folder = $this->get_downloads_folder().'/';
@@ -44,7 +44,7 @@ class FileHandler
     public function listMusics()
     {
         $musics = [];
-        if(!$this->outuput_folder_exists()) {
+        if(!$this->output_folder_exists()) {
             return $musics;
         }
         $folder = $this->get_downloads_folder().'/';
@@ -85,7 +85,7 @@ class FileHandler
         }
     }
 
-    private function outuput_folder_exists()
+    private function output_folder_exists()
     {
         if(!is_dir($this->get_downloads_folder())) {
             //Folder doesn't exist

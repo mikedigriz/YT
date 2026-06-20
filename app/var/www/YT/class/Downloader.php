@@ -238,12 +238,12 @@ class Downloader
                 }
 
                 $bjs[] = array(
-                    'file' => json_encode($playlist . $filename),
-                    'site' => json_encode($site),
-                    'status' => str_replace("\\n", "", json_encode($lastline)),
-                    'type' => json_encode($isaudio ? "audio" : "video"),
-                    'pid' => json_encode($fileinfo->getFilename()),
-                    'url' => json_encode($urltext)
+                    'file' => $playlist . $filename,
+                    'site' => $site,
+                    'status' => str_replace("\n", "", $lastline),
+                    'type' => $isaudio ? "audio" : "video",
+                    'pid' => $fileinfo->getFilename(),
+                    'url' => $urltext
                 );
             }
         }
@@ -297,11 +297,11 @@ class Downloader
             $audio_only = !empty(trim($urlParts[2] ?? ''));
 
             $qjs[] = array(
-                'pid' => json_encode($pid),
-                'url' => json_encode(trim($urlParts[0] ?? '')),
-                'dl_format' => json_encode($urlParts[1] ?? ''),
+                'pid' => $pid,
+                'url' => trim($urlParts[0] ?? ''),
+                'dl_format' => $urlParts[1] ?? '',
                 'audio_only' => $audio_only,
-                'audio_format' => json_encode($urlParts[3] ?? '')
+                'audio_format' => $urlParts[3] ?? ''
             );
         }
         flock($handle, LOCK_UN);
@@ -389,12 +389,12 @@ class Downloader
                 }
 
                 $bjs[] = array(
-                    'file' => json_encode($filename),
-                    'site' => json_encode($site),
-                    'status' => str_replace("\\n", "", json_encode($jobstatus)),
-                    'type' => json_encode($type),
-                    'pid' => json_encode($fileinfo->getFilename()),
-                    'url' => json_encode($urltext)
+                    'file' => $filename,
+                    'site' => $site,
+                    'status' => str_replace("\n", "", $jobstatus),
+                    'type' => $type,
+                    'pid' => $fileinfo->getFilename(),
+                    'url' => $urltext
                 );
             }
         }
