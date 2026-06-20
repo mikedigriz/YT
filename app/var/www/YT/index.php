@@ -17,8 +17,6 @@ ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 ini_set('session.cookie_samesite', 'Lax');
 
-session_start();
-
 // === CSRF Protection ===
 function generateCsrfToken(): string {
     if (empty($_SESSION['csrf_token'])) {
@@ -135,7 +133,9 @@ if(isset($_GET['jobs'])) {
         }
         $fileurl = $f["name"];
         if ($config['downloadPath'] != "") {
-            $fileurl = '<a href="'.$file->get_downloads_link().'/'.$f["name"].'" download>'.$f["name"].'</a>';
+            $safe_name = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
+            $encoded_name = urlencode($f["name"]);
+            $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encoded_name.'" download>'.$safe_name.'</a>';
         }
         $response['videos'][] = [
             'file'             => $fileurl,
@@ -153,7 +153,9 @@ if(isset($_GET['jobs'])) {
         }
         $fileurl = $f["name"];
         if ($config['downloadPath'] != "") {
-            $fileurl = '<a href="'.$file->get_downloads_link().'/'.$f["name"].'" download>'.$f["name"].'</a>';
+            $safe_name = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
+            $encoded_name = urlencode($f["name"]);
+            $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encoded_name.'" download>'.$safe_name.'</a>';
         }
         $response['music'][] = [
             'file'             => $fileurl,
@@ -239,7 +241,18 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     $audio_only = false;
     $audio_format = "--audio-format mp3 --audio-quality 0";
     $dl_format = "";
+    $allowed_audio_formats = [
+        '--audio-format mp3 --audio-quality 0',
+        '--audio-format wav',
+        '--audio-format aac',
+        '--audio-format flac',
+        ''
+    ];
 
+    $audio_format = in_array($_POST['audio_format'], $allowed_audio_formats) 
+        ? $_POST['audio_format'] 
+        : '';
+        
     if(isset($_POST['audio']) && !empty($_POST['audio'])) {
         $audio_only = true;
         $get_params .= "audio=true&";
