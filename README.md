@@ -1,3 +1,17 @@
+<div align="center">
+
+# 🚀 Качалка
+
+**Веб-интерфейс для yt-dlp в одном Docker-контейнере**
+
+![Docker Pulls](https://img.shields.io/docker/pulls/mikedigriz/yt?style=for-the-badge&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)
+![Docker Image Size](https://img.shields.io/docker/image-size/mikedigriz/yt/latest?style=for-the-badge&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)
+![GitHub Stars](https://img.shields.io/github/stars/mikedigriz/YT?style=for-the-badge&logo=github&logoColor=white&color=4A90D9)
+
+![Powered by yt-dlp](https://img.shields.io/badge/POWERED%20BY-yt--dlp-FF0000?style=for-the-badge&logo=youtube&logoColor=white)
+
+</div>
+
 ## Описание
 
 Позволяет скачивать практически с любого ресурса видео.
@@ -10,8 +24,6 @@
 - Ограничена загрузка контента 18+
 - Код улучшен в части обработки ошибок, управления процессами и безопасности.
 - Удобен в качестве единой площадки для работы с контентом для SMM-групп и контент-маркетологов.
-
-**Стек:** PHP 8.4 + Python 3.13 (yt-dlp) + ffmpeg + nginx в одном Docker-контейнере.
 
 <p align="center">
     <img src="res/YT.webp" width="65%">
