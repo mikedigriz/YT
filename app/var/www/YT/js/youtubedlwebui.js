@@ -475,7 +475,7 @@ $(document).ready(function () {
     let isClearing = false;
     const validatedDomains = new Set();
 
-    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'rutube.com', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'zen.yandex.ru', 'dzen.com', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'v.redd.it', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'tvigle.ru', 'cloud.tvigle.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'ruptly.tv', 'life.ru', 'embed.life.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'dtube.app', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'krasview.ru', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru', 'cliprs.ru'];
+    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'rutube.com', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'zen.yandex.ru', 'dzen.com', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'v.redd.it', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'tvigle.ru', 'cloud.tvigle.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'ruptly.tv', 'life.ru', 'embed.life.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'dtube.app', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'krasview.ru', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru', 'cliprs.ru', 'vkclips.ru', 'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'yandexvideo.com', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'redd.it', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
 
     function getBaseService(hostname) {
         if (!hostname) return null;
@@ -488,40 +488,52 @@ $(document).ready(function () {
         return null;
     }
 
-    function showFavicon(serviceDomain) {
-        const faviconUrl = 'https://www.google.com/s2/favicons?domain=' + encodeURIComponent(serviceDomain) + '&sz=64';
+function showFavicon(serviceDomain) {
+    const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(serviceDomain)}&sz=32`;
 
-        if (validatedDomains.has(serviceDomain)) {
-            if ($faviconImg.attr('src') !== faviconUrl) {
-                $faviconImg.attr('src', faviconUrl);
-            }
+    if (validatedDomains.has(serviceDomain)) {
+        if ($faviconImg.attr('src') !== faviconUrl) {
+            $faviconImg.attr('src', faviconUrl);
+        }
+        $faviconContainer.addClass('is-visible');
+        $wrapper.addClass('has-favicon');
+        return;
+    }
+
+    $faviconContainer.removeClass('is-visible');
+    $wrapper.removeClass('has-favicon');
+    $faviconImg.attr('src', '');
+
+    const tempImg = new Image();
+
+    tempImg.onload = function () {
+        if (!$urlInput.val().trim() || isClearing) return;
+        
+        // Принимаем иконки от 16x16 (стандартный размер favicon) и выше.
+        if (this.naturalWidth >= 16 && this.naturalHeight >= 16) {
+            validatedDomains.add(serviceDomain);
+            $faviconImg.attr('src', faviconUrl);
             $faviconContainer.addClass('is-visible');
             $wrapper.addClass('has-favicon');
-            return;
+        } else {
+            resetUI();
         }
+    };
 
-        $faviconImg.off('load error');
-        $faviconContainer.removeClass('is-visible');
-        $wrapper.removeClass('has-favicon');
+    tempImg.onerror = function () {
+        if (!$urlInput.val().trim() || isClearing) return;
+        resetUI();
+    };
 
-        $faviconImg.one('load', function () {
-            if (!$urlInput.val().trim() || isClearing) return;
-            if (this.naturalWidth >= 32 && this.naturalHeight >= 32) {
-                validatedDomains.add(serviceDomain);
-                $faviconContainer.addClass('is-visible');
-                $wrapper.addClass('has-favicon');
-            } else {
-                $faviconImg.attr('src', '');
-                if ($urlInput.val().trim() && !isClearing) $clearBtn.addClass('is-visible');
-            }
-        }).one('error', function () {
-            if (!$urlInput.val().trim() || isClearing) return;
-            $faviconImg.attr('src', '');
-            if ($urlInput.val().trim() && !isClearing) $clearBtn.addClass('is-visible');
-        });
+    tempImg.src = faviconUrl;
 
-        $faviconImg.attr('src', faviconUrl);
+    function resetUI() {
+        $faviconImg.attr('src', '');
+        if ($urlInput.val().trim() && !isClearing) {
+            $clearBtn.addClass('is-visible');
+        }
     }
+}
 
     function hideFavicon() {
         $faviconImg.off('load error');

@@ -22,7 +22,7 @@
     <script>
     new WOW().init();
     </script>
-    <link rel="icon" href="img/favicon.png">
+    <link rel="icon" href="img/favicon.png" type="image/png">
 </head>
 
 <body>
