@@ -66,7 +66,6 @@ class Downloader
 
         // Архивы и нишевые платформы
         'archive.org', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'
-
     ];
 
     public function __construct($dl_list)
@@ -125,8 +124,6 @@ class Downloader
             if (!empty($jpid) && file_exists("/proc/$jpid")) {
                 $count++;
             }
-            // Важно: НЕ удаляем pid-файл здесь — это делает get_current_background_jobs()
-            // с правильным вызовом finalize_job_log() для отображения в "Завершённых"
         }
         return $count;
     }
@@ -434,7 +431,6 @@ class Downloader
 
         self::finalize_job_log($outfile, $completed, $ytcmd, $urltext);
         @unlink($file);
-        
     }
 
     public static function kill_them_all()
@@ -624,6 +620,25 @@ class Downloader
         return false;
     }
 
+    private function sanitizeAudioFormat($format)
+    {
+        $allowed = [
+            '--audio-format mp3 --audio-quality 0',
+            '--audio-format mp3',
+            '--audio-format wav',
+            '--audio-format aac',
+            '--audio-format flac',
+            ''
+        ];
+        return in_array($format, $allowed) ? $format : '';
+    }
+
+    private function sanitizeDlFormat($format)
+    {
+        $allowed = ['best', 'worst', 'mp4', 'webm', ''];
+        return in_array($format, $allowed) ? $format : 'best';
+    }
+
     private function do_download()
     {
         foreach ($this->dl_list as $onedownload) {
@@ -673,7 +688,11 @@ class Downloader
         $cmd = $this->config['youtubedlExe'];
         $cmd .= " -o " . escapeshellarg($this->download_path . "/%(title)s_%(id)s.%(ext)s");
         $cmd .= " --restrict-filenames";
-        $cmd .= " " . $onedownload['dl_format'];
+        
+        $sanitizedFormat = $this->sanitizeDlFormat($onedownload['dl_format']);
+        if (!empty($sanitizedFormat)) {
+            $cmd .= " " . $sanitizedFormat;
+        }
         
         if ($useProxy && !empty($this->config['socks5'])) {
             $cmd .= " --proxy " . escapeshellarg($this->config['socks5']);
@@ -681,7 +700,10 @@ class Downloader
         
         if ($onedownload['audio_only']) {
             $cmd .= " -x";
-            $cmd .= " " . $onedownload['audio_format'];
+            $sanitizedAudio = $this->sanitizeAudioFormat($onedownload['audio_format']);
+            if (!empty($sanitizedAudio)) {
+                $cmd .= " " . $sanitizedAudio;
+            }
             $suffix = "_a";
         } else {
             $cmd .= " --merge-output-format mp4";
