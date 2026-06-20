@@ -35,7 +35,7 @@ return array(
    * of youtube-dl). Set to -1 if you want to disable the limit (not
    * recommended)
    *
-   * 'max-dl' => 3
+   * 'max_dl' => 3
    */
   'max_dl' => 1,
 

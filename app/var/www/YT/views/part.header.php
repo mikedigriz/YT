@@ -8,6 +8,7 @@
     <title><?php echo htmlspecialchars($config['siteName'] ?? 'Качалка', ENT_QUOTES, 'UTF-8'); ?></title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="csrf-token" content="<?= htmlspecialchars(generateCsrfToken()) ?>">
 
     <?php $theme = preg_replace('/[^a-z0-9\-\_]/i', '', $siteTheme ?? 'default'); ?>
     <link rel="stylesheet" href="css/<?php echo $theme; ?>.min.css" media="screen">

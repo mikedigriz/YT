@@ -8,6 +8,53 @@ let previousFinishedPids = null;
 let audioSuccess = null;
 let audioError = null;
 
+// === CSRF Protection ===
+function getCsrfToken() {
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    return meta ? meta.getAttribute('content') : '';
+}
+
+function confirmAction(action, value, extraFields = {}) {
+    const messages = {
+        'kill': value === 'all' 
+            ? 'Остановить ВСЕ загрузки?' 
+            : 'Остановить загрузку?',
+        'delete': 'Удалить файл безвозвратно?',
+        'clear': value === 'recent' 
+            ? 'Очистить историю загрузок?' 
+            : (value === 'queue' ? 'Очистить очередь?' : 'Удалить из истории?'),
+        'restart': 'Перезапустить загрузку?',
+        'removeQueued': 'Удалить из очереди?'
+    };
+
+    if (!confirm(messages[action] || 'Выполнить действие?')) {
+        return;
+    }
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = 'index.php';
+    form.style.display = 'none';
+
+    const addField = (name, val) => {
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = name;
+        input.value = val;
+        form.appendChild(input);
+    };
+
+    addField('csrf_token', getCsrfToken());
+    addField(action, value);
+
+    for (const [key, val] of Object.entries(extraFields)) {
+        addField(key, val);
+    }
+
+    document.body.appendChild(form);
+    form.submit();
+}
+
 function updateFileBadges(data) {
     const videoBadge = document.getElementById('video-badge');
     const musicBadge = document.getElementById('music-badge');
@@ -242,7 +289,7 @@ function renderJobRow(job) {
         <td style="vertical-align: middle;">${job.status}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <a style="width: 100px;" data-href="?kill=${job.pid}" data-toggle="modal" data-target="#confirm-delete" class="btn btn-danger btn-xs">Стоп</a>
+                <button style="width: 100px;" onclick="confirmAction('kill', '${job.pid}')" class="btn btn-danger btn-xs">Стоп</button>
             </div>
         </td>
     </tr>`;
@@ -257,7 +304,7 @@ function renderQueueRow(item) {
         <td style="vertical-align: middle;">${item.dl_format}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <a style="width: 160px" data-href="?removeQueued=${item.pid}" data-toggle="modal" class="btn btn-danger btn-xs" data-target="#confirm-delete">Удалить</a>
+                <button style="width: 160px" onclick="confirmAction('removeQueued', '${item.pid}')" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -282,8 +329,8 @@ function renderFinishedRow(item, logURL) {
         <td style="vertical-align: middle;">
             <div class="btn-group">
                 ${logButton}
-                <a style="width: ${actionBtnWidth}" href="?restart=${item.pid}" class="btn btn-success btn-xs">↺</a>
-                <a style="width: ${actionBtnWidth}" data-href="?clear=${item.pid}" data-toggle="modal" data-target="#confirm-delete" class="btn btn-danger btn-xs">Удалить</a>
+                <button style="width: ${actionBtnWidth}" onclick="confirmAction('restart', '${item.pid}')" class="btn btn-success btn-xs">↺</button>
+                <button style="width: ${actionBtnWidth}" onclick="confirmAction('clear', '${item.pid}')" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -365,15 +412,15 @@ function loadList() {
 
         renderTable($ui.progress, data.jobs, 4, "Активных загрузок нет.", renderJobRow, `
             <td></td><td></td><td></td>
-            <td><div class="btn-group"><button id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" data-href="?kill=all" data-toggle="modal" data-target="#confirm-delete">Стоп ВСЕ</button></div></td>`);
+            <td><div class="btn-group"><button id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" onclick="confirmAction('kill', 'all')">Стоп ВСЕ</button></div></td>`);
 
         renderTable($ui.queue, data.queue, 3, "Очередь пуста.", renderQueueRow, `
             <td></td><td></td>
-            <td><div class="btn-group"><button id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" data-href="?clear=queue" data-toggle="modal" data-target="#confirm-delete">Удалить Все</button></div></td>`);
+            <td><div class="btn-group"><button id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" onclick="confirmAction('clear', 'queue')">Удалить Все</button></div></td>`);
 
         renderTable($ui.completed, data.finished, 4, "Завершенных загрузок нет.", item => renderFinishedRow(item, data.logURL), `
             <td></td><td></td><td></td>
-            <td><div class="btn-group"><button id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" data-href="?clear=recent" data-toggle="modal" data-target="#confirm-delete">Удалить Все</button></div></td>`);
+            <td><div class="btn-group"><button id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" onclick="confirmAction('clear', 'recent')">Удалить Все</button></div></td>`);
 
         renderTable($ui.videos, data.videos, 3, "Видео нет.", renderFileRow);
         renderTable($ui.music, data.music, 3, "Музыки нет.", renderFileRow);
@@ -415,13 +462,12 @@ $(document).ready(function () {
         startAutoRefresh();
         $ui.urlInput.focus();
     }
-
-    $(document).on('click', '[data-toggle="modal"]', function () {
-        const href = $(this).data('href');
-        if (href) {
-            $('#confirm-delete .btn-danger').off('click').on('click', function () {
-                window.location.href = href;
-            });
+    
+    // Автоматически добавляем CSRF-токен во все формы на странице
+    $(document).on('submit', 'form', function() {
+        const $form = $(this);
+        if (!$form.find('input[name="csrf_token"]').length) {
+            $form.append(`<input type="hidden" name="csrf_token" value="${getCsrfToken()}">`);
         }
     });
 });
