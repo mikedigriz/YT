@@ -134,7 +134,7 @@ if(isset($_GET['jobs'])) {
         $fileurl = $f["name"];
         if ($config['downloadPath'] != "") {
             $safe_name = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-            $encoded_name = urlencode($f["name"]);
+            $encoded_name = rawurlencode($f["name"]);
             $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encoded_name.'" download>'.$safe_name.'</a>';
         }
         $response['videos'][] = [
@@ -154,7 +154,7 @@ if(isset($_GET['jobs'])) {
         $fileurl = $f["name"];
         if ($config['downloadPath'] != "") {
             $safe_name = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-            $encoded_name = urlencode($f["name"]);
+            $encoded_name = rawurlencode($f["name"]);
             $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encoded_name.'" download>'.$safe_name.'</a>';
         }
         $response['music'][] = [

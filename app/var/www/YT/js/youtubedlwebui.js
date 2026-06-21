@@ -519,9 +519,16 @@ $(document).ready(function () {
     let inputTimer = null;
     const INPUT_DELAY = 150;
     let isClearing = false;
-    const validatedDomains = new Set();
 
-    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'rutube.com', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'zen.yandex.ru', 'dzen.com', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'v.redd.it', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'tvigle.ru', 'cloud.tvigle.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'ruptly.tv', 'life.ru', 'embed.life.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'dtube.app', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'krasview.ru', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru', 'cliprs.ru', 'vkclips.ru', 'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'yandexvideo.com', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'redd.it', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
+    // === Локальные favicon ===
+    // Для предзагрузки используй load_favicons.py
+    
+    const FAVICON_BASE = 'favicons/';
+    const FALLBACK_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzg4OCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDEgMC04LTMuNTktOC04czMuNTktOCA4LTggOCAzLjU5IDggOC0zLjU5IDgtOCA4eiIvPjwvc3ZnPg==';
+    // Кэш: domain -> { url: string, ok: boolean }
+    const faviconCache = new Map();
+
+    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'zen.yandex.ru', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'life.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru',  'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
 
     function getBaseService(hostname) {
         if (!hostname) return null;
@@ -534,52 +541,70 @@ $(document).ready(function () {
         return null;
     }
 
-function showFavicon(serviceDomain) {
-    const faviconUrl = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(serviceDomain)}&sz=32`;
+    function getFaviconUrl(domain) {
+        return `${FAVICON_BASE}${encodeURIComponent(domain)}.png`;
+    }
 
-    if (validatedDomains.has(serviceDomain)) {
-        if ($faviconImg.attr('src') !== faviconUrl) {
-            $faviconImg.attr('src', faviconUrl);
+    function applyFavicon(url) {
+        if ($faviconImg.attr('src') !== url) {
+            $faviconImg.attr('src', url);
         }
         $faviconContainer.addClass('is-visible');
         $wrapper.addClass('has-favicon');
-        return;
     }
-
-    $faviconContainer.removeClass('is-visible');
-    $wrapper.removeClass('has-favicon');
-    $faviconImg.attr('src', '');
-
-    const tempImg = new Image();
-
-    tempImg.onload = function () {
-        if (!$urlInput.val().trim() || isClearing) return;
-        
-        // Принимаем иконки от 16x16 (стандартный размер favicon) и выше.
-        if (this.naturalWidth >= 16 && this.naturalHeight >= 16) {
-            validatedDomains.add(serviceDomain);
-            $faviconImg.attr('src', faviconUrl);
-            $faviconContainer.addClass('is-visible');
-            $wrapper.addClass('has-favicon');
-        } else {
-            resetUI();
-        }
-    };
-
-    tempImg.onerror = function () {
-        if (!$urlInput.val().trim() || isClearing) return;
-        resetUI();
-    };
-
-    tempImg.src = faviconUrl;
 
     function resetUI() {
         $faviconImg.attr('src', '');
+        $faviconContainer.removeClass('is-visible');
+        $wrapper.removeClass('has-favicon');
         if ($urlInput.val().trim() && !isClearing) {
             $clearBtn.addClass('is-visible');
         }
     }
-}
+
+    function showFavicon(serviceDomain) {
+        if (!$urlInput.val().trim() || isClearing) return;
+
+        const cached = faviconCache.get(serviceDomain);
+        if (cached) {
+            if (cached.ok) {
+                applyFavicon(cached.url);
+            } else {
+                resetUI();
+            }
+            return;
+        }
+
+        // Скрываем контейнер, пока проверяем файл
+        $faviconContainer.removeClass('is-visible');
+        $wrapper.removeClass('has-favicon');
+
+        const url = getFaviconUrl(serviceDomain);
+        const tempImg = new Image();
+
+        tempImg.onload = function () {
+            if (!$urlInput.val().trim() || isClearing) return;
+            faviconCache.set(serviceDomain, { url, ok: true });
+            // Проверяем, что пользователь всё ещё на том же домене
+            const currentService = getBaseService((() => {
+                try {
+                    let v = $urlInput.val().trim().split('||')[0].trim();
+                    if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
+                    return new URL(v).hostname.replace(/^www\./i, '');
+                } catch (e) { return null; }
+            })());
+            if (currentService !== serviceDomain) return;
+            applyFavicon(url);
+        };
+
+        tempImg.onerror = function () {
+            if (!$urlInput.val().trim() || isClearing) return;
+            faviconCache.set(serviceDomain, { url: FALLBACK_ICON, ok: false });
+            resetUI();
+        };
+
+        tempImg.src = url;
+    }
 
     function hideFavicon() {
         $faviconImg.off('load error');
