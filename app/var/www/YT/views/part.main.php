@@ -2,6 +2,13 @@
 <?php
     $showLifetime = isset($config['showFileLifetime']) && $config['showFileLifetime'];
 ?>
+<?php
+$video_hidden_class = $audio_check ? ' is-hidden' : '';
+$audio_hidden_class = $audio_check ? '' : ' is-hidden';
+// Если $video_form_style/$audio_form_style содержат display, убери его:
+$video_form_style = preg_replace('/display\s*:\s*[^;]+;?/i', '', $video_form_style);
+$audio_form_style = preg_replace('/display\s*:\s*[^;]+;?/i', '', $audio_form_style);
+?>
 <script>
 var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
 </script>
@@ -9,14 +16,16 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
     <ul id="mainnav" class="nav nav-tabs ">
         <li class="active"><a id="home_link" href="#home" data-toggle="tab" aria-expanded="true">Домой</a></li>
         <li><a id="dl_link" href="#downloads" data-toggle="tab" aria-expanded="false">Загрузки</a></li>
-        <li><a id="vid_link" href="#videos" data-toggle="tab" aria-expanded="false">Видео<span class="tab-badge" id="video-badge"></span></a></li>
-        <li><a id="music_link" href="#music" data-toggle="tab" aria-expanded="false">Музыка<span class="tab-badge" id="music-badge"></span></a></li>
+        <li><a id="vid_link" href="#videos" data-toggle="tab" aria-expanded="false">Видео<span class="tab-badge"
+                    id="video-badge"></span></a></li>
+        <li><a id="music_link" href="#music" data-toggle="tab" aria-expanded="false">Музыка<span class="tab-badge"
+                    id="music-badge"></span></a></li>
     </ul>
     <div id="myTabContent" class="tab-content">
-        <div class="tab-pane fade active in" id="home">
-            <div class="wow pulse" id="snej" data-wow-offset="2" data-wow-iteration="1" style="pointer-events: none">
-                <input type="image" src="img/snej.webp" title="Снежик">
-            </div>
+            <div class="tab-pane fade active in" id="home">
+                <div id="snej" class="snej-animation" style="pointer-events: none">
+                    <input type="image" src="img/snej.webp" title="Снежик" fetchpriority="high">
+                </div>
             <div class="row">
                 <br />
                 <h1 style="text-align: center;"><?php echo($config['siteName']); ?></h1><br />
@@ -29,8 +38,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                     <div class="form-group">
                         <div class="col-md-12">
                             <div class="url-input-wrapper">
-                                <input class="form-control wow flipInX" id="url" data-wow-iteration="1"
-                                    data-wow-delay="0.3s" name="urls"
+                                <input class="form-control url-input-animation" id="url" name="urls"
                                     value="<?php echo htmlspecialchars($urlvalue ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                     placeholder="Ссылка на видео..." type="text">
                                 <div id="url-clear" class="url-clear-btn" title="Очистить поле">
@@ -71,8 +79,8 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
 
                                     <!-- ПРАВАЯ ЧАСТЬ -->
                                     <div class="controls-right">
-                                        <div class="quality-switch-wrapper" id="params-video"
-                                            <?php echo($video_form_style); ?>>
+                                        <div class="quality-switch-wrapper<?php echo $video_hidden_class; ?>"
+                                            id="params-video" <?php echo($video_form_style); ?>>
                                             <span class="side-label label-left">Топ</span>
                                             <label class="minimal-toggle-inner">
                                                 <input type="checkbox" id="ui_quality_toggle"
@@ -87,8 +95,8 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                             </span>
                                         </div>
 
-                                        <div class="audio-switches-wrapper" id="params-audio" style="display: none;"
-                                            <?php echo($audio_form_style); ?>>
+                                        <div class="audio-switches-wrapper<?php echo $audio_hidden_class; ?>"
+                                            id="params-audio" <?php echo($audio_form_style); ?>>
                                             <label class="minimal-toggle-inner">
                                                 <input type="checkbox" class="toggle-input-sub" data-value="mp3-high"
                                                     checked onchange="syncSubToggles(this)">

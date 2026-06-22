@@ -1,9 +1,13 @@
 <?php if (!isset($GLOBALS['config'])) { die("No direct script access"); } ?>
 <?php
-$yt_dlp_version = @file_get_contents('yt_dlp_version');
-$yt_dlp_version = ($yt_dlp_version !== false) ? trim($yt_dlp_version) : 'yt-dlp: Ошибка';
+$yt_dlp_version = 'yt-dlp: Ошибка';
+if (file_exists('yt_dlp_version')) {
+    $content = @file_get_contents('yt_dlp_version');
+    if ($content !== false) {
+        $yt_dlp_version = 'yt-dlp: ' . htmlspecialchars(trim($content), ENT_QUOTES, 'UTF-8');
+    }
+}
 ?>
-
 <footer class="footer">
   <div class="footer-wrapper">
     <div class="panel panel-info">
@@ -16,18 +20,16 @@ $yt_dlp_version = ($yt_dlp_version !== false) ? trim($yt_dlp_version) : 'yt-dlp:
             <td><b>О версии:</b></td>
             <td>
               C обходом замедления YouTube!<br>
-              <div id="yt-dlp-version" class="text-muted small">yt-dlp:
-                <?php echo htmlspecialchars($yt_dlp_version, ENT_QUOTES, 'UTF-8'); ?>
-              </div>
+              <div id="yt-dlp-version" class="text-muted small"><?= $yt_dlp_version ?></div>
             </td>
-                    </tr>
-                    <!--<tr>
+          </tr>
+          <!--<tr>
             <td><b>Свободно места на сервере:</b></td>
-            <td><?php echo htmlspecialchars($file->free_space(), ENT_QUOTES, 'UTF-8'); ?>B</td>
+            <td><?= htmlspecialchars($file->free_space(), ENT_QUOTES, 'UTF-8') ?>B</td>
           </tr>
           <tr>
             <td><b>Папка Загрузки:</b></td>
-            <td><?php echo htmlspecialchars($file->get_downloads_folder(), ENT_QUOTES, 'UTF-8'); ?></td>
+            <td><?= htmlspecialchars($file->get_downloads_folder(), ENT_QUOTES, 'UTF-8') ?></td>
           </tr>-->
           <tr>
             <td><b>Как это работает?</b></td>
@@ -60,7 +62,7 @@ $yt_dlp_version = ($yt_dlp_version !== false) ? trim($yt_dlp_version) : 'yt-dlp:
             <td><b>Полезные ссылки</b></td>
             <td>
               <a target="_blank" rel="noopener noreferrer" href="https://ezgif.com/video-to-gif">Видео в гиф</a> &nbsp;&nbsp;
-              <a target="_blank" href="https://github.com/mikedigriz/YT">GitHub</a>
+              <a target="_blank" rel="noopener noreferrer" href="https://github.com/mikedigriz/YT">GitHub</a>
             </td>
           </tr>
         </table>
@@ -68,6 +70,5 @@ $yt_dlp_version = ($yt_dlp_version !== false) ? trim($yt_dlp_version) : 'yt-dlp:
     </div>
   </div>
 </footer>
-
 </body>
 </html>

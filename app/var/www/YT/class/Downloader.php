@@ -1,4 +1,5 @@
 <?php
+
 class Downloader
 {
     private $dl_list = [];
@@ -6,7 +7,7 @@ class Downloader
     private $download_path = "";
     private $config = [];
 
-    /**
+    /*
      * Список российских доменов для прямого доступа (без прокси).
      * Основан на экстракторах yt-dlp. Прямое подключение предпочтительнее,
      * так как иностранные прокси часто блокируются этими сервисами или работают нестабильно.
@@ -20,14 +21,12 @@ class Downloader
         'coub.com',
         'pikabu.ru',
         'mail.ru', 'my.mail.ru', 'video.mail.ru',
-
         // Экосистема Яндекса
         'yandex.ru', 'yandex.com',
         'yandexvideo.ru', 'yandexvideo.com',
         'music.yandex.ru', 'music.yandex.com',
         'disk.yandex.ru', 'disk.yandex.com',
         'dzen.ru', 'dzen.com', 'zen.yandex.ru', 'zen.yandex.com',
-
         // Федеральные телеканалы и медиа (официальные сайты)
         '1tv.ru',
         'ntv.ru',
@@ -40,7 +39,6 @@ class Downloader
         'mir24.tv',
         '5-tv.ru',
         'smotrim.ru', // ВГТРК
-
         // Стриминговые сервисы (экстракторы есть, но часто требуют авторизации)
         'kinopoisk.ru',
         'ivi.ru', 'ivi.tv',
@@ -50,20 +48,16 @@ class Downloader
         'twitch.tv', 'clips.twitch.tv',
         'kick.com', 'goodgame.ru',
         'vkplay.ru',
-
         // Музыкальные и аудио сервисы
         'zvuk.com',
         'zaycev.fm',
         'muzofond.fm',
         'pleer.net',
-
         // Социальные сети и короткие видео
         'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com',
         'reddit.com', 'redd.it', 'v.redd.it',
-
         // Аудио и музыкальные платформы
         'bandcamp.com',
-
         // Архивы и нишевые платформы
         'archive.org', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'
     ];
@@ -72,7 +66,7 @@ class Downloader
     {
         // Проверка инициализации глобальной конфигурации
         if (!isset($GLOBALS['config'])) {
-            $this->errors[] = "Конфигурация не загружена.";
+            $this->errors[] = "Конфигурация не загружена";
             $_SESSION['errors'] = $this->errors;
             return;
         }
@@ -92,7 +86,7 @@ class Downloader
                 foreach ($urls as $url) {
                     $url = trim($url);
                     if (!empty($url) && !$this->is_valid_url($url)) {
-                        $this->errors[] = "\"" . $url . "\" ты в порядке? Поправь ссыль, ну че ты!";
+                        $this->errors[] = "«" . $url . "» ты в порядке? Поправь ссыль, ну че ты!";
                     }
                 }
             }
@@ -101,6 +95,7 @@ class Downloader
                 $_SESSION['errors'] = $this->errors;
                 return;
             }
+
             $this->do_download();
         }
     }
@@ -110,21 +105,23 @@ class Downloader
         if (!function_exists('shell_exec') || !isset($GLOBALS['config']['logPath'])) {
             return 0;
         }
-        
+
         // Считаем только процессы, у которых есть валидные pid-файлы
         $count = 0;
         $logPath = $GLOBALS['config']['logPath'];
-        
+
         foreach (glob($logPath . '/pid_*') as $pidFile) {
             $content = @file_get_contents($pidFile);
             if ($content === false) continue;
-            
+
             $jpid = trim(explode("\n", $content)[0] ?? '');
-            // Проверяем, что процесс реально существует — без удаления файла!
+
+            // Проверяем, что процесс реально существует - без удаления файла!
             if (!empty($jpid) && file_exists("/proc/$jpid")) {
                 $count++;
             }
         }
+
         return $count;
     }
 
@@ -142,8 +139,8 @@ class Downloader
         $bjs = [];
         $logPath = $GLOBALS['config']['logPath'];
         $youtubedlExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
-
         $dir = new DirectoryIterator($logPath);
+
         foreach ($dir as $fileinfo) {
             if (!$fileinfo->isDot() && $fileinfo->isFile() && strpos($fileinfo->getFilename(), "pid_") === 0) {
                 $pidFile = $fileinfo->getPathname();
@@ -159,7 +156,7 @@ class Downloader
                 if ($content === false) {
                     continue;
                 }
-                
+
                 $jpid_parts = explode("\n", trim($content));
                 $jpid = $jpid_parts[0] ?? '';
                 $ytcmd = $jpid_parts[1] ?? '';
@@ -200,23 +197,29 @@ class Downloader
                     if (strpos($line, '[download] Загрузка') !== false) {
                         $listpos = "(" . substr($line, 29) . ")";
                     }
+
                     if (strpos($line, '[download] Загружаемый плейлист:') !== false) {
                         $playlist = substr($line, 33) . "<br />";
                     }
+
                     if (trim($line) != "") {
                         $lastline = $line;
                     }
+
                     $verylastline = $line;
+
                     if (!$siteset) {
                         $siteset = true;
-                        $site = explode(" ", $line)[0];
+                        $site = explode("]", $line)[0];
                         $site = ucfirst(str_replace(["[", "]"], "", $site));
                     }
+
                     if (strpos($line, 'Destination') !== false) {
                         $pos = strrpos($line, '/');
                         $filename = $pos === false ? $line : substr($line, $pos + 1);
                     }
                 }
+
                 fclose($handle);
 
                 if ($filename == "Ща..") {
@@ -224,9 +227,10 @@ class Downloader
                 } else {
                     $pos = strrpos($lastline, '[download]');
                     $lastline = $pos === false ? "" : trim(substr($lastline, $pos + 11));
-                    $filename = urldecode(str_replace("%0A", "", urlencode($filename . " " . $listpos)));
+                    $filename = urldecode(str_replace("%0A", "", urlencode($filename . "" . $listpos)));
+
                     if ($isaudio && strpos($verylastline, '[ffmpeg]') !== false) {
-                        $lastline = "Конвертирую в аудио, это займет время.";
+                        $lastline = "Конвертирую в аудио, это займет время";
                     }
                 }
 
@@ -244,6 +248,7 @@ class Downloader
                 );
             }
         }
+
         return $bjs;
     }
 
@@ -251,11 +256,12 @@ class Downloader
     private static function finalize_job_log($outfile, $completefile, $ytcmd, $urltext)
     {
         if (!file_exists($outfile)) return;
-        
+
         $content = file_get_contents($outfile);
         if (!empty($content) && substr($content, -1) !== "\n") {
             file_put_contents($outfile, "\n", FILE_APPEND);
         }
+
         rename($outfile, $completefile);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
         file_put_contents($completefile, "[yturl] " . $urltext . "\n", FILE_APPEND);
@@ -264,9 +270,10 @@ class Downloader
     public static function get_queued_jobs()
     {
         if (!isset($GLOBALS['config']['logPath'])) return [];
-        
+
         $qjs = [];
         $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
+
         if (!file_exists($queue_file)) {
             return $qjs;
         }
@@ -276,17 +283,19 @@ class Downloader
 
         // Блокировка чтения
         flock($handle, LOCK_SH);
-        
+
         $corrupt_queue = false;
         while (($line = fgets($handle)) !== false) {
             if (trim($line) === "") continue;
+
             if (substr($line, 0, 7) !== "queueid") {
                 $corrupt_queue = true;
                 break;
             }
+
             $parts = explode("=", $line, 2);
             if (count($parts) < 2) continue;
-            
+
             $pid = $parts[0];
             $urlData = $parts[1];
             $urlParts = explode(">", $urlData);
@@ -301,6 +310,7 @@ class Downloader
                 'audio_format' => $urlParts[3] ?? ''
             );
         }
+
         flock($handle, LOCK_UN);
         fclose($handle);
 
@@ -308,6 +318,7 @@ class Downloader
             @unlink($queue_file);
             return [];
         }
+
         return $qjs;
     }
 
@@ -341,34 +352,41 @@ class Downloader
                         $tmp = substr($line, 29);
                         $listpos = trim(substr($tmp, strpos($tmp, " of") + 3));
                     }
+
                     if (strpos($line, '[download] Загружаемый плейлист:') !== false) {
                         $playlist = substr($line, 33);
                     }
+
                     $verylastline = $line;
+
                     if (!$siteset) {
                         $siteset = true;
-                        $site = ucfirst(str_replace(["[", "]"], "", explode(" ", $line)[0]));
+                        $site = ucfirst(str_replace(["[", "]"], "", explode("]", $line)[0]));
                     }
+
                     if (strpos($line, '[yturl]') !== false) {
                         $urltext = trim(substr($line, 8));
                     }
+
                     if (strpos($line, 'Destination') !== false) {
                         $pos = strrpos($line, '/');
                         $filename = $pos === false ? $line : substr($line, $pos + 1);
                     }
+
                     if (strpos($line, 'has already been downloaded') !== false) {
-                        $posEnd   = strpos($line, 'Уже Загружено');
+                        $posEnd = strpos($line, 'Уже Загружено');
                         $posStart = strrpos($line, '/');
                         $filename = $posStart === false ? $line : substr($line, $posStart + 1, $posEnd - 28);
                         $jobstatus = "Отменено (Уже Загружено)";
                     }
                 }
+
                 fclose($handle);
 
                 if (strpos($fileinfo->getFilename(), "_cancelled") !== false) {
                     $jobstatus = "Отменено";
                 }
-                
+
                 if ($playlist != "") {
                     $filename = $playlist . " (" . $listpos . " files)";
                 }
@@ -376,10 +394,17 @@ class Downloader
                 if ($filename == "Дундук :)") {
                     $type = "unknown";
                     $log_content = @file_get_contents($filepath);
-                    if ($log_content && (preg_match('/does not pass filter.*skipping/i', $log_content) || strpos($log_content, 'webpage_url!~=') !== false)) {
-                        $jobstatus = "Порнографию я вам не дам";
+
+                    if ($log_content) {
+                        // Приоритетная проверка: порно-фильтр
+                        if (preg_match('/does not pass filter.*skipping/i', $log_content)
+                            || strpos($log_content, 'webpage_url!~=') !== false) {
+                            $jobstatus = "Порнографию я вам не дам 🔞";
+                        } else {
+                            $jobstatus = self::parseYtDlpError($log_content);
+                        }
                     } else {
-                        $jobstatus = "Ошибка, не та ссылка, либо отменено !!!";
+                        $jobstatus = "Лог пуст 🤷\nЗагрузка даже не стартовала";
                     }
                 } else {
                     $type = $isaudio ? "audio" : "video";
@@ -388,29 +413,187 @@ class Downloader
                 $bjs[] = array(
                     'file' => $filename,
                     'site' => $site,
-                    'status' => str_replace("\n", "", $jobstatus),
+                    'status' => $jobstatus,
                     'type' => $type,
                     'pid' => $fileinfo->getFilename(),
                     'url' => $urltext
                 );
             }
         }
+
         return $bjs;
+    }
+
+    /**
+     * Вырезает из лога всё, что может раскрыть прокси, IP, логины и URL.
+     * Применяется ДО любого анализа и ДО вывода сообщения пользователю.
+     */
+    private static function sanitizeLog(string $log): string
+    {
+        // 1. Удаляем любые URL (http, https, socks, socks5, ftp) вместе с user:pass@host:port
+        $log = preg_replace('#\b[a-z][a-z0-9+\-.]*://[^\s\'"<>]+#i', '[URL]', $log);
+
+        // 2. Удаляем «голые» user:pass@host конструкции (если URL уже частично съеден)
+        $log = preg_replace('#[a-zA-Z0-9._%+\-]+:[^@\s]+@[a-zA-Z0-9.\-:]+#', '[PROXY]', $log);
+
+        // 3. Удаляем IPv4-адреса (включая с портом)
+        $log = preg_replace('#\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?\b#', '[IP]', $log);
+
+        // 4. Удаляем IPv6-адреса в квадратных скобках с портом
+        $log = preg_replace('#\[[0-9a-fA-F:]+\](:\d+)?#', '[IP]', $log);
+
+        // 5. Удаляем «domain:port» паттерны, которые могли остаться
+        $log = preg_replace('#\b[a-zA-Z0-9\-]+\.[a-zA-Z]{2,}:\d{2,5}\b#', '[HOST]', $log);
+
+        // 6. Удаляем возможные токены/ключи длиной от 32 символов
+        $log = preg_replace('#\b[a-zA-Z0-9_\-]{32,}\b#', '[TOKEN]', $log);
+
+        return $log;
+    }
+
+    /**
+     * Парсит лог yt-dlp и возвращает человекочитаемое сообщение об ошибке.
+     * Перед анализом лог санитизируется  - прокси/IP/токены не попадут в вывод.
+     */
+    private static function parseYtDlpError(string $log): string
+    {
+        // СНАЧАЛА чистим, ПОТОМ матчим
+        $log = self::sanitizeLog($log);
+
+        // === Сетевые ошибки ===
+        if (preg_match('/Name or service not known|Could not resolve host|No address associated with hostname/i', $log)) {
+            return "DNS не резолвил хост 🌐\nПроверь ссылку или интернет";
+        }
+        if (preg_match('/Connection refused|ECONNREFUSED/i', $log)) {
+            return "Сервер сказал «нет» 🚪\nConnection refused";
+        }
+        if (preg_match('/timed out|ETIMEDOUT|Connection timed out/i', $log)) {
+            return "Тайм-аут ⏳\nСервер слишком долго молчит";
+        }
+        if (preg_match('/Network is unreachable|ENETUNREACH/i', $log)) {
+            return "Сеть недоступна 🔌";
+        }
+        if (preg_match('/No route to host/i', $log)) {
+            return "Маршрута до хоста нет 🗺️\nПроверь прокси/сеть";
+        }
+        if (preg_match('/HTTP Error 429|Too Many Requests/i', $log)) {
+            return "Сайт оверлоуд 🚦\nПодожди";
+        }
+        if (preg_match('/HTTP Error 403|403 Forbidden/i', $log)) {
+            return "403 Forbidden 🚫\nНе пущает - нужен прокси/куки";
+        }
+        if (preg_match('/HTTP Error 404|404 Not Found/i', $log)) {
+            return "404 Not Found 👻\nСтраницы больше нет";
+        }
+        if (preg_match('/HTTP Error 503|503 Service Unavailable/i', $log)) {
+            return "503 💤\nСайт прилёг";
+        }
+        if (preg_match('/HTTP Error 500|500 Internal Server Error/i', $log)) {
+            return "500 💥\nУ сайта внутренние проблемы";
+        }
+        if (preg_match('/SSL.*handshake|certificate verify failed|SSL_ERROR/i', $log)) {
+            return "Ошибка SSL/HTTPS 🔒\nСертификат не прошёл проверку";
+        }
+        if (preg_match('/Unable to download webpage/i', $log)) {
+            return "Не удалось открыть страницу 🕸️";
+        }
+        if (preg_match('/Unable to connect to|Connection aborted/i', $log)) {
+            return "Соединение оборвалось 🔌\nПопробуй ещё раз";
+        }
+
+        // === Доступность контента ===
+        if (preg_match('/Video unavailable|This video is not available|video is unavailable/i', $log)) {
+            return "Видео недоступно 🙈";
+        }
+        if (preg_match('/Private video|this video is private/i', $log)) {
+            return "Приватное видео 🔐\nТолько для своих";
+        }
+        if (preg_match('/has been removed|removed by the uploader/i', $log)) {
+            return "Видео удалено автором 🗑️";
+        }
+        if (preg_match('/age-restricted|Sign in to confirm your age|confirm your age/i', $log)) {
+            return "18+ контент 🔞\nНужны куки авторизованного аккаунта \nКуки я вам не дам";
+        }
+        if (preg_match('/only available for registered users|login required|Sign in to/i', $log)) {
+            return "Нужна авторизация 👤\nА её нет, ха-ха-ха";
+        }
+        if (preg_match('/members-only|Members only content/i', $log)) {
+            return "Members-only 💎\nНужна платная подписка, увыыы";
+        }
+        if (preg_match('/Music Premium|YouTube Music Premium/i', $log)) {
+            return "YTMusic Premium 🎵\nТребуется лухари подписка";
+        }
+        if (preg_match('/requires payment|paid content|purchase this/i', $log)) {
+            return "Платный контент 💰\nСкачивание невозможно \nГде деньги?";
+        }
+        if (preg_match('/live event will begin|Premieres in|is live and is being watched/i', $log)) {
+            return "Ну начинается - пойду поссу, пойду посру 📡";
+        }
+        if (preg_match('/region-locked|not available in your country|geo-blocked|country-specific/i', $log)) {
+            return "Гео-блок 🌍\nВидео недоступно в регионе Качалки";
+        }
+        if (preg_match('/This channel is not available|channel does not exist/i', $log)) {
+            return "Канал не существует или удалён 📭";
+        }
+
+        // === Форматы и извлечение ===
+        if (preg_match('/Unsupported URL|no suitable extractor|no extractor/i', $log)) {
+            return "Сайт не поддерживается 🤷\nПроверь ссылку";
+        }
+        if (preg_match('/No video formats|no formats available|no playable media/i', $log)) {
+            return "Форматов для скачивания нет 📦\nВидео без дорожек?";
+        }
+        if (preg_match('/unable to extract video url|Unable to extract.*url|Could not extract URL/i', $log)) {
+            return "Не удалось извлечь ссылку на видео 🔍\nСайт поменялся?";
+        }
+        if (preg_match('/Incomplete YouTube ID|Invalid YouTube URL|not a valid URL|Invalid URL/i', $log)) {
+            return "Ссылка выглядит кривой ✏️\nПроверь URL";
+        }
+        if (preg_match('/This video is encrypted|encrypted media/i', $log)) {
+            return "Видео зашифровано 🔑\nСкачивание невозможно";
+        }
+        if (preg_match('/DRM-protected|has DRM/i', $log)) {
+            return "DRM-защита 🛡️\nОбход невозможен";
+        }
+
+        // === Постобработка ===
+        if (preg_match('/ffmpeg.*not found|ffmpeg.*is not recognized|unable to open ffmpeg|No ffmpeg/i', $log)) {
+            return "FFmpeg не найден 🎬\nУстанови его на сервер";
+        }
+        if (preg_match('/Postprocessing.*failed|conversion failed|merge failed/i', $log)) {
+            return "Ошибка постобработки (ffmpeg) ⚙️\nФайл мог повредиться";
+        }
+
+        // === Системные ошибки ===
+        if (preg_match('/Permission denied|EACCES/i', $log)) {
+            return "Нет прав на запись 🔒\nПроверь права на папку";
+        }
+        if (preg_match('/No space left on device|ENOSPC/i', $log)) {
+            return "Диск переполнен 💾\nАхтунг!";
+        }
+
+        // Фоллбэк: вытащим сам текст ошибки yt-dlp, если ничего не подошло.
+        // Лог уже санитизирован  - прокси/IP/токены вырезаны.
+        if (preg_match('/ERROR:\s*(.{10,120})/i', $log, $m)) {
+            return "⚠️ " . trim($m[1]);
+        }
+
+        return "🤔 ХЗ, что случилось \nСмотри лог";
     }
 
     public static function kill_one_of_them($fpid)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
-        
+
         // Защита от выхода за пределы директории
         $fpid = basename($fpid);
         $file = $GLOBALS['config']['logPath'] . '/' . $fpid;
-        
+
         if (!file_exists($file)) return;
 
         $outfile = $GLOBALS['config']['logPath'] . "/" . str_replace("pid_", "job_", $fpid);
         $completed = $GLOBALS['config']['logPath'] . "/" . str_replace("pid_", "ytdl_", $fpid) . "_cancelled";
-        
+
         $content = @file_get_contents($file);
         if ($content === false) return;
 
@@ -425,7 +608,7 @@ class Downloader
             if ($pidcmd !== false && strpos($pidcmd, $GLOBALS['config']['youtubedlExe']) !== false) {
                 shell_exec("kill " . escapeshellarg($jpid));
                 // Даем время на очистку дочерних процессов
-                usleep(500000); 
+                usleep(500000);
             }
         }
 
@@ -436,13 +619,14 @@ class Downloader
     public static function kill_them_all()
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
+
         $logPath = $GLOBALS['config']['logPath'];
 
         foreach (glob($logPath . '/pid_*') as $file) {
             $fpid = basename($file);
             $jobfile = str_replace("pid_", "job_", $file);
             $completed = str_replace("pid_", "ytdl_", $file) . "_cancelled";
-            
+
             $content = @file_get_contents($file);
             if ($content !== false) {
                 $jid_parts = explode("\n", trim($content));
@@ -459,7 +643,7 @@ class Downloader
                 shell_exec("kill " . escapeshellarg($p));
             }
         }
-        
+
         $folder = $GLOBALS['config']['outputFolder'] ?? '';
         if (!empty($folder) && !$GLOBALS['config']['keepPartialFiles']) {
             foreach (glob($folder . '/*.part') as $file) {
@@ -471,10 +655,11 @@ class Downloader
     public static function restart_download($fpid)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
-        
+
         $logPath = $GLOBALS['config']['logPath'];
+
         // Санитизация имени файла
-        $fpid = basename($fpid); 
+        $fpid = basename($fpid);
         $file = $logPath . '/' . $fpid;
 
         if (!file_exists($file)) {
@@ -518,9 +703,9 @@ class Downloader
         // БЕЗОПАСНОСТЬ: Проверка, что команда начинается с ожидаемого бинарника
         $expectedExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
         if (strpos($ytcmd, $expectedExe) !== 0) {
-             $_SESSION['errors'] = "Подозрительная команда в логе. Рестарт отменен.";
-             error_log("[YTDL] Security: Command mismatch on restart.");
-             return;
+            $_SESSION['errors'] = "Подозрительная команда в логе. Рестарт отменен";
+            error_log("[YTDL] Security: Command mismatch on restart.");
+            return;
         }
 
         $suffix = (strpos($fpid, "_a") !== false || strpos($file, "_a") !== false) ? "_a" : "";
@@ -531,7 +716,7 @@ class Downloader
 
         $fnp = str_replace("job_", "pid_", $fno);
 
-        $ytcmd = preg_replace('/\s{2,}\'/', '\'', $ytcmd);
+        $ytcmd = preg_replace('/\s{2,}/', ' ', $ytcmd);
         $ytcmd = rtrim($ytcmd);
 
         // Используем exec вместо passthru, чтобы не выводить мусор в браузер
@@ -553,6 +738,7 @@ class Downloader
     public static function clear_one_finished($fpid)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
+
         $fpid = basename($fpid);
         @unlink($GLOBALS['config']['logPath'] . '/' . $fpid);
     }
@@ -560,6 +746,7 @@ class Downloader
     public static function clear_finished()
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
+
         foreach (glob($GLOBALS['config']['logPath'] . '/ytdl_*') as $file) {
             @unlink($file);
         }
@@ -568,6 +755,7 @@ class Downloader
     private function check_requirements()
     {
         $this->check_output_folder();
+
         if (!empty($this->errors)) {
             $_SESSION['errors'] = $this->errors;
             return false;
@@ -599,6 +787,7 @@ class Downloader
         do {
             $uid = $prefix . uniqid() . $suffix;
         } while (file_exists($path . $uid));
+
         return $uid;
     }
 
@@ -608,15 +797,16 @@ class Downloader
         if (!preg_match('/^https?:\/\//i', $urlToParse)) {
             $urlToParse = 'https://' . $urlToParse;
         }
-        
+
         $hostname = strtolower(parse_url($urlToParse, PHP_URL_HOST) ?? '');
         $hostname = preg_replace('/^www\./i', '', $hostname);
-        
+
         foreach (self::DIRECT_ACCESS_DOMAINS as $domain) {
             if ($hostname === $domain || str_ends_with($hostname, '.' . $domain)) {
                 return true;
             }
         }
+
         return false;
     }
 
@@ -630,6 +820,7 @@ class Downloader
             '--audio-format flac',
             ''
         ];
+
         return in_array($format, $allowed) ? $format : '';
     }
 
@@ -649,23 +840,24 @@ class Downloader
                     $this->addOneDownload($onedownload);
                 } else {
                     if ($this->config["disableQueue"]) {
-                        $this->errors[] = "Достигнут лимит одновременных загрузок. " . $onedownload['url'] . " не был загружен.";
+                        $this->errors[] = "Достигнут лимит одновременных загрузок. " . $onedownload['url'] . " не был загружен";
                     } else {
                         $this->addToQueue($onedownload);
                     }
                 }
             } else {
-                $this->errors[] = "Значение max_dl value в config.php указано неверно.";
+                $this->errors[] = "Значение max_dl value в config.php указано неверно";
             }
         }
     }
 
     public function addOneDownload($onedownload)
     {
-        $urls = array_filter(array_map('trim', explode("||", $onedownload['url'])));
+        $urls = array_filter(array_map('trim', explode("\|\|", $onedownload['url'])));
+
         $proxyUrls = [];
         $directUrls = [];
-        
+
         foreach ($urls as $url) {
             if ($this->isDirectAccessDomain($url)) {
                 $directUrls[] = $url;
@@ -673,10 +865,11 @@ class Downloader
                 $proxyUrls[] = $url;
             }
         }
-        
+
         if (!empty($proxyUrls)) {
             $this->executeDownload($onedownload, $proxyUrls, true);
         }
+
         if (!empty($directUrls)) {
             $this->executeDownload($onedownload, $directUrls, false);
         }
@@ -688,16 +881,16 @@ class Downloader
         $cmd = $this->config['youtubedlExe'];
         $cmd .= " -o " . escapeshellarg($this->download_path . "/%(title)s_%(id)s.%(ext)s");
         $cmd .= " --restrict-filenames";
-        
+
         $sanitizedFormat = $this->sanitizeDlFormat($onedownload['dl_format']);
         if (!empty($sanitizedFormat)) {
             $cmd .= " " . $sanitizedFormat;
         }
-        
+
         if ($useProxy && !empty($this->config['socks5'])) {
             $cmd .= " --proxy " . escapeshellarg($this->config['socks5']);
         }
-        
+
         if ($onedownload['audio_only']) {
             $cmd .= " -x";
             $sanitizedAudio = $this->sanitizeAudioFormat($onedownload['audio_format']);
@@ -712,20 +905,21 @@ class Downloader
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
         $fnp = str_replace("job_", "pid_", $fno);
+
         $urltext = "";
-        
         foreach ($urls as $url) {
             $cmd .= " " . escapeshellarg($url);
             $urltext .= $url . ",";
         }
         $urltext = trim($urltext, ",");
-        
+
         $cmd .= " --ignore-errors";
+
         $logcmd = $cmd;
-        $cmd .= " > " . escapeshellarg($this->config['logPath'] . "/" . $fno) . " & echo $! > " . escapeshellarg($this->config['logPath'] . "/" . $fnp);
-        
+        $cmd .= " > " . escapeshellarg($this->config['logPath'] . "/" . $fno) . " 2>&1 & echo $! > " . escapeshellarg($this->config['logPath'] . "/" . $fnp);
+
         exec($cmd);
-        
+
         file_put_contents($this->config['logPath'] . "/" . $fnp, $logcmd . "\n", FILE_APPEND);
         file_put_contents($this->config['logPath'] . "/" . $fnp, $urltext . "\n", FILE_APPEND);
     }
@@ -738,7 +932,7 @@ class Downloader
         // Блокировка файла очереди для атомарности
         $handle = fopen($queue_file, "c+");
         if (!$handle) return;
-        
+
         if (!flock($handle, LOCK_EX)) {
             fclose($handle);
             return;
@@ -751,21 +945,22 @@ class Downloader
 
         while (($line = fgets($handle)) !== false) {
             if (trim($line) === "") continue;
+
             if (substr($line, 0, 7) !== "queueid") {
                 $corrupt_queue = true;
                 break;
             }
-            
+
             $parts = explode("=", $line, 2);
             if (count($parts) < 2) continue;
-            
+
             $urlData = $parts[1];
             $urlParts = explode(">", $urlData);
-            $rawUrl = trim($urlParts[0] ?? '');
 
+            $rawUrl = trim($urlParts[0] ?? '');
             if (!$this->is_valid_url($rawUrl)) {
-                $this->errors[] = $urlData . " не верный URL, удаляю из списка очереди.";
-                continue; 
+                $this->errors[] = $urlData . " не верный URL, удаляю из списка очереди";
+                continue;
             }
 
             if ($currently_running < $this->config["max_dl"]) {
@@ -783,16 +978,17 @@ class Downloader
 
         ftruncate($handle, 0);
         rewind($handle);
+
         foreach ($remaining_urls as $oneline) {
             fwrite($handle, $oneline);
         }
-        
+
         flock($handle, LOCK_UN);
         fclose($handle);
 
         if ($corrupt_queue) {
             @unlink($queue_file);
-            $this->errors[] = "Файл повредился либо был удален.";
+            $this->errors[] = "Файл повредился либо был удален";
         }
 
         // Запуск новых загрузок из очереди
@@ -800,7 +996,7 @@ class Downloader
             $this->dl_list = $newDownloads;
             $this->do_download();
         }
-        
+
         if (!empty($this->errors)) {
             $_SESSION['errors'] = $this->errors;
         }
@@ -810,7 +1006,7 @@ class Downloader
     {
         $queue_file = $this->config['logPath'] . "/dl_queue";
         $fcontent = "queueid" . uniqid() . "=" . $onedownload['url'] . ">" . $onedownload['dl_format'] . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . "\n";
-        
+
         // LOCK_EX важен здесь
         file_put_contents($queue_file, $fcontent, FILE_APPEND | LOCK_EX);
     }
@@ -818,6 +1014,7 @@ class Downloader
     public static function remove_queued_job($qid)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
+
         $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
         if (!file_exists($queue_file)) return;
 
@@ -834,11 +1031,14 @@ class Downloader
 
         while (($line = fgets($handle)) !== false) {
             if (trim($line) === "") continue;
+
             if (substr($line, 0, 7) !== "queueid") {
                 $corrupt_queue = true;
                 break;
             }
+
             $pid = substr($line, 0, strpos($line, "="));
+
             if ($pid !== $qid) {
                 $remaining_urls[] = $line;
             }
@@ -846,6 +1046,7 @@ class Downloader
 
         ftruncate($handle, 0);
         rewind($handle);
+
         foreach ($remaining_urls as $oneline) {
             fwrite($handle, $oneline);
         }
@@ -855,9 +1056,10 @@ class Downloader
 
         if ($corrupt_queue) {
             @unlink($queue_file);
-            $_SESSION['errors'] = "Файл очереди повредился либо был удален..";
+            $_SESSION['errors'] = "Файл очереди повредился либо был удален.";
             return;
         }
+
         if (count($remaining_urls) === 0) {
             @unlink($queue_file);
         }
@@ -866,10 +1068,12 @@ class Downloader
     public static function remove_all_queued_jobs()
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
+
         $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
         if (file_exists($queue_file)) {
             @unlink($queue_file);
         }
     }
 }
+
 ?>

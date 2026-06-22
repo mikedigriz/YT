@@ -3,10 +3,12 @@ const CONFIG = {
 };
 
 const $ui = {};
+const nativeUI = {};
 let previousFinishedPids = null;
 
 let audioSuccess = null;
 let audioError = null;
+let soundsLoading = null;
 
 // === CSRF Protection ===
 function getCsrfToken() {
@@ -53,6 +55,7 @@ function confirmAction(action, value, extraFields = {}) {
 
     document.body.appendChild(form);
     form.submit();
+    form.remove();
 }
 
 function updateFileBadges(data) {
@@ -78,30 +81,37 @@ function updateFileBadges(data) {
 
 async function preloadNotificationSounds() {
     if (audioSuccess && audioError) return;
+    if (soundsLoading) return soundsLoading;
     
-    try {
-        const [successResp, errorResp] = await Promise.all([
-            fetch('finish_job.mp3'),
-            fetch('error_job.mp3')
-        ]);
-        
-        const [successBlob, errorBlob] = await Promise.all([
-            successResp.blob(),
-            errorResp.blob()
-        ]);
-        
-        audioSuccess = new Audio(URL.createObjectURL(successBlob));
-        audioSuccess.volume = 0.5;
-        
-        audioError = new Audio(URL.createObjectURL(errorBlob));
-        audioError.volume = 0.5;
-    } catch (error) {
-        console.warn("Не удалось предзагрузить звуки через Blob, используется fallback:", error);
-        audioSuccess = new Audio('finish_job.mp3');
-        audioSuccess.volume = 0.5;
-        audioError = new Audio('error_job.mp3');
-        audioError.volume = 0.5;
-    }
+    soundsLoading = (async () => {
+        try {
+            const [successResp, errorResp] = await Promise.all([
+                fetch('finish_job.mp3'),
+                fetch('error_job.mp3')
+            ]);
+            
+            const [successBlob, errorBlob] = await Promise.all([
+                successResp.blob(),
+                errorResp.blob()
+            ]);
+            
+            audioSuccess = new Audio(URL.createObjectURL(successBlob));
+            audioSuccess.volume = 0.5;
+            
+            audioError = new Audio(URL.createObjectURL(errorBlob));
+            audioError.volume = 0.5;
+        } catch (error) {
+            console.warn("Не удалось предзагрузить звуки через Blob, используется fallback:", error);
+            audioSuccess = new Audio('finish_job.mp3');
+            audioSuccess.volume = 0.5;
+            audioError = new Audio('error_job.mp3');
+            audioError.volume = 0.5;
+        } finally {
+            soundsLoading = null;
+        }
+    })();
+    
+    return soundsLoading;
 }
 
 function unloadNotificationSounds() {
@@ -150,7 +160,7 @@ let soundToggleBtn = null;
 
 function updateButtonVisibility() {
     if (!soundToggleBtn) return;
-    soundToggleBtn.style.display = isOnHomePage() ? 'block' : 'none';
+    soundToggleBtn.classList.toggle('is-visible', isOnHomePage());
 }
 
 function initSoundToggle() {
@@ -164,40 +174,11 @@ function initSoundToggle() {
 
     const btn = document.createElement('div');
     btn.id = 'sound-toggle';
-    btn.style.cssText = `
-        position: fixed; 
-        top: 15px; 
-        right: 15px; 
-        cursor: pointer; 
-        font-size: 22px; 
-        color: #888; 
-        opacity: 0.1; 
-        transition: all 0.3s ease; 
-        z-index: 9999; 
-        user-select: none;
-        background: rgba(255,255,255,0.8);
-        padding: 5px 8px;
-        border-radius: 50%;
-        display: none;
-    `;
-
+    btn.className = 'sound-toggle';
+    
     soundToggleBtn = btn;
     updateSoundButtonVisuals(btn);
     updateButtonVisibility();
-
-    btn.addEventListener('mouseenter', () => {
-        btn.style.opacity = '1';
-        btn.style.color = '#333';
-        btn.style.background = 'rgba(255,255,255,1)';
-        btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
-    });
-
-    btn.addEventListener('mouseleave', () => {
-        btn.style.opacity = '0.1';
-        btn.style.color = '#888';
-        btn.style.background = 'rgba(255,255,255,0.8)';
-        btn.style.boxShadow = 'none';
-    });
 
     btn.addEventListener('click', () => {
         isSoundMuted = !isSoundMuted;
@@ -209,9 +190,6 @@ function initSoundToggle() {
         } else {
             unloadNotificationSounds();
         }
-
-        btn.style.transform = 'scale(0.8)';
-        setTimeout(() => { btn.style.transform = 'scale(1)'; }, 150);
     });
 
     document.body.appendChild(btn);
@@ -260,23 +238,51 @@ function getIconClass(type) {
     return type === "audio" ? "fa-music" : "fa-video-camera";
 }
 
+const urlsCache = new Map();
+
 function renderUrls(urlString, includeIcon = false, iconType = null) {
     if (!urlString) return "";
-    return urlString.split(",")
+    const key = `${urlString}|${includeIcon}|${iconType}`;
+    if (urlsCache.has(key)) return urlsCache.get(key);
+    
+    const result = urlString.split(",")
         .filter(url => url.trim())
         .map(url => {
             const iconHtml = includeIcon ? `<i class="fa ${getIconClass(iconType)}"></i> ` : "";
             return `<br /><a href="${url}">${iconHtml}${url}</a>`;
         }).join("");
+    
+    urlsCache.set(key, result);
+    return result;
+}
+
+function computeDataHash(items) {
+    if (!items || items.length === 0) return '0';
+    let hash = '';
+    for (const item of items) {
+        for (const key in item) {
+            if (item.hasOwnProperty(key)) {
+                hash += item[key];
+            }
+        }
+        hash += '|';
+    }
+    return hash;
 }
 
 function renderTable($container, items, cols, emptyMsg, rowHtmlGenerator, footerHtml = "") {
-    if (!items || items.length === 0) {
-        $container.html(`<tr><td colspan="${cols}">${emptyMsg}</td></tr>`);
+    const hash = computeDataHash(items) + ':' + footerHtml;
+    
+    if ($container.data('lastHash') === hash) {
         return;
     }
-    const rowsHtml = items.map(rowHtmlGenerator).join("");
-    $container.html(rowsHtml + (footerHtml ? `<tr>${footerHtml}</tr>` : ""));
+    
+    const newHtml = (!items || items.length === 0)
+        ? `<tr><td colspan="${cols}">${emptyMsg}</td></tr>`
+        : items.map(rowHtmlGenerator).join("") + (footerHtml ? `<tr>${footerHtml}</tr>` : "");
+
+    $container.html(newHtml);
+    $container.data('lastHash', hash);
 }
 
 function renderJobRow(job) {
@@ -384,7 +390,10 @@ function renderFileRow(file) {
 
 function loadList() {
     $.get("index.php?jobs", function (data) {
-        const currentFinishedPids = new Set(data.finished.map(item => String(item.pid)));
+        const currentFinishedPids = new Set();
+        for (const item of data.finished) {
+            currentFinishedPids.add(String(item.pid));
+        }
 
         if (previousFinishedPids !== null) {
             let hasNewSuccess = false;
@@ -434,6 +443,12 @@ function loadList() {
 let refreshInterval = null;
 
 function initCache() {
+    nativeUI.progress = document.getElementById('dlprogress');
+    nativeUI.queue = document.getElementById('dlqueue');
+    nativeUI.completed = document.getElementById('dlcompleted');
+    nativeUI.videos = document.getElementById('videofiles');
+    nativeUI.music = document.getElementById('musicfiles');
+
     $ui.progress = $('#dlprogress');
     $ui.queue = $('#dlqueue');
     $ui.completed = $('#dlcompleted');
@@ -463,7 +478,6 @@ $(document).ready(function () {
         $ui.urlInput.focus();
     }
     
-    // Автоматически добавляем CSRF-токен во все формы на странице
     $(document).on('submit', 'form', function() {
         const $form = $(this);
         if (!$form.find('input[name="csrf_token"]').length) {
@@ -520,22 +534,37 @@ $(document).ready(function () {
     const INPUT_DELAY = 150;
     let isClearing = false;
 
-    // === Локальные favicon ===
-    // Для предзагрузки используй load_favicons.py
-    
     const FAVICON_BASE = 'favicons/';
     const FALLBACK_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzg4OCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDEgMC04LTMuNTktOC04czMuNTktOCA4LTggOCAzLjU5IDggOC0zLjU5IDgtOCA4eiIvPjwvc3ZnPg==';
-    // Кэш: domain -> { url: string, ok: boolean }
     const faviconCache = new Map();
 
     const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'zen.yandex.ru', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'life.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru',  'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
 
+    const KNOWN_SERVICES_SET = new Set(KNOWN_SERVICES);
+    const serviceIndex = new Map();
+    for (const service of KNOWN_SERVICES) {
+        const parts = service.split('.');
+        const key = parts.slice(-2).join('.');
+        if (!serviceIndex.has(key)) serviceIndex.set(key, []);
+        serviceIndex.get(key).push(service);
+    }
+
     function getBaseService(hostname) {
         if (!hostname) return null;
         hostname = hostname.toLowerCase();
-        for (let service of KNOWN_SERVICES) {
-            if (hostname === service || hostname.endsWith('.' + service)) {
-                return service;
+        
+        if (KNOWN_SERVICES_SET.has(hostname)) return hostname;
+        
+        const parts = hostname.split('.');
+        for (let i = 1; i < parts.length - 1; i++) {
+            const key = parts.slice(i).join('.');
+            const candidates = serviceIndex.get(key);
+            if (candidates) {
+                for (const service of candidates) {
+                    if (hostname === service || hostname.endsWith('.' + service)) {
+                        return service;
+                    }
+                }
             }
         }
         return null;
@@ -575,7 +604,6 @@ $(document).ready(function () {
             return;
         }
 
-        // Скрываем контейнер, пока проверяем файл
         $faviconContainer.removeClass('is-visible');
         $wrapper.removeClass('has-favicon');
 
@@ -585,7 +613,6 @@ $(document).ready(function () {
         tempImg.onload = function () {
             if (!$urlInput.val().trim() || isClearing) return;
             faviconCache.set(serviceDomain, { url, ok: true });
-            // Проверяем, что пользователь всё ещё на том же домене
             const currentService = getBaseService((() => {
                 try {
                     let v = $urlInput.val().trim().split('||')[0].trim();
@@ -691,13 +718,8 @@ function syncLogic() {
     const hiddenVideoFormat = document.getElementById('format');
     const qualityToggle = document.getElementById('ui_quality_toggle');
 
-    if (isAudio) {
-        paramsVideo.style.display = 'none';
-        paramsAudio.style.display = 'flex';
-    } else {
-        paramsVideo.style.display = 'flex';
-        paramsAudio.style.display = 'none';
-    }
+    paramsVideo.classList.toggle('is-hidden', isAudio);
+    paramsAudio.classList.toggle('is-hidden', !isAudio);
 
     hiddenAudioCheckbox.checked = isAudio;
 

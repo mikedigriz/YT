@@ -2,22 +2,19 @@
 
 class Session
 {
-    private static $_instance;
+    private static ?Session $_instance = null;
 
-    public function __construct()
+    private function __construct()
     {
         session_start();
-          $_SESSION["logged_in"] = true;
     }
 
-    public static function getInstance()
+    public static function getInstance(): Session
     {
-        if(is_null(self::$_instance)) {
-            self::$_instance = new Session();
+        if (self::$_instance === null) {
+            self::$_instance = new self();
         }
 
         return self::$_instance;
     }
 }
-
-?>

@@ -34,7 +34,6 @@ function validateCsrfToken(): bool {
         return false;
     }
     
-    // Origin/Referer check as secondary CSRF defense
     $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
     $referer = $_SERVER['HTTP_REFERER'] ?? null;
     $host = $_SERVER['HTTP_HOST'] ?? '';
@@ -66,7 +65,7 @@ if ($isSecure) {
     header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
 }
 
-$config = include_once 'config/config.php';
+$config = include 'config/config.php';
 if ($config['debug']) {
     ini_set('display_errors', 1);
     ini_set('display_startup_errors', 1);
@@ -76,6 +75,7 @@ if ($config['debug']) {
     ini_set('display_startup_errors', 0);
     error_reporting(0);
 }
+
 $siteTheme = $config['siteTheme'];
 if (isset($_GET['theme'])) {
     $siteTheme = $_GET['theme'];
@@ -87,18 +87,40 @@ require_once 'class/FileHandler.php';
 
 $session = Session::getInstance();
 $file = new FileHandler;
+$allowFileDelete = $config['allowFileDelete'] ?? false;
 
-// Process the download queue unless it's disabled
-if (!$config['disableQueue']) {
+// Process queue only for non-AJAX requests
+if (!$config['disableQueue'] && !isset($_GET['jobs'])) {
     $downloader = new Downloader([]);
     $downloader->process_queue();
 }
 
+// Helper function for file row generation
+function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
+    $deleteurl = "";
+    if ($allowFileDelete) {
+        $safeName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
+        $deleteurl = '<button onclick="confirmAction(\'delete\', \'' . $safeName . '\', {type: \'' . $type . '\'})" class="btn btn-danger btn-xs">Удалить</button>';
+    }
+    
+    $fileurl = $f["name"];
+    if ($config['downloadPath'] != "") {
+        $safeName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
+        $encodedName = rawurlencode($f["name"]);
+        $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encodedName.'" download>'.$safeName.'</a>';
+    }
+    
+    return [
+        'file'             => $fileurl,
+        'size'             => $f["size"],
+        'deleteurl'        => $deleteurl,
+        'age_minutes'      => (int)($f["age_minutes"] ?? 0),
+        'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
+    ];
+}
+
 // Return JSON with all jobs currently running and jobs history
 if(isset($_GET['jobs'])) {
-    $videofiles = $file->listVideos();
-    $musicfiles = $file->listMusics();
-    
     $response = [
         'jobs'     => Downloader::get_current_background_jobs(),
         'queue'    => [],
@@ -126,44 +148,12 @@ if(isset($_GET['jobs'])) {
         }
     }
 
-    foreach($videofiles as $f) {
-        $deleteurl = "";
-        if (array_key_exists('allowFileDelete', $config) && $config['allowFileDelete']) {
-            $deleteurl = '<button onclick="confirmAction(\'delete\', \'' . htmlspecialchars($f["name"], ENT_QUOTES) . '\', {type: \'v\'})" class="btn btn-danger btn-xs">Удалить</button>';
-        }
-        $fileurl = $f["name"];
-        if ($config['downloadPath'] != "") {
-            $safe_name = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-            $encoded_name = rawurlencode($f["name"]);
-            $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encoded_name.'" download>'.$safe_name.'</a>';
-        }
-        $response['videos'][] = [
-            'file'             => $fileurl,
-            'size'             => $f["size"],
-            'deleteurl'        => $deleteurl,
-            'age_minutes'      => (int)($f["age_minutes"] ?? 0),
-            'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
-        ];
+    foreach($file->listVideos() as $f) {
+        $response['videos'][] = generateFileRow($f, $config, $file, $allowFileDelete, 'v');
     }
 
-    foreach($musicfiles as $f) {
-        $deleteurl = "";
-        if (array_key_exists('allowFileDelete', $config) && $config['allowFileDelete']) {
-            $deleteurl = '<button onclick="confirmAction(\'delete\', \'' . htmlspecialchars($f["name"], ENT_QUOTES) . '\', {type: \'m\'})" class="btn btn-danger btn-xs">Удалить</button>';
-        }
-        $fileurl = $f["name"];
-        if ($config['downloadPath'] != "") {
-            $safe_name = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-            $encoded_name = rawurlencode($f["name"]);
-            $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encoded_name.'" download>'.$safe_name.'</a>';
-        }
-        $response['music'][] = [
-            'file'             => $fileurl,
-            'size'             => $f["size"],
-            'deleteurl'        => $deleteurl,
-            'age_minutes'      => (int)($f["age_minutes"] ?? 0),
-            'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
-        ];
+    foreach($file->listMusics() as $f) {
+        $response['music'][] = generateFileRow($f, $config, $file, $allowFileDelete, 'm');
     }
 
     if(!isset($_GET['cron'])) {
@@ -192,13 +182,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         die();
     }
 
-    if(isset($_POST["delete"]) && array_key_exists('allowFileDelete', $config) && $config['allowFileDelete']) {
+    if(isset($_POST["delete"]) && $allowFileDelete) {
         $file->delete($_POST["delete"]);
-        if (($_POST["type"] ?? '') == "m") {
-            header("Location: index.php#music");
-        } else {
-            header("Location: index.php#videos");
-        }
+        $redirect = (($_POST["type"] ?? '') == "m") ? "index.php#music" : "index.php#videos";
+        header("Location: " . $redirect);
         die();
     }
 
@@ -239,52 +226,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     $get_params = "?";
     $audio_only = false;
-    $audio_format = "--audio-format mp3 --audio-quality 0";
+    $audio_format = "";
     $dl_format = "";
+    
     $allowed_audio_formats = [
-        '--audio-format mp3 --audio-quality 0',
-        '--audio-format wav',
-        '--audio-format aac',
-        '--audio-format flac',
-        ''
+        'mp3-high' => '--audio-format mp3 --audio-quality 0',
+        'wav' => '--audio-format wav',
+        'aac' => '--audio-format aac',
+        'flac' => '--audio-format flac',
+        '' => ''
     ];
 
-    $audio_format = in_array($_POST['audio_format'], $allowed_audio_formats) 
-        ? $_POST['audio_format'] 
-        : '';
-        
     if(isset($_POST['audio']) && !empty($_POST['audio'])) {
         $audio_only = true;
         $get_params .= "audio=true&";
     }
 
-    if(isset($_POST['audio_format']) && !empty($_POST['audio_format'])) {
-        if($_POST['audio_format'] === "mp3-high") {
-            $audio_format = "--audio-format mp3 --audio-quality 0";
-        } else {
-            $audio_format = "--audio-format " . $_POST['audio_format'];
-        }
-        $get_params .= "audio_format=".$_POST['audio_format']."&";
+    $audio_format_key = $_POST['audio_format'] ?? '';
+    if (isset($allowed_audio_formats[$audio_format_key])) {
+        $audio_format = $allowed_audio_formats[$audio_format_key];
+        $get_params .= "audio_format=" . $audio_format_key . "&";
     }
 
     if(isset($_POST['format']) && !empty($_POST['format'])) {
         if($_POST['format'] != "best") {
-            $dl_format = "" . $_POST['format'];
-            $get_params .= "format=".$_POST['format']."&";
+            $dl_format = $_POST['format'];
+            $get_params .= "format=" . $_POST['format'] . "&";
         }
     }
 
-    $dl_list = [];
-    $dl_list[] = array(
+    $dl_list = [[
         'url' => $_POST['urls'],
         'audio_only' => $audio_only,
         'dl_format' => $dl_format,
         'audio_format' => $audio_format
-    );
+    ]];
+    
     $downloader = new Downloader($dl_list);
 
     if(!isset($_SESSION['errors']) || count($_SESSION['errors']) === 0) {
-        header("Location: index.php#".$config['redirectAfterSubmit']);
+        header("Location: index.php#" . $config['redirectAfterSubmit']);
         die();
     }
 }
@@ -302,12 +283,10 @@ if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
 
 $protocol = $isSecure ? "https://" : "http://";
 $uri_parts = explode('?', $_SERVER['REQUEST_URI'], 2);
-$uri_parts = $uri_parts[0];
-$uri_parts = explode('#', $uri_parts, 2);
+$uri_parts = explode('#', $uri_parts[0], 2);
 $baseuri = $protocol . $_SERVER['HTTP_HOST'] . $uri_parts[0];
 
 require_once 'views/part.header.php';
-require_once 'views/popup.confirm.php';
 require_once 'views/part.main.php';
 require_once 'views/part.footer.php';
 
