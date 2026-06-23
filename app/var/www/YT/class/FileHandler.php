@@ -89,7 +89,7 @@ class FileHandler
     {
         if(!is_dir($this->get_downloads_folder())) {
             //Folder doesn't exist
-            if(!mkdir($this->get_downloads_folder(), 0777)) {
+            if(!mkdir($this->get_downloads_folder(), 0755)) {
                 return false; //No folder and creation failed
             }
         }

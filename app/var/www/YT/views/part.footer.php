@@ -14,7 +14,7 @@ if (file_exists('yt_dlp_version')) {
       <div onclick="helpPanel()" style="cursor: pointer;" class="panel-heading">
         <h3 id="helplink" class="panel-title">Жмак</h3>
       </div>
-      <div id="helppanel" class="panel-body panel-collapsed" style="display: none;">
+      <div id="helppanel" class="panel-body panel-collapsed">
         <table class="table table-hover footer-table">
           <tr>
             <td><b>О версии:</b></td>
@@ -45,7 +45,7 @@ if (file_exists('yt_dlp_version')) {
           <tr>
             <td><b>Как забрать файлы с сервера?</b></td>
             <td>
-              Нажать на <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">файл</a> или открыть в новой вкладке
+              Нажать на <a href="Видео" onclick="document.getElementById('vid_link').click()" data-bs-toggle="tab" aria-expanded="false">файл</a> или открыть в новой вкладке
             </td>
           </tr>
           <tr>
@@ -53,7 +53,7 @@ if (file_exists('yt_dlp_version')) {
             <td>
               Проверить корректность URL<br>
               Ссылка должна быть прямой и указывать на видео или плейлист<br>
-              Файл уже скачан - <a href="Загрузки" onclick="$('#dl_link').click()" data-toggle="tab" aria-expanded="false">проверь историю</a> или <a href="Видео" onclick="$('#vid_link').click()" data-toggle="tab" aria-expanded="false">имя файла</a><br>
+              Файл уже скачан - <a href="Загрузки" onclick="document.getElementById('dl_link').click()" data-bs-toggle="tab" aria-expanded="false">проверь историю</a> или <a href="Видео" onclick="document.getElementById('vid_link').click()" data-bs-toggle="tab" aria-expanded="false">имя файла</a><br>
               "В процессе" - файл конвертируется в mp4<br>
               Бэкенд еще не поддерживает ваш ресурс
             </td>

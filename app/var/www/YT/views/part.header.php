@@ -11,12 +11,10 @@
     <link rel="icon" type="image/png" sizes="32x32" href="img/favicon.png">
     <link rel="apple-touch-icon" href="img/favicon.png">
     <link rel="preload" href="css/<?= preg_replace('/[^a-z0-9\-\_]/i', '', $siteTheme ?? 'default') ?>.min.css" as="style" fetchpriority="high" onload="this.onload=null;this.rel='stylesheet'">
-    <link rel="stylesheet" href="css/baskerstyle.css" fetchpriority="high">
+    <link rel="stylesheet" href="css/baskerstyle.min.css" fetchpriority="high">
     <noscript>
         <link rel="stylesheet" href="css/<?= preg_replace('/[^a-z0-9\-\_]/i', '', $siteTheme ?? 'default') ?>.min.css">
     </noscript>
-    <script src="js/jquery-3.7.0.min.js" fetchpriority="high"></script>
-    <script src="js/bootstrap.min.js" fetchpriority="high"></script>
     <script defer src="js/youtubedlwebui.js" fetchpriority="high"></script>
 </head>
 <body>

@@ -37,7 +37,11 @@ function validateCsrfToken(): bool {
     $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
     $referer = $_SERVER['HTTP_REFERER'] ?? null;
     $host = $_SERVER['HTTP_HOST'] ?? '';
-    
+
+    if ($origin === 'null') {
+        $origin = null;
+    }
+
     if ($origin !== null) {
         $parsed = parse_url($origin);
         if (($parsed['host'] ?? '') !== $host) {
@@ -99,8 +103,13 @@ if (!$config['disableQueue'] && !isset($_GET['jobs'])) {
 function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     $deleteurl = "";
     if ($allowFileDelete) {
-        $safeName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-        $deleteurl = '<button onclick="confirmAction(\'delete\', \'' . $safeName . '\', {type: \'' . $type . '\'})" class="btn btn-danger btn-xs">Удалить</button>';
+        // json_encode produces a valid JS string literal; htmlspecialchars then escapes it for
+        // safe placement inside an HTML attribute. Plain htmlspecialchars() alone is NOT enough here:
+        // browsers HTML-decode the attribute value before executing it as JS, so an entity like
+        // &#039; would be decoded back to ' and could break out of the JS string (DOM XSS).
+        $jsName = htmlspecialchars(json_encode($f["name"], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
+        $jsType = htmlspecialchars(json_encode($type, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
+        $deleteurl = '<button onclick="confirmAction(\'delete\', ' . $jsName . ', {type: ' . $jsType . '})" class="btn btn-danger btn-xs">Удалить</button>';
     }
     
     $fileurl = $f["name"];
@@ -224,11 +233,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Download a video
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
-    $get_params = "?";
+    if (!validateCsrfToken()) {
+        http_response_code(403);
+        die('CSRF token validation failed');
+    }
+
     $audio_only = false;
     $audio_format = "";
     $dl_format = "";
-    
+
     $allowed_audio_formats = [
         'mp3-high' => '--audio-format mp3 --audio-quality 0',
         'wav' => '--audio-format wav',
@@ -239,19 +252,16 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
 
     if(isset($_POST['audio']) && !empty($_POST['audio'])) {
         $audio_only = true;
-        $get_params .= "audio=true&";
     }
 
     $audio_format_key = $_POST['audio_format'] ?? '';
     if (isset($allowed_audio_formats[$audio_format_key])) {
         $audio_format = $allowed_audio_formats[$audio_format_key];
-        $get_params .= "audio_format=" . $audio_format_key . "&";
     }
 
     if(isset($_POST['format']) && !empty($_POST['format'])) {
         if($_POST['format'] != "best") {
             $dl_format = $_POST['format'];
-            $get_params .= "format=" . $_POST['format'] . "&";
         }
     }
 
@@ -280,11 +290,6 @@ if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
     $video_form_style = "";
     $audio_form_style = "style=\"display: none;\"";
 }
-
-$protocol = $isSecure ? "https://" : "http://";
-$uri_parts = explode('?', $_SERVER['REQUEST_URI'], 2);
-$uri_parts = explode('#', $uri_parts[0], 2);
-$baseuri = $protocol . $_SERVER['HTTP_HOST'] . $uri_parts[0];
 
 require_once 'views/part.header.php';
 require_once 'views/part.main.php';

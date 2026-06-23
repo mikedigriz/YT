@@ -1,10 +1,30 @@
 const CONFIG = {
-    refreshInterval: 3000
+    fastInterval: 1500,
+    slowInterval: 12000
 };
 
-const $ui = {};
 const nativeUI = {};
 let previousFinishedPids = null;
+
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function safeUrlAttr(url) {
+    const trimmed = String(url ?? "").trim();
+    if (!/^https?:\/\//i.test(trimmed)) return "#";
+    return escapeHtml(trimmed);
+}
+
+function safePid(pid) {
+    const str = String(pid ?? "");
+    return /^[A-Za-z0-9_-]+$/.test(str) ? str : "";
+}
 
 let audioSuccess = null;
 let audioError = null;
@@ -249,7 +269,7 @@ function renderUrls(urlString, includeIcon = false, iconType = null) {
         .filter(url => url.trim())
         .map(url => {
             const iconHtml = includeIcon ? `<i class="fa ${getIconClass(iconType)}"></i> ` : "";
-            return `<br /><a href="${url}">${iconHtml}${url}</a>`;
+            return `<br /><a href="${safeUrlAttr(url)}">${iconHtml}${escapeHtml(url)}</a>`;
         }).join("");
     
     urlsCache.set(key, result);
@@ -270,19 +290,19 @@ function computeDataHash(items) {
     return hash;
 }
 
-function renderTable($container, items, cols, emptyMsg, rowHtmlGenerator, footerHtml = "") {
+function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerHtml = "") {
     const hash = computeDataHash(items) + ':' + footerHtml;
-    
-    if ($container.data('lastHash') === hash) {
+
+    if (container.dataset.lastHash === hash) {
         return;
     }
-    
+
     const newHtml = (!items || items.length === 0)
         ? `<tr><td colspan="${cols}">${emptyMsg}</td></tr>`
         : items.map(rowHtmlGenerator).join("") + (footerHtml ? `<tr>${footerHtml}</tr>` : "");
 
-    $container.html(newHtml);
-    $container.data('lastHash', hash);
+    container.innerHTML = newHtml;
+    container.dataset.lastHash = hash;
 }
 
 function renderJobRow(job) {
@@ -290,12 +310,12 @@ function renderJobRow(job) {
     const urlsHtml = renderUrls(job.url);
     return `
     <tr>
-        <td style="vertical-align: middle;">${job.site}</td>
-        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${job.file} ${urlsHtml}</td>
-        <td style="vertical-align: middle;">${job.status}</td>
+        <td style="vertical-align: middle;">${escapeHtml(job.site)}</td>
+        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${escapeHtml(job.file)} ${urlsHtml}</td>
+        <td style="vertical-align: middle;">${escapeHtml(job.status)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <button style="width: 100px;" onclick="confirmAction('kill', '${job.pid}')" class="btn btn-danger btn-xs">Стоп</button>
+                <button style="width: 100px;" onclick="confirmAction('kill', '${safePid(job.pid)}')" class="btn btn-danger btn-xs">Стоп</button>
             </div>
         </td>
     </tr>`;
@@ -307,10 +327,10 @@ function renderQueueRow(item) {
     return `
     <tr>
         <td style="vertical-align: middle;">${urlsHtml}</td>
-        <td style="vertical-align: middle;">${item.dl_format}</td>
+        <td style="vertical-align: middle;">${escapeHtml(item.dl_format)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <button style="width: 160px" onclick="confirmAction('removeQueued', '${item.pid}')" class="btn btn-danger btn-xs">Удалить</button>
+                <button style="width: 160px" onclick="confirmAction('removeQueued', '${safePid(item.pid)}')" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -324,19 +344,19 @@ function renderFinishedRow(item, logURL) {
 
     if (logURL && logURL !== "") {
         actionBtnWidth = "60px";
-        logButton = `<a href="${logURL}/${item.pid}" style="width: 40px;" target="_blank" class="btn btn-default btn-xs">Лог</a>`;
+        logButton = `<a href="${safeUrlAttr(logURL)}/${safePid(item.pid)}" style="width: 40px;" target="_blank" class="btn btn-default btn-xs">Лог</a>`;
     }
 
     return `
     <tr>
-        <td style="vertical-align: middle;">${item.site}</td>
-        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${item.file} ${urlsHtml}</td>
-        <td style="vertical-align: middle;">${item.status}</td>
+        <td style="vertical-align: middle;">${escapeHtml(item.site)}</td>
+        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${escapeHtml(item.file)} ${urlsHtml}</td>
+        <td style="vertical-align: middle;">${escapeHtml(item.status)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
                 ${logButton}
-                <button style="width: ${actionBtnWidth}" onclick="confirmAction('restart', '${item.pid}')" class="btn btn-success btn-xs">↺</button>
-                <button style="width: ${actionBtnWidth}" onclick="confirmAction('clear', '${item.pid}')" class="btn btn-danger btn-xs">Удалить</button>
+                <button style="width: ${actionBtnWidth}" onclick="confirmAction('restart', '${safePid(item.pid)}')" class="btn btn-success btn-xs">↺</button>
+                <button style="width: ${actionBtnWidth}" onclick="confirmAction('clear', '${safePid(item.pid)}')" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -389,7 +409,9 @@ function renderFileRow(file) {
 }
 
 function loadList() {
-    $.get("index.php?jobs", function (data) {
+    fetch("index.php?jobs")
+        .then(resp => resp.json())
+        .then(function (data) {
         const currentFinishedPids = new Set();
         for (const item of data.finished) {
             currentFinishedPids.add(String(item.pid));
@@ -419,28 +441,35 @@ function loadList() {
 
         previousFinishedPids = currentFinishedPids;
 
-        renderTable($ui.progress, data.jobs, 4, "Активных загрузок нет.", renderJobRow, `
+        renderTable(nativeUI.progress, data.jobs, 4, "Активных загрузок нет.", renderJobRow, `
             <td></td><td></td><td></td>
             <td><div class="btn-group"><button id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" onclick="confirmAction('kill', 'all')">Стоп ВСЕ</button></div></td>`);
 
-        renderTable($ui.queue, data.queue, 3, "Очередь пуста.", renderQueueRow, `
+        renderTable(nativeUI.queue, data.queue, 3, "Очередь пуста.", renderQueueRow, `
             <td></td><td></td>
             <td><div class="btn-group"><button id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" onclick="confirmAction('clear', 'queue')">Удалить Все</button></div></td>`);
 
-        renderTable($ui.completed, data.finished, 4, "Завершенных загрузок нет.", item => renderFinishedRow(item, data.logURL), `
+        renderTable(nativeUI.completed, data.finished, 4, "Завершенных загрузок нет.", item => renderFinishedRow(item, data.logURL), `
             <td></td><td></td><td></td>
             <td><div class="btn-group"><button id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" onclick="confirmAction('clear', 'recent')">Удалить Все</button></div></td>`);
 
-        renderTable($ui.videos, data.videos, 3, "Видео нет.", renderFileRow);
-        renderTable($ui.music, data.music, 3, "Музыки нет.", renderFileRow);
+        renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", renderFileRow);
+        renderTable(nativeUI.music, data.music, 3, "Музыки нет.", renderFileRow);
         updateFileBadges(data);
 
-    }, "json").fail(function () {
+        const isActive = (data.jobs && data.jobs.length > 0) || (data.queue && data.queue.length > 0);
+        scheduleNextRefresh(isActive ? CONFIG.fastInterval : CONFIG.slowInterval);
+
+    }).catch(function () {
         console.error("Не удалось загрузить данные");
+        scheduleNextRefresh(CONFIG.slowInterval);
     });
 }
 
-let refreshInterval = null;
+let refreshTimer = null;
+let refreshActive = false;
+
+let urlInput = null;
 
 function initCache() {
     nativeUI.progress = document.getElementById('dlprogress');
@@ -448,87 +477,93 @@ function initCache() {
     nativeUI.completed = document.getElementById('dlcompleted');
     nativeUI.videos = document.getElementById('videofiles');
     nativeUI.music = document.getElementById('musicfiles');
+    urlInput = document.getElementById('url');
+}
 
-    $ui.progress = $('#dlprogress');
-    $ui.queue = $('#dlqueue');
-    $ui.completed = $('#dlcompleted');
-    $ui.videos = $('#videofiles');
-    $ui.music = $('#musicfiles');
-    $ui.urlInput = $('#url');
+function scheduleNextRefresh(delay) {
+    clearTimeout(refreshTimer);
+    if (!refreshActive) return;
+    refreshTimer = setTimeout(loadList, delay);
 }
 
 function startAutoRefresh() {
-    if ($ui.progress.length && !refreshInterval) {
+    if (nativeUI.progress && !refreshActive) {
+        refreshActive = true;
         loadList();
-        refreshInterval = setInterval(loadList, CONFIG.refreshInterval);
     }
 }
 
 function stopAutoRefresh() {
-    if (refreshInterval) {
-        clearInterval(refreshInterval);
-        refreshInterval = null;
-    }
+    refreshActive = false;
+    clearTimeout(refreshTimer);
+    refreshTimer = null;
 }
 
-$(document).ready(function () {
+document.addEventListener('DOMContentLoaded', function () {
     initCache();
-    if ($ui.progress.length) {
+    if (nativeUI.progress) {
         startAutoRefresh();
-        $ui.urlInput.focus();
+        if (urlInput) urlInput.focus();
     }
-    
-    $(document).on('submit', 'form', function() {
-        const $form = $(this);
-        if (!$form.find('input[name="csrf_token"]').length) {
-            $form.append(`<input type="hidden" name="csrf_token" value="${getCsrfToken()}">`);
+
+    document.addEventListener('submit', function (e) {
+        const form = e.target;
+        if (form.tagName !== 'FORM') return;
+        if (!form.querySelector('input[name="csrf_token"]')) {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'csrf_token';
+            input.value = getCsrfToken();
+            form.appendChild(input);
         }
     });
 });
 
-$(window).on('beforeunload', function () {
+window.addEventListener('beforeunload', function () {
     stopAutoRefresh();
 });
 
-$(document).on('visibilitychange', function () {
+document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
         stopAutoRefresh();
     } else {
-        if ($ui.progress.length && !refreshInterval) {
+        if (nativeUI.progress && !refreshActive) {
             startAutoRefresh();
         }
     }
 });
 
 function checkControls() {
-    const isChecked = $('#audio_convert').prop("checked");
-    $('#video_group, #audio_group').hide();
+    const isChecked = document.getElementById('audio_convert').checked;
+    const videoGroup = document.getElementById('video_group');
+    const audioGroup = document.getElementById('audio_group');
+    if (videoGroup) videoGroup.style.display = 'none';
+    if (audioGroup) audioGroup.style.display = 'none';
     if (isChecked) {
-        $('#audio_group').show();
+        if (audioGroup) audioGroup.style.display = '';
     } else {
-        $('#video_group').show();
+        if (videoGroup) videoGroup.style.display = '';
     }
 }
 
 function helpPanel() {
-    const panelBody = $('#helppanel');
-    if (!panelBody.hasClass('panel-collapsed')) {
-        panelBody.slideUp();
-        panelBody.addClass('panel-collapsed');
-        $('#helplink').html('Я туть, твоя помощь');
+    const panelBody = document.getElementById('helppanel');
+    const helpLink = document.getElementById('helplink');
+    if (!panelBody.classList.contains('panel-collapsed')) {
+        panelBody.classList.add('panel-collapsed');
+        helpLink.innerHTML = 'Я туть, твоя помощь';
     } else {
-        panelBody.slideDown();
-        panelBody.removeClass('panel-collapsed');
-        $('#helplink').html('Скрыть');
+        panelBody.classList.remove('panel-collapsed');
+        helpLink.innerHTML = 'Скрыть';
     }
 }
 
-$(document).ready(function () {
-    const $faviconContainer = $('#url-favicon');
-    const $faviconImg = $('#url-favicon-img');
-    const $clearBtn = $('#url-clear');
-    const $urlInput = $('#url');
-    const $wrapper = $('.url-input-wrapper');
+document.addEventListener('DOMContentLoaded', function () {
+    const faviconContainer = document.getElementById('url-favicon');
+    const faviconImg = document.getElementById('url-favicon-img');
+    const clearBtn = document.getElementById('url-clear');
+    const urlInput = document.getElementById('url');
+    const wrapper = document.querySelector('.url-input-wrapper');
 
     let inputTimer = null;
     const INPUT_DELAY = 150;
@@ -575,24 +610,24 @@ $(document).ready(function () {
     }
 
     function applyFavicon(url) {
-        if ($faviconImg.attr('src') !== url) {
-            $faviconImg.attr('src', url);
+        if (faviconImg.getAttribute('src') !== url) {
+            faviconImg.setAttribute('src', url);
         }
-        $faviconContainer.addClass('is-visible');
-        $wrapper.addClass('has-favicon');
+        faviconContainer.classList.add('is-visible');
+        wrapper.classList.add('has-favicon');
     }
 
     function resetUI() {
-        $faviconImg.attr('src', '');
-        $faviconContainer.removeClass('is-visible');
-        $wrapper.removeClass('has-favicon');
-        if ($urlInput.val().trim() && !isClearing) {
-            $clearBtn.addClass('is-visible');
+        faviconImg.setAttribute('src', '');
+        faviconContainer.classList.remove('is-visible');
+        wrapper.classList.remove('has-favicon');
+        if (urlInput.value.trim() && !isClearing) {
+            clearBtn.classList.add('is-visible');
         }
     }
 
     function showFavicon(serviceDomain) {
-        if (!$urlInput.val().trim() || isClearing) return;
+        if (!urlInput.value.trim() || isClearing) return;
 
         const cached = faviconCache.get(serviceDomain);
         if (cached) {
@@ -604,18 +639,18 @@ $(document).ready(function () {
             return;
         }
 
-        $faviconContainer.removeClass('is-visible');
-        $wrapper.removeClass('has-favicon');
+        faviconContainer.classList.remove('is-visible');
+        wrapper.classList.remove('has-favicon');
 
         const url = getFaviconUrl(serviceDomain);
         const tempImg = new Image();
 
         tempImg.onload = function () {
-            if (!$urlInput.val().trim() || isClearing) return;
+            if (!urlInput.value.trim() || isClearing) return;
             faviconCache.set(serviceDomain, { url, ok: true });
             const currentService = getBaseService((() => {
                 try {
-                    let v = $urlInput.val().trim().split('||')[0].trim();
+                    let v = urlInput.value.trim().split('||')[0].trim();
                     if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
                     return new URL(v).hostname.replace(/^www\./i, '');
                 } catch (e) { return null; }
@@ -625,7 +660,7 @@ $(document).ready(function () {
         };
 
         tempImg.onerror = function () {
-            if (!$urlInput.val().trim() || isClearing) return;
+            if (!urlInput.value.trim() || isClearing) return;
             faviconCache.set(serviceDomain, { url: FALLBACK_ICON, ok: false });
             resetUI();
         };
@@ -634,34 +669,36 @@ $(document).ready(function () {
     }
 
     function hideFavicon() {
-        $faviconImg.off('load error');
-        $faviconContainer.removeClass('is-visible');
-        $wrapper.removeClass('has-favicon');
+        faviconImg.onload = null;
+        faviconImg.onerror = null;
+        faviconContainer.classList.remove('is-visible');
+        wrapper.classList.remove('has-favicon');
     }
 
     function showClearBtn() {
-        $clearBtn.addClass('is-visible');
+        clearBtn.classList.add('is-visible');
     }
 
     function hideClearBtn() {
-        $clearBtn.removeClass('is-visible');
+        clearBtn.classList.remove('is-visible');
     }
 
     function clearInput() {
         isClearing = true;
-        $faviconImg.off('load error');
+        faviconImg.onload = null;
+        faviconImg.onerror = null;
         clearTimeout(inputTimer);
-        $urlInput.val('');
-        $faviconContainer.removeClass('is-visible');
-        $wrapper.removeClass('has-favicon');
-        $clearBtn.removeClass('is-visible');
-        $urlInput.focus();
+        urlInput.value = '';
+        faviconContainer.classList.remove('is-visible');
+        wrapper.classList.remove('has-favicon');
+        clearBtn.classList.remove('is-visible');
+        urlInput.focus();
         setTimeout(() => { isClearing = false; }, 50);
     }
 
     function checkUrl() {
         if (isClearing) return;
-        const val = $urlInput.val().trim();
+        const val = urlInput.value.trim();
         if (!val) {
             hideFavicon();
             hideClearBtn();
@@ -688,26 +725,28 @@ $(document).ready(function () {
         }
     }
 
-    $urlInput.on('paste', () => setTimeout(checkUrl, 10));
-    $urlInput.on('input', () => {
+    urlInput.addEventListener('paste', () => setTimeout(checkUrl, 10));
+    urlInput.addEventListener('input', () => {
         clearTimeout(inputTimer);
         inputTimer = setTimeout(checkUrl, INPUT_DELAY);
     });
-    $urlInput.on('blur', () => {
+    urlInput.addEventListener('blur', () => {
         if (isClearing) return;
         clearTimeout(inputTimer);
         checkUrl();
     });
-    $clearBtn.on('mousedown touchstart', (e) => {
-        e.preventDefault();
-        clearInput();
-    });
-    $faviconContainer.on('mousedown touchstart', (e) => {
-        e.preventDefault();
-        clearInput();
+    ['mousedown', 'touchstart'].forEach(evt => {
+        clearBtn.addEventListener(evt, (e) => {
+            e.preventDefault();
+            clearInput();
+        });
+        faviconContainer.addEventListener(evt, (e) => {
+            e.preventDefault();
+            clearInput();
+        });
     });
 
-    if ($urlInput.val().trim()) setTimeout(checkUrl, 50);
+    if (urlInput.value.trim()) setTimeout(checkUrl, 50);
 });
 
 function syncLogic() {

@@ -14,11 +14,11 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
 </script>
 <div class="container" style="margin-bottom: 50px;">
     <ul id="mainnav" class="nav nav-tabs ">
-        <li class="active"><a id="home_link" href="#home" data-toggle="tab" aria-expanded="true">Домой</a></li>
-        <li><a id="dl_link" href="#downloads" data-toggle="tab" aria-expanded="false">Загрузки</a></li>
-        <li><a id="vid_link" href="#videos" data-toggle="tab" aria-expanded="false">Видео<span class="tab-badge"
+        <li class="active"><a id="home_link" href="#home" data-bs-toggle="tab" aria-expanded="true">Домой</a></li>
+        <li><a id="dl_link" href="#downloads" data-bs-toggle="tab" aria-expanded="false">Загрузки</a></li>
+        <li><a id="vid_link" href="#videos" data-bs-toggle="tab" aria-expanded="false">Видео<span class="tab-badge"
                     id="video-badge"></span></a></li>
-        <li><a id="music_link" href="#music" data-toggle="tab" aria-expanded="false">Музыка<span class="tab-badge"
+        <li><a id="music_link" href="#music" data-bs-toggle="tab" aria-expanded="false">Музыка<span class="tab-badge"
                     id="music-badge"></span></a></li>
     </ul>
     <div id="myTabContent" class="tab-content">
@@ -39,7 +39,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                         <div class="col-md-12">
                             <div class="url-input-wrapper">
                                 <input class="form-control url-input-animation" id="url" name="urls"
-                                    value="<?php echo htmlspecialchars($urlvalue ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                    value=""
                                     placeholder="Ссылка на видео..." type="text">
                                 <div id="url-clear" class="url-clear-btn" title="Очистить поле">
                                     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor"
@@ -144,6 +144,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
             <div style="text-align: center;" class="row">
                 <br /><br />
                 <h4>Текущие Загрузки</h4>
+                <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
@@ -159,9 +160,11 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                         </tr>
                     </tbody>
                 </table>
+                </div>
                 <br /><br />
                 <?php if(!$config['disableQueue']) : ?>
                 <h4>Очередь</h4>
+                <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
@@ -176,9 +179,11 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                         </tr>
                     </tbody>
                 </table>
+                </div>
                 <br /><br />
                 <?php endif; ?>
                 <h4>Последние Загрузки</h4>
+                <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
@@ -194,21 +199,23 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                         </tr>
                     </tbody>
                 </table>
+                </div>
             </div>
         </div>
         <div class="tab-pane fade" id="videos">
             <br /><br />
             <h4 style="text-align: center;">Загруженные Видео</h4>
+            <div class="table-responsive">
             <table style="text-align: left;" class="table table-striped table-hover ">
                 <thead>
                     <tr>
-                        <th style="min-width:600px; height:35px">Файл <?php if ($showLifetime): ?><small
+                        <th style="height:35px; min-width:300px;">Файл <?php if ($showLifetime): ?><small
                                 class="text-muted"
                                 style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через 2
                                 часа)</small></th><?php endif; ?>
-                        <th style="min-width:80px">Размер</th>
+                        <th style="width:80px">Размер</th>
                         <?php if ($config['allowFileDelete']) : ?>
-                        <th style="min-width:110px">Действия</th>
+                        <th style="width:110px">Действия</th>
                         <?php else: ?>
                         <th></th>
                         <?php endif; ?>
@@ -220,21 +227,23 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                     </tr>
                 </tbody>
             </table>
+            </div>
             <br /><br />
         </div>
         <div class="tab-pane fade" id="music">
             <br /><br />
             <h4 style="text-align: center;">Загруженные Аудио</h4>
+            <div class="table-responsive">
             <table style="text-align: left;" class="table table-striped table-hover ">
                 <thead>
                     <tr>
-                        <th style="min-width:600px; height:35px">Файл <?php if ($showLifetime): ?><small
+                        <th style="height:35px; min-width:300px;">Файл <?php if ($showLifetime): ?><small
                                 class="text-muted"
                                 style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через 2
                                 часа)</small></th><?php endif; ?>
-                        <th style="min-width:80px">Размер</th>
+                        <th style="width:80px">Размер</th>
                         <?php if ($config['allowFileDelete']) : ?>
-                        <th style="min-width:110px">Действия</th>
+                        <th style="width:110px">Действия</th>
                         <?php else: ?>
                         <th></th>
                         <?php endif; ?>
@@ -246,20 +255,48 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                     </tr>
                 </tbody>
             </table>
+            </div>
             <br /><br />
         </div>
     </div>
 </div>
 <script>
-$('#mainnav a').click(function(e) {
-    e.preventDefault();
-    var id = $(this).attr("href").substr(1);
-    window.location.hash = id;
-    $(this).tab('show');
-});
+function showTab(link) {
+    var id = link.getAttribute('href').substr(1);
 
-var hash = window.location.hash;
-if (hash) {
-    $('#mainnav a[href="' + hash + '"]').tab('show');
+    document.querySelectorAll('#mainnav > li').forEach(function (li) {
+        li.classList.remove('active');
+    });
+    document.querySelectorAll('#mainnav a[aria-expanded]').forEach(function (a) {
+        a.setAttribute('aria-expanded', 'false');
+    });
+    link.closest('li').classList.add('active');
+    link.setAttribute('aria-expanded', 'true');
+
+    document.querySelectorAll('#myTabContent > .tab-pane').forEach(function (pane) {
+        pane.classList.remove('active', 'in');
+    });
+    var pane = document.getElementById(id);
+    if (pane) {
+        pane.classList.add('active', 'in');
+    }
 }
+
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('#mainnav a').forEach(function (link) {
+        link.addEventListener('click', function (e) {
+            e.preventDefault();
+            window.location.hash = this.getAttribute('href').substr(1);
+            showTab(this);
+        });
+    });
+
+    var hash = window.location.hash;
+    if (hash) {
+        var initialLink = document.querySelector('#mainnav a[href="' + hash + '"]');
+        if (initialLink) {
+            showTab(initialLink);
+        }
+    }
+});
 </script>
