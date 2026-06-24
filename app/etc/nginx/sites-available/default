@@ -1,37 +1,72 @@
 server {
-	listen 80;
-	listen [::]:80;
-	root /var/www/YT;
-	index index.html index.php index.htm index.nginx-debian.html;
-	server_name _;
-	gzip on;
-	gzip_types text/plain application/xml;
-        error_page 400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417 418 421 422 423 424 425 426 428 429 431 451 /404.html;
-        error_page 500 501 502 503 504 505 506 507 508 510 511 /500.html;
-       location = /404.html {
-          root /var/www/YT;
-          allow all;
-          internal;
-} 
-       location = /500.html {
-          root /var/www/YT;
-          allow all;
-          internal;
-}
+    listen 80;
+    listen [::]:80;
+    root /var/www/YT;
+    index index.html index.php;
+    server_name _;
+    
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    server_tokens off;
+    
+    # Кэш метаданных файлов — ускоряет отдачу статики
+    open_file_cache max=10000 inactive=30s;
+    open_file_cache_valid 60s;
+    open_file_cache_min_uses 2;
+    open_file_cache_errors on;
+    
+    error_page 400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415 416 417 418 421 422 423 424 425 426 428 429 431 451 =404 /404.html;
+    error_page 500 501 502 503 504 505 506 507 508 510 511 =500 /500.html;
+    
+    location = /404.html {
+        root /var/www/YT;
+        internal;
+    } 
+    
+    location = /500.html {
+        root /var/www/YT;
+        internal;
+    }
 
-       location ~* ^/(tmp|class|config|.yt_env)/ {
-    	deny all;
-}
+    location ~* ^/(tmp|class|config|\.yt_env)/ {
+        deny all;
+    }
 
-	location / {
-		# First attempt to serve request as file, then
-		# as directory, then fall back to displaying a 404.
-		try_files $uri $uri/ /404.html$is_args$args;
-	}
-	# pass PHP scripts to FastCGI server
-	#
-	location ~ \.php$ {
-		include snippets/fastcgi-php.conf;
-		fastcgi_pass unix:/run/php/php8.4-fpm.sock;
-}
+    # Картинки и шрифты — редко меняются, кэшируем надолго
+    location ~* \.(jpg|jpeg|png|gif|ico|woff|woff2|ttf|svg|eot)$ {
+        expires 1w;
+        add_header Cache-Control "public, stale-while-revalidate=604800";
+        access_log off;
+    }
+
+    # CSS и JS — меняются чаще, кэш короче
+    location ~* \.(css|js)$ {
+        expires 1d;
+        add_header Cache-Control "public, must-revalidate, stale-while-revalidate=3600";
+        access_log off;
+    }
+
+    location ^~ /favicons/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options "nosniff" always;
+        access_log off;
+        try_files $uri =404;
+    }
+
+    location / {
+        try_files $uri $uri/ /404.html$is_args$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+
+        # process_queue() на каждом GET - не ждём долго, лучше быстрая ошибка
+        fastcgi_read_timeout 30s;
+        fastcgi_buffer_size 32k;
+        fastcgi_buffers 16 32k;
+        fastcgi_busy_buffers_size 64k;
+    }
 }

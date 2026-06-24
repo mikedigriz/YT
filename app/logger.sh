@@ -15,6 +15,8 @@ chmod 644 "$LOG_FILE"
 
 cat > "$PLUGIN_DIR/log_plugin.py" << 'EOF'
 import datetime
+import os
+import fcntl
 from yt_dlp.postprocessor import PostProcessor
 
 class LogPluginPP(PostProcessor):
@@ -26,26 +28,33 @@ class LogPluginPP(PostProcessor):
         try:
             tz_moscow = datetime.timezone(datetime.timedelta(hours=3))
             timestamp = datetime.datetime.now(tz_moscow).strftime('%Y-%m-%d %H:%M:%S')
-            
+
             filename = information.get('filename', information.get('title', 'Unknown'))
             url = information.get('webpage_url', 'No URL')
-            
-            # Убираем путь из filename прямо в log_entry
-            log_entry = f"{timestamp} | {filename.replace('/var/www/YT/download/', '')} | {url}"
+            client_ip = os.environ.get('CLIENT_IP', 'unknown')
+
+            log_entry = f"{timestamp} | {filename.replace('/var/www/YT/download/', '')} | {url} | {client_ip}"
 
             with open(self.log_path, 'a', encoding='utf-8') as f:
-                f.write(log_entry + "\n")
-                f.flush()
-            
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    f.write(log_entry + "\n")
+                    f.flush()
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
             print(log_entry, flush=True)
-            
+
         except Exception as e:
             err_msg = f"LogPlugin Error: {str(e)}"
-            
+
             with open(self.log_path, 'a', encoding='utf-8') as f:
-                f.write(f"ERROR: {err_msg}\n")
-                f.flush()
-            
+                try:
+                    f.write(f"ERROR: {err_msg}\n")
+                    f.flush()
+                except:
+                    pass
+
             print(f"ERROR: {err_msg}", flush=True)
 
         return [], information
