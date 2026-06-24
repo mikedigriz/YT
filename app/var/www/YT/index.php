@@ -1,4 +1,6 @@
 <?php
+require_once __DIR__ . '/error_pages.php';
+
 // === Session configuration BEFORE session_start ===
 $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') 
     || $_SERVER['SERVER_PORT'] == 443 
@@ -93,8 +95,9 @@ $session = Session::getInstance();
 $file = new FileHandler;
 $allowFileDelete = $config['allowFileDelete'] ?? false;
 
-// Process queue only for non-AJAX requests
-if (!$config['disableQueue'] && !isset($_GET['jobs'])) {
+// Продвигаем очередь на каждой загрузке, включая AJAX-поллинг ?jobs -
+// иначе задачи стартуют только когда кто-то вручную перезагрузит страницу
+if (!$config['disableQueue']) {
     $downloader = new Downloader([]);
     $downloader->process_queue();
 }
@@ -142,11 +145,11 @@ if(isset($_GET['jobs'])) {
     if (!$config['disableQueue']) {
         foreach(Downloader::get_queued_jobs() as $key) {
             $dl_type = "video";
-            $dl_format = str_replace("-f ", "Format: ", $key['dl_format']);
+            $dl_format = ($key['dl_format'] === 'worst') ? "Булшит" : "Топ";
             if ($key['audio_only']) {
                 $dl_type = "audio";
-                $dl_format = str_replace("--audio-format ", "Format: ", $key['audio_format']);
-                $dl_format = str_replace(" --audio-quality ", ", Quality: ", $dl_format);
+                $dl_format = str_replace("--audio-format ", "", $key['audio_format']);
+                $dl_format = str_replace(" --audio-quality 0", " HQ", $dl_format);
             }
             $response['queue'][] = [
                 'pid'       => $key['pid'],
@@ -181,8 +184,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         || (isset($_POST['restart']) && !empty($_POST['restart']));
     
     if ($isDestructive && !validateCsrfToken()) {
-        http_response_code(403);
-        die('CSRF token validation failed');
+        showCsrfErrorPage();
     }
 
     if(isset($_POST["removeQueued"])) {
@@ -234,8 +236,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Download a video
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     if (!validateCsrfToken()) {
-        http_response_code(403);
-        die('CSRF token validation failed');
+        showCsrfErrorPage();
     }
 
     $audio_only = false;
@@ -265,13 +266,20 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         }
     }
 
+    $raw_ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
+    if (strpos($raw_ip, ',') !== false) {
+        $raw_ip = trim(explode(',', $raw_ip)[0]);
+    }
+    $client_ip = filter_var($raw_ip, FILTER_VALIDATE_IP) ?: 'unknown';
+
     $dl_list = [[
         'url' => $_POST['urls'],
         'audio_only' => $audio_only,
         'dl_format' => $dl_format,
-        'audio_format' => $audio_format
+        'audio_format' => $audio_format,
+        'client_ip' => $client_ip
     ]];
-    
+
     $downloader = new Downloader($dl_list);
 
     if(!isset($_SESSION['errors']) || count($_SESSION['errors']) === 0) {

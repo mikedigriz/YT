@@ -101,6 +101,15 @@ return array(
    * 'youtubedlExe' => '/usr/bin/youtube-dl'
    */
   'youtubedlExe' => '/.yt_env/bin/yt-dlp',
+  
+   /**
+   * PROXY
+   *
+   * Read from the SOCKS5_URL environment variable (set via the .env file,
+   * see .env.example) so the credentials never live in this file / git.
+   * Format: socks5://user:pass@host:port
+   */
+  'socks5' => getenv('SOCKS5_URL') ?: '',
 
   /**
    * Specify if .part files should be kept when cliking on Stop All on
@@ -136,20 +145,13 @@ return array(
    * 'showFileLifetime' => false
    */
   'showFileLifetime' => true,
-  
+
   /**
    * If set to true, the script will output all errors.
    * DO NOT USE THIS IN PRODUCTION ON OUTSIDE FACING WEBSITES
    *
    * 'debug' => false
    */
-  'debug' => false,
-
-  /**
-   * Setup socks5 proxy
-   * Leave it empty to disable
-   * 'socks5' => 'socks5://user:pa$$w0rd@111.11.111.111:1111'
-   */
-  'socks5' => ''
+  'debug' => false
   );
 ?>

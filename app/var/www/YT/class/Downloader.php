@@ -39,6 +39,8 @@ class Downloader
         'mir24.tv',
         '5-tv.ru',
         'smotrim.ru', // ВГТРК
+        'life.ru',
+        'tvigle.ru',
         // Стриминговые сервисы (экстракторы есть, но часто требуют авторизации)
         'kinopoisk.ru',
         'ivi.ru', 'ivi.tv',
@@ -54,6 +56,7 @@ class Downloader
         'muzofond.fm',
         'pleer.net',
         // Социальные сети и короткие видео
+        'yappy.media',
         'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com',
         'reddit.com', 'redd.it', 'v.redd.it',
         // Аудио и музыкальные платформы
@@ -263,6 +266,8 @@ class Downloader
         }
 
         rename($outfile, $completefile);
+        // Strip [USES_PROXY] marker from the logged command to keep file clean
+        $ytcmd = preg_replace('/^\[USES_PROXY\]\s+/', '', $ytcmd);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
         file_put_contents($completefile, "[yturl] " . $urltext . "\n", FILE_APPEND);
     }
@@ -304,7 +309,7 @@ class Downloader
 
             $qjs[] = array(
                 'pid' => $pid,
-                'url' => trim($urlParts[0] ?? ''),
+                'url' => urldecode(trim($urlParts[0] ?? '')),
                 'dl_format' => $urlParts[1] ?? '',
                 'audio_only' => $audio_only,
                 'audio_format' => $urlParts[3] ?? ''
@@ -430,6 +435,9 @@ class Downloader
      */
     private static function sanitizeLog(string $log): string
     {
+        // 0. Маскируем env переменные с чувствительными данными (all_proxy, http_proxy и т.д.)
+        $log = preg_replace('/env\s+all_proxy=[^\s]+/', 'env all_proxy=[SOCKS5_PROXY]', $log);
+
         // 1. Удаляем любые URL (http, https, socks, socks5, ftp) вместе с user:pass@host:port
         $log = preg_replace('#\b[a-z][a-z0-9+\-.]*://[^\s\'"<>]+#i', '[URL]', $log);
 
@@ -674,19 +682,30 @@ class Downloader
         }
 
         if (!file_exists($file)) {
-            $_SESSION['errors'] = "Лог-файл не найден: $fpid";
+            $_SESSION['errors'] = ["Лог-файл не найден: $fpid"];
             error_log("[YTDL] Restart failed: file not found: $file");
             return;
         }
 
         $ytcmd = "";
         $urltext = "";
+        $usesProxy = false;
         $handle = fopen($file, "r");
         if ($handle) {
             while (($line = fgets($handle)) !== false) {
                 $line = rtrim($line, "\r\n");
                 if (($pos = strpos($line, '[ytcmd]')) !== false) {
                     $ytcmd = trim(substr($line, $pos + 8));
+                    // Detect proxy usage either via the [USES_PROXY] marker (still
+                    // present on jobs that haven't been finalized yet) or via the
+                    // masked "env all_proxy=[SOCKS5_PROXY]" prefix that finalize_job_log()
+                    // leaves behind after stripping the marker on completed jobs.
+                    if (strpos($ytcmd, '[USES_PROXY]') === 0) {
+                        $usesProxy = true;
+                        $ytcmd = trim(substr($ytcmd, 12)); // Remove '[USES_PROXY]'
+                    } elseif (stripos($ytcmd, 'env all_proxy=') !== false) {
+                        $usesProxy = true;
+                    }
                 }
                 if (($pos = strpos($line, '[yturl]')) !== false) {
                     $urltext = trim(substr($line, $pos + 8));
@@ -696,16 +715,29 @@ class Downloader
         }
 
         if (empty($ytcmd)) {
-            $_SESSION['errors'] = "Команда не найдена в логе!";
+            $_SESSION['errors'] = ["Команда не найдена в логе!"];
             return;
         }
 
-        // БЕЗОПАСНОСТЬ: Проверка, что команда начинается с ожидаемого бинарника
+        // БЕЗОПАСНОСТЬ: Проверка, что команда содержит ожидаемый бинарник
+        // (stripping env vars prefix if present: "env VAR=value ... /path/to/yt-dlp")
         $expectedExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
-        if (strpos($ytcmd, $expectedExe) !== 0) {
-            $_SESSION['errors'] = "Подозрительная команда в логе. Рестарт отменен";
+        $cmdToCheck = preg_replace('/^env\s+[\w]+=\S+\s+/', '', $ytcmd);
+        if (strpos($cmdToCheck, $expectedExe) !== 0) {
+            $_SESSION['errors'] = ["Подозрительная команда в логе. Рестарт отменен"];
             error_log("[YTDL] Security: Command mismatch on restart.");
             return;
+        }
+
+        // The stored command still carries the masked "env all_proxy=[SOCKS5_PROXY]"
+        // placeholder from the log — strip it before (re-)injecting the real proxy,
+        // otherwise we'd end up with two nested "env" invocations and yt-dlp would
+        // receive the literal placeholder string as its proxy.
+        $ytcmd = preg_replace('/^env\s+all_proxy=\S+\s+/', '', $ytcmd);
+
+        // If the original job used a proxy, inject it from current config
+        if ($usesProxy && !empty($GLOBALS['config']['socks5'])) {
+            $ytcmd = "env all_proxy=" . escapeshellarg($GLOBALS['config']['socks5']) . " " . $ytcmd;
         }
 
         $suffix = (strpos($fpid, "_a") !== false || strpos($file, "_a") !== false) ? "_a" : "";
@@ -731,7 +763,12 @@ class Downloader
 
         exec($cmd);
 
-        file_put_contents("$logPath/$fnp", $ytcmd . "\n", FILE_APPEND);
+        // Mask the real proxy credentials before persisting the command to disk —
+        // $ytcmd (used above for exec()) still has the real value, only the saved
+        // copy is masked, matching executeDownload()'s behavior.
+        $ytcmd_masked = preg_replace('/env\s+all_proxy=\S+/', 'env all_proxy=[SOCKS5_PROXY]', $ytcmd);
+        $proxyMarker = $usesProxy ? "[USES_PROXY] " : "";
+        file_put_contents("$logPath/$fnp", $proxyMarker . $ytcmd_masked . "\n", FILE_APPEND);
         file_put_contents("$logPath/$fnp", $urltext . "\n", FILE_APPEND);
     }
 
@@ -826,8 +863,8 @@ class Downloader
 
     private function sanitizeDlFormat($format)
     {
-        $allowed = ['best', 'worst', 'mp4', 'webm', ''];
-        return in_array($format, $allowed) ? $format : 'best';
+        $allowed = ['top', 'worst', ''];
+        return in_array($format, $allowed) ? $format : 'top';
     }
 
     private function do_download()
@@ -883,12 +920,15 @@ class Downloader
         $cmd .= " --restrict-filenames";
 
         $sanitizedFormat = $this->sanitizeDlFormat($onedownload['dl_format']);
-        if (!empty($sanitizedFormat)) {
-            $cmd .= " " . $sanitizedFormat;
+        if ($sanitizedFormat === 'worst') {
+            $cmd .= " -f worst";
+        } else {
+            // 'top' (default): best video+audio up to 1080p
+            $cmd .= " -S res:1080 -f " . escapeshellarg('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b');
         }
 
         if ($useProxy && !empty($this->config['socks5'])) {
-            $cmd .= " --proxy " . escapeshellarg($this->config['socks5']);
+            $cmd = "env all_proxy=" . escapeshellarg($this->config['socks5']) . " " . $cmd;
         }
 
         if ($onedownload['audio_only']) {
@@ -918,9 +958,16 @@ class Downloader
         $logcmd = $cmd;
         $cmd .= " > " . escapeshellarg($this->config['logPath'] . "/" . $fno) . " 2>&1 & echo $! > " . escapeshellarg($this->config['logPath'] . "/" . $fnp);
 
+        // putenv не меняет саму команду/строку лога - просто передаёт IP плагину
+        // LogPluginPP через окружение дочернего процесса, не задевая restart-парсинг
+        putenv("CLIENT_IP=" . ($onedownload['client_ip'] ?? 'unknown'));
         exec($cmd);
 
-        file_put_contents($this->config['logPath'] . "/" . $fnp, $logcmd . "\n", FILE_APPEND);
+        // Store the command with proxy masked: replace credentials with a placeholder
+        // so logs show proxy was used but without exposing the password
+        $logcmd_masked = preg_replace('/env\s+all_proxy=[^\s]+/', 'env all_proxy=[SOCKS5_PROXY]', $logcmd);
+        $proxyMarker = ($useProxy && !empty($this->config['socks5'])) ? "[USES_PROXY] " : "";
+        file_put_contents($this->config['logPath'] . "/" . $fnp, $proxyMarker . $logcmd_masked . "\n", FILE_APPEND);
         file_put_contents($this->config['logPath'] . "/" . $fnp, $urltext . "\n", FILE_APPEND);
     }
 
@@ -957,7 +1004,7 @@ class Downloader
             $urlData = $parts[1];
             $urlParts = explode(">", $urlData);
 
-            $rawUrl = trim($urlParts[0] ?? '');
+            $rawUrl = urldecode(trim($urlParts[0] ?? ''));
             if (!$this->is_valid_url($rawUrl)) {
                 $this->errors[] = $urlData . " не верный URL, удаляю из списка очереди";
                 continue;
@@ -968,7 +1015,8 @@ class Downloader
                     'url' => $rawUrl,
                     'dl_format' => $urlParts[1] ?? '',
                     'audio_only' => $urlParts[2] ?? '',
-                    'audio_format' => $urlParts[3] ?? ''
+                    'audio_format' => $urlParts[3] ?? '',
+                    'client_ip' => trim($urlParts[4] ?? 'unknown')
                 );
                 $currently_running++;
             } else {
@@ -1005,7 +1053,8 @@ class Downloader
     public function addToQueue($onedownload)
     {
         $queue_file = $this->config['logPath'] . "/dl_queue";
-        $fcontent = "queueid" . uniqid() . "=" . $onedownload['url'] . ">" . $onedownload['dl_format'] . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . "\n";
+        $clientIp = $onedownload['client_ip'] ?? 'unknown';
+        $fcontent = "queueid" . uniqid() . "=" . urlencode($onedownload['url']) . ">" . $onedownload['dl_format'] . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . ">" . $clientIp . "\n";
 
         // LOCK_EX важен здесь
         file_put_contents($queue_file, $fcontent, FILE_APPEND | LOCK_EX);
@@ -1056,7 +1105,7 @@ class Downloader
 
         if ($corrupt_queue) {
             @unlink($queue_file);
-            $_SESSION['errors'] = "Файл очереди повредился либо был удален.";
+            $_SESSION['errors'] = ["Файл очереди повредился либо был удален."];
             return;
         }
 

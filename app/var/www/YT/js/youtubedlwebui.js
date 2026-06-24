@@ -260,18 +260,19 @@ function getIconClass(type) {
 
 const urlsCache = new Map();
 
-function renderUrls(urlString, includeIcon = false, iconType = null) {
+function renderUrls(urlString, includeIcon = false, iconType = null, leadingBreak = true) {
     if (!urlString) return "";
-    const key = `${urlString}|${includeIcon}|${iconType}`;
+    const key = `${urlString}|${includeIcon}|${iconType}|${leadingBreak}`;
     if (urlsCache.has(key)) return urlsCache.get(key);
-    
+
     const result = urlString.split(",")
         .filter(url => url.trim())
-        .map(url => {
+        .map((url, idx) => {
             const iconHtml = includeIcon ? `<i class="fa ${getIconClass(iconType)}"></i> ` : "";
-            return `<br /><a href="${safeUrlAttr(url)}">${iconHtml}${escapeHtml(url)}</a>`;
+            const prefix = (idx === 0 && !leadingBreak) ? "" : "<br />";
+            return `${prefix}<a href="${safeUrlAttr(url)}">${iconHtml}${escapeHtml(url)}</a>`;
         }).join("");
-    
+
     urlsCache.set(key, result);
     return result;
 }
@@ -323,7 +324,7 @@ function renderJobRow(job) {
 
 function renderQueueRow(item) {
     const iconClass = getIconClass(item.type);
-    const urlsHtml = renderUrls(item.url, true, item.type);
+    const urlsHtml = renderUrls(item.url, true, item.type, false);
     return `
     <tr>
         <td style="vertical-align: middle;">${urlsHtml}</td>
@@ -573,7 +574,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const FALLBACK_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzg4OCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDEgMC04LTMuNTktOC04czMuNTktOCA4LTggOCAzLjU5IDggOC0zLjU5IDgtOCA4eiIvPjwvc3ZnPg==';
     const faviconCache = new Map();
 
-    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'zen.yandex.ru', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'life.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru',  'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
+    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'vkclips.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'rutube.com', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'dzen.com', 'zen.yandex.ru', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'life.ru', 'tvigle.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru',  'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'yandexvideo.com', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'redd.it', 'v.redd.it', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
 
     const KNOWN_SERVICES_SET = new Set(KNOWN_SERVICES);
     const serviceIndex = new Map();
@@ -763,7 +764,7 @@ function syncLogic() {
     hiddenAudioCheckbox.checked = isAudio;
 
     if (!isAudio) {
-        hiddenVideoFormat.value = qualityToggle.checked ? 'worst' : "-S res:1080 -f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b'";
+        hiddenVideoFormat.value = qualityToggle.checked ? 'worst' : 'top';
     }
 
     if (isAudio) syncHiddenSelects();
@@ -809,4 +810,116 @@ document.addEventListener('DOMContentLoaded', function () {
             });
         }
     }
+
+    initSnejEasterEgg();
 });
+
+const SNEJ_CLICKS_TO_FIRE = 30;
+const SNEJ_RESET_DELAY_START = 420;
+const SNEJ_RESET_DELAY_END = 180;
+const SNEJ_MAX_SHAKE_LEVEL = SNEJ_CLICKS_TO_FIRE - 2;
+const SNEJ_GLOW_START_CLICK = 8;
+const SNEJ_MAX_GLOW_LEVEL = SNEJ_CLICKS_TO_FIRE - SNEJ_GLOW_START_CLICK;
+const SNEJ_RARE_CHANCE = 0.12;
+const SNEJ_RARE_VARIANTS = [
+    'snej-laser-rare-purple',
+    'snej-laser-rare-green',
+    'snej-laser-rare-blue',
+    'snej-laser-rare-gold',
+    'snej-laser-rare-white'
+];
+
+function initSnejEasterEgg() {
+    let clickCount = 0;
+    let resetTimer = null;
+    const snejDiv = document.querySelector('#snej');
+    const snejInput = snejDiv ? snejDiv.querySelector('input[type="image"]') : null;
+    const snejWrap = snejDiv ? snejDiv.querySelector('.snej-eye-wrap') : null;
+    const snejGlow = snejDiv ? snejDiv.querySelector('.snej-eye-glow') : null;
+    const snejHitArea = snejDiv ? snejDiv.querySelector('.snej-hit-area') : null;
+
+    if (!snejInput || !snejWrap || !snejGlow || !snejHitArea) return;
+
+    snejInput.addEventListener('dragstart', (e) => e.preventDefault());
+
+    snejHitArea.addEventListener('click', (e) => {
+        e.preventDefault();
+
+        if (snejDiv.classList.contains('snej-laser-active')) return;
+
+        clickCount++;
+        clearTimeout(resetTimer);
+
+        if (clickCount >= SNEJ_CLICKS_TO_FIRE) {
+            clickCount = 0;
+            resetSnejShake(snejWrap);
+            resetSnejEyeFlash(snejGlow);
+            fireSnejLaser(snejDiv);
+            return;
+        }
+
+        if (clickCount > 1) {
+            applySnejShake(snejWrap, clickCount - 1);
+        }
+
+        if (clickCount >= SNEJ_GLOW_START_CLICK) {
+            applySnejEyeFlash(snejGlow, clickCount - SNEJ_GLOW_START_CLICK + 1);
+        }
+
+        resetTimer = setTimeout(() => {
+            clickCount = 0;
+            resetSnejShake(snejWrap);
+        }, getSnejResetDelay(clickCount));
+    });
+}
+
+function getSnejResetDelay(clickCount) {
+    const progress = Math.min(clickCount / SNEJ_CLICKS_TO_FIRE, 1);
+    return SNEJ_RESET_DELAY_START - progress * (SNEJ_RESET_DELAY_START - SNEJ_RESET_DELAY_END);
+}
+
+function applySnejShake(snejWrap, level) {
+    const progress = Math.min(level / SNEJ_MAX_SHAKE_LEVEL, 1);
+    const amplitude = 2 + progress * 10;
+    const duration = Math.max(0.45 - progress * 0.28, 0.17);
+    snejWrap.style.setProperty('--shake-amp', amplitude + 'px');
+
+    snejWrap.style.animation = 'none';
+    void snejWrap.offsetWidth;
+    snejWrap.style.animation = `snej-shake-burst ${duration}s ease-out`;
+}
+
+function resetSnejShake(snejWrap) {
+    snejWrap.style.animation = '';
+    snejWrap.style.removeProperty('--shake-amp');
+}
+
+function applySnejEyeFlash(snejGlow, level) {
+    const progress = Math.min(level / SNEJ_MAX_GLOW_LEVEL, 1);
+    const peak = 0.4 + progress * 0.6;
+    snejGlow.style.setProperty('--glow-peak', peak);
+
+    snejGlow.style.animation = 'none';
+    void snejGlow.offsetWidth;
+    snejGlow.style.animation = 'snej-eye-pulse-decay 0.5s ease-out';
+}
+
+function resetSnejEyeFlash(snejGlow) {
+    snejGlow.style.animation = '';
+    snejGlow.style.removeProperty('--glow-peak');
+}
+
+function fireSnejLaser(snejDiv) {
+    const isRare = Math.random() < SNEJ_RARE_CHANCE;
+    const variant = isRare
+        ? SNEJ_RARE_VARIANTS[Math.floor(Math.random() * SNEJ_RARE_VARIANTS.length)]
+        : null;
+
+    if (variant) snejDiv.classList.add(variant);
+    snejDiv.classList.add('snej-laser-active');
+
+    setTimeout(() => {
+        snejDiv.classList.remove('snej-laser-active');
+        if (variant) snejDiv.classList.remove(variant);
+    }, 950);
+}

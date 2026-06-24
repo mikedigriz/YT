@@ -81,7 +81,7 @@ class FileHandler
         if ($real_file && $real_folder && strpos($real_file, $real_folder . '/') === 0 && file_exists($file)) {
             unlink($file);
         } else {
-            $_SESSION['errors'] = "Файл не существует";
+            $_SESSION['errors'] = ["Файл не существует"];
         }
     }
 

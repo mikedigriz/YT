@@ -24,14 +24,19 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
     <div id="myTabContent" class="tab-content">
             <div class="tab-pane fade active in" id="home">
                 <div id="snej" class="snej-animation" style="pointer-events: none">
-                    <input type="image" src="img/snej.webp" title="Снежик" fetchpriority="high">
+                    <div class="snej-eye-wrap">
+                        <input type="image" src="img/snej.webp" title="Снежик" fetchpriority="high" draggable="false" style="pointer-events: none; -webkit-user-drag: none; user-select: none;">
+                        <span class="snej-eye-glow"></span>
+                        <span class="snej-eye-laser"></span>
+                        <span class="snej-hit-area" style="pointer-events: auto; cursor: pointer;"></span>
+                    </div>
                 </div>
             <div class="row">
                 <br />
                 <h1 style="text-align: center;"><?php echo($config['siteName']); ?></h1><br />
                 <?php if(isset($_SESSION['errors']) && $_SESSION['errors'] > 0) : ?>
                 <?php foreach ($_SESSION['errors'] as $e): ?>
-                <div class="alert alert-warning" role="alert"><?php echo ($e); ?></div>
+                <div class="alert alert-warning" role="alert"><?php echo htmlspecialchars($e, ENT_QUOTES, 'UTF-8'); ?></div>
                 <?php endforeach; ?>
                 <?php endif; ?>
                 <form id="download-form" class="form-horizontal" action="index.php" method="post">
@@ -84,7 +89,8 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                             <span class="side-label label-left">Топ</span>
                                             <label class="minimal-toggle-inner">
                                                 <input type="checkbox" id="ui_quality_toggle"
-                                                    class="toggle-input-single" onchange="syncLogic()">
+                                                    class="toggle-input-single"
+                                                    onchange="syncLogic()">
                                                 <span class="toggle-track"></span>
                                             </label>
                                             <span class="side-label label-right">
@@ -128,8 +134,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                         <option value="wav">wav</option>
                                     </select>
                                     <select name="format" id="format">
-                                        <option value="-S res:1080 -f 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b'">
-                                            Топ</option>
+                                        <option value="top">Топ</option>
                                         <option value="worst">Булшит</option>
                                     </select>
                                 </div>
