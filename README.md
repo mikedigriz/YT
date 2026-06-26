@@ -1,14 +1,18 @@
+<p align="right">
+  <a href="docs/README.md"><img src="https://img.shields.io/badge/📖-docs-blue?style=flat-square&labelColor=gray" alt="Документация" height="20"></a>
+</p>
+
 <div align="center">
 
 # 🚀 Качалка
 
 **Веб-интерфейс для yt-dlp в одном Docker-контейнере**
 
-![Docker Pulls](https://img.shields.io/docker/pulls/mikedigriz/yt?style=for-the-badge&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)
-![Docker Image Size](https://img.shields.io/docker/image-size/mikedigriz/yt/latest?style=for-the-badge&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)
-![GitHub Stars](https://img.shields.io/github/stars/mikedigriz/YT?style=for-the-badge&logo=github&logoColor=white&color=4A90D9)
+[![Docker Pulls](https://img.shields.io/docker/pulls/mikedigriz/yt?style=for-the-badge&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)](https://hub.docker.com/r/mikedigriz/yt)
+[![Docker Image Size](https://img.shields.io/docker/image-size/mikedigriz/yt/latest?style=for-the-badge&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)](https://hub.docker.com/r/mikedigriz/yt)
+[![GitHub Stars](https://img.shields.io/github/stars/mikedigriz/YT?style=for-the-badge&logo=github&logoColor=white&color=4A90D9)](https://github.com/mikedigriz/YT)
 
-![Powered by yt-dlp](https://img.shields.io/badge/POWERED%20BY-yt--dlp-FF0000?style=for-the-badge&logo=youtube&logoColor=white)
+[![Powered by yt-dlp](https://img.shields.io/badge/POWERED%20BY-yt--dlp-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://github.com/yt-dlp/yt-dlp)
 
 </div>
 
@@ -19,14 +23,14 @@
 - Есть возможность забрать аудиодорожку с видео.
 - По умолчанию скачивается максимальное качество видео.
 - Подходит для использования с устройствами на базе Win, macOS, Linux, Android, iOS.
-- Релизована поддержка SOCKS5-прокси для обхода региональных ограничений
-- Реализован кастомный логгер загрузок
-- Ограничена загрузка контента 18+
-- Код улучшен в части обработки ошибок, управления процессами и безопасности.
-- Удобен в качестве единой площадки для работы с контентом для SMM-групп и контент-маркетологов.
+- Поддержка SOCKS5-прокси для обхода региональных ограничений
+- Кастомный логгер загрузок
+- Ограничение загрузки контента 18+
+- Обработка ошибок, управление процессами и безопасность
+- Удобен для работы с контентом для SMM-групп и контент-маркетологов
 
 <p align="center">
-    <img src="res/YT.gif" width="65%">
+    <img src="res/YT.webp" width="65%">
 </p>
 
 ## Как пользоваться
@@ -38,7 +42,7 @@
 
 **Дополнительно:**
 - Формат: по умолчанию лучшее качество в mp4. Для аудио - переключите режим перед загрузкой
-- Прокси: укажите SOCKS5 в `config.php` → параметр `socks5`
+- Прокси: укажите SOCKS5 в `.env` → параметр `SOCKS5_URL` (формат: `socks5://user:pass@host:port`)
 - Доп. параметры yt-dlp: файл `/etc/yt-dlp.conf`
 - Логи: `docker logs <container>`
 
@@ -67,9 +71,8 @@ docker build --no-cache -t yt .
 Пример скрипта тут: ```app/etc/Scripts```
 
 
-- 'Из коробки' проблемы с именами файлов.  
-При разворачивании контейнера на библиотеку **yt-dlp** накатывается измененный файл **_utils.py**.  
-При внезапных поломках после обновлений - смотри туда.
+- Названия файлов: используется измененный файл **_utils.py** для yt-dlp.  
+При проблемах после обновления yt-dlp проверь этот файл.
 
 
 - Когда нужен доступ с других устройств, вспомните про **route**.  
@@ -86,11 +89,3 @@ docker build --no-cache -t yt .
 - Загрузка началась и упала с ошибкой - сайты меняются, а некоторые как YouTube - борется с загрузками.  
 Проверить актуальность библиотеки **yt-dlp**. Проверить работает ли загрузка из консоли.
 
-## Послесловие
-Первоначально использовалось библиотека [youtube-dl](https://github.com/ytdl-org/youtube-dl).  
-Но из-за того что библиотека брошена и не обновляется - сейчас используется ее форк [yt-dlp](https://github.com/yt-dlp/yt-dlp).  
-Основной код написан не мной, я разобрался в кодовой базе и добавил изменения, дополнения, обновления компонентов, докер.
-
-Автор оригинального кода: [не указан]  
-Проект основан на одном из ранних веб-интерфейсов для youtube-dl/yt-dlp на PHP. 
-Если вы знаете первоисточник - откройте Issue.
