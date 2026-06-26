@@ -1,7 +1,7 @@
 <?php
 require_once __DIR__ . '/error_pages.php';
 
-// === Session configuration BEFORE session_start ===
+// === Настройка сессии ДО session_start ===
 $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') 
     || $_SERVER['SERVER_PORT'] == 443 
     || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
@@ -19,7 +19,7 @@ ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 ini_set('session.cookie_samesite', 'Lax');
 
-// === CSRF Protection ===
+// === Защита от CSRF ===
 function generateCsrfToken(): string {
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -59,7 +59,7 @@ function validateCsrfToken(): bool {
     return true;
 }
 
-// === Security headers ===
+// === Заголовки безопасности ===
 header("X-Content-Type-Options: nosniff");
 header("X-Frame-Options: SAMEORIGIN");
 header("X-XSS-Protection: 1; mode=block");
@@ -87,11 +87,16 @@ if (isset($_GET['theme'])) {
     $siteTheme = $_GET['theme'];
 }
 
-require_once 'class/Session.php';
+// Единый источник доменов для favicon-детекта - тот же список, что читает
+// load_favicons.py. PHP-список Downloader::DIRECT_ACCESS_DOMAINS отдельный,
+// у него другая задача (прямой доступ против прокси), сюда не входит.
+$faviconDomainsJson = file_get_contents(__DIR__ . '/config/favicon_domains.json');
+$knownServices = json_decode($faviconDomainsJson, true) ?: [];
+
 require_once 'class/Downloader.php';
 require_once 'class/FileHandler.php';
 
-$session = Session::getInstance();
+session_start();
 $file = new FileHandler;
 $allowFileDelete = $config['allowFileDelete'] ?? false;
 
@@ -102,14 +107,14 @@ if (!$config['disableQueue']) {
     $downloader->process_queue();
 }
 
-// Helper function for file row generation
+// Вспомогательная функция для построения строки файла
 function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     $deleteurl = "";
     if ($allowFileDelete) {
-        // json_encode produces a valid JS string literal; htmlspecialchars then escapes it for
-        // safe placement inside an HTML attribute. Plain htmlspecialchars() alone is NOT enough here:
-        // browsers HTML-decode the attribute value before executing it as JS, so an entity like
-        // &#039; would be decoded back to ' and could break out of the JS string (DOM XSS).
+        // json_encode даёт корректный JS string literal; htmlspecialchars затем экранирует его
+        // для безопасной вставки в HTML-атрибут. Одного htmlspecialchars() тут НЕ достаточно:
+        // браузер HTML-декодирует значение атрибута перед тем, как выполнить его как JS, поэтому
+        // сущность вроде &#039; раскодируется обратно в ' и сможет выйти за пределы JS-строки (DOM XSS).
         $jsName = htmlspecialchars(json_encode($f["name"], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
         $jsType = htmlspecialchars(json_encode($type, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
         $deleteurl = '<button onclick="confirmAction(\'delete\', ' . $jsName . ', {type: ' . $jsType . '})" class="btn btn-danger btn-xs">Удалить</button>';
@@ -131,7 +136,7 @@ function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     ];
 }
 
-// Return JSON with all jobs currently running and jobs history
+// Возвращаем JSON со всеми текущими задачами и историей задач
 if(isset($_GET['jobs'])) {
     $response = [
         'jobs'     => Downloader::get_current_background_jobs(),
@@ -145,7 +150,8 @@ if(isset($_GET['jobs'])) {
     if (!$config['disableQueue']) {
         foreach(Downloader::get_queued_jobs() as $key) {
             $dl_type = "video";
-            $dl_format = ($key['dl_format'] === 'worst') ? "Булшит" : "Топ";
+            $formatLabels = ['worst' => 'Булшит', '4K' => '4K', '1440p' => '2K', '1080p' => 'Full HD'];
+            $dl_format = $formatLabels[$key['dl_format']] ?? "Топ";
             if ($key['audio_only']) {
                 $dl_type = "audio";
                 $dl_format = str_replace("--audio-format ", "", $key['audio_format']);
@@ -175,7 +181,7 @@ if(isset($_GET['jobs'])) {
     die();
 }
 
-// === POST handlers for destructive actions ===
+// === Обработчики POST для деструктивных действий ===
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $isDestructive = isset($_POST['removeQueued']) 
         || isset($_POST['delete']) 
@@ -233,7 +239,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Download a video
+// Скачиваем видео
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     if (!validateCsrfToken()) {
         showCsrfErrorPage();
@@ -266,7 +272,16 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         }
     }
 
-    $raw_ip = $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
+    // X-Forwarded-For/X-Real-IP подделываются любым клиентом, что достучится до
+    // контейнера напрямую (порт опубликован в compose) - доверяем им только
+    // если запрос реально пришёл с приватного/служебного адреса (наш nginx/докер-бридж)
+    $remote_addr = $_SERVER['REMOTE_ADDR'] ?? '';
+    $is_valid_remote = filter_var($remote_addr, FILTER_VALIDATE_IP) !== false;
+    $is_public_remote = filter_var($remote_addr, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    $is_trusted_proxy = $is_valid_remote && !$is_public_remote;
+    $raw_ip = $is_trusted_proxy
+        ? ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? $remote_addr)
+        : $remote_addr;
     if (strpos($raw_ip, ',') !== false) {
         $raw_ip = trim(explode(',', $raw_ip)[0]);
     }
@@ -288,7 +303,7 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     }
 }
 
-// Prepare for display of web page
+// Готовим данные для отображения страницы
 if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
     $audio_check = " checked=\"checked\"";
     $video_form_style = " style=\"display: none;\"";

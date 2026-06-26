@@ -1,17 +1,15 @@
 <?php
 return array(
   /**
-   * The name of your site. You can specify the name that will be displayed
-   * at the top of the website.
+   * Название сайта. Отображается в заголовке страницы.
    *
-   * 'siteName' => 'Youtube-dl WebUI'
+   * 'siteName' => 'Качалка'
    */
   'siteName' => 'Качалка v.1.0b',
 
   /**
-   * The bootswatch theme to be used. You can visit https://bootswatch.com/
-   * for more information.
-   * Allowed values:
+   * Тема Bootswatch. Подробности на https://bootswatch.com/
+   * Допустимые значения:
    * 'cerulean','cosmo','cyborg','darkly','flatly','journal',
    * 'lumen','paper','readable','sandstone','simplex','slate',
    * 'spacelab','superhero','united','yeti'
@@ -21,134 +19,149 @@ return array(
   'siteTheme' => 'lumen',
 
   /**
-   * youtube-dl can convert the downloaded videos to audio only.
-   * This requires that you have either ffmpeg or avconv installed.
-   * If you don't have either of those tools available or you want to
-   * disable this feature for performance reasons, set this to true.
+   * yt-dlp умеет конвертировать скачанное видео в аудио.
+   * Для этого нужен установленный ffmpeg или avconv.
+   * Если этих инструментов нет, или хочешь отключить функцию
+   * ради производительности - поставь true.
    *
    * 'disableExtraction' => false
    */
   'disableExtraction' => false,
 
   /**
-   * Set the maximum allowed simultaneous download (i.e. instances
-   * of youtube-dl). Set to -1 if you want to disable the limit (not
-   * recommended)
+   * Максимальное число одновременных загрузок (т.е. процессов
+   * yt-dlp). Поставь -1, чтобы убрать лимит (не рекомендуется)
    *
-   * 'max_dl' => 3
+   * 'max_dl' => 1
    */
   'max_dl' => 1,
 
   /**
-   * The full absolute path where downloads will be saved to
-   * without trailing slash.
-   * Make sure that the user running your webserver has write
-   * access to this folder
+   * Полный абсолютный путь, куда сохраняются загрузки,
+   * без завершающего слеша.
+   * Убедись, что у пользователя веб-сервера есть права на запись
+   * в эту папку.
    *
-   * e.g.
+   * например:
    * 'outputFolder' => '/var/www/tubedl/download'
    */
   'outputFolder' => '/var/www/YT/download',
 
   /**
-   * The web accessible path to you download folder. This has to be a
-   * relative path to the installation of Youtube-dl-webui.
-   * If your download folder is not accessible through the web, leave
-   * this blank and Youtube-dl-webui will not offer download links.
-   * This can be useful if you are running the software on a NAS type device.
+   * Веб-доступный путь к папке загрузок. Должен быть относительным
+   * путём от установки Качалки.
+   * Если папка загрузок не доступна через веб - оставь пустым,
+   * и Качалка не будет предлагать ссылки на скачивание.
+   * Удобно, если софт крутится на устройстве типа NAS.
    *
    * 'downloadPath' => 'download'
    */
   'downloadPath' => 'download',
 
   /**
-   * Specify the tab to redirect to after submitting a download URL.
-   * allowed values are: 'downloads','home','videos','music'
+   * На какую вкладку перейти после отправки ссылки на загрузку.
+   * допустимые значения: 'downloads','home','videos','music'
    *
    * 'redirectAfterSubmit' => 'downloads'
    */
   'redirectAfterSubmit' => 'downloads',
 
   /**
-   * Specify the directory where youtube should log it's output to.
-   * This has to be a full absolute path without a trailing slash.
-   * The files created by youtube-dl are used to display the progress on the
-   * download page.
-   * Make sure that the user who is running the webserver has write access
-   * to this directory.
+   * Директория, куда yt-dlp пишет лог своей работы.
+   * Должен быть полным абсолютным путём без завершающего слеша.
+   * Файлы, создаваемые yt-dlp, используются для отображения
+   * прогресса на странице загрузок.
+   * Убедись, что у пользователя веб-сервера есть права на запись
+   * в эту директорию.
    *
    * 'logPath' => '/var/www/tubedl/tmp'
    */
   'logPath' => '/var/www/YT/tmp',
 
   /**
-   * If you the path you have set with logPath is accessible through your webserver,
-   * you can specify the relative path without a trailing slash. This will be used
-   * to create the links to the logs.
-   * If you don't wish to expose the logs, leave this empty
+   * Если путь, заданный в logPath, доступен через веб-сервер,
+   * укажи здесь относительный путь без завершающего слеша. Он будет
+   * использован для построения ссылок на логи.
+   * Если не хочешь раскрывать логи - оставь пустым
    *
    * 'logURL' => 'logs'
    */
   'logURL' => '',
 
   /**
-   * Specify the command to run youtube-dl. This has to be the full
-   * absolute path to youtube-dl executable. If you are not sure
-   * where it is located on your system you can try to run 'which youtube-dl'
-   * on the command line. If it is properly installed it should give you back
-   * the path where the executable is installed.
+   * Команда для запуска yt-dlp. Должен быть полным абсолютным
+   * путём до исполняемого файла. Если не уверен, где он лежит,
+   * попробуй выполнить 'which youtube-dl' в командной строке.
+   * Если установлен правильно - вернёт путь до исполняемого файла.
    *
    * 'youtubedlExe' => '/usr/bin/youtube-dl'
    */
   'youtubedlExe' => '/.yt_env/bin/yt-dlp',
-  
-   /**
-   * PROXY
+
+  /**
+   * Потолок высоты видео при выборе формата 'top' (выбор по умолчанию).
+   * Передаётся в yt-dlp как -S res:N. Чем выше - тем больше места на диске
+   * и времени на закачку для источников с 4K/8K оригиналом.
+   * Для загрузки качества сверх текущих параметров, зажми и удерживай кнопку «СКАЧАТЬ».
    *
-   * Read from the SOCKS5_URL environment variable (set via the .env file,
-   * see .env.example) so the credentials never live in this file / git.
-   * Format: socks5://user:pass@host:port
+   * Готовые значения:
+   * 720  - HD
+   * 1080 - Full HD
+   * 1440 - 2K (QHD)
+   * 2160 - 4K (UHD)
+   *
+   * 'maxVideoRes' => 1080
+   */
+  'maxVideoRes' => 1080,
+
+   /**
+   * ПРОКСИ
+   *
+   * Читается из переменной окружения SOCKS5_URL (задаётся через .env,
+   * см. .env.example), чтобы учётные данные никогда не лежали в этом
+   * файле / git.
+   * Формат: socks5://user:pass@host:port
    */
   'socks5' => getenv('SOCKS5_URL') ?: '',
 
   /**
-   * Specify if .part files should be kept when cliking on Stop All on
-   * the download status page.
+   * Оставлять ли .part-файлы при нажатии "Остановить всё" на
+   * странице статуса загрузок.
    *
    * 'keepPartialFiles' => false
    */
   'keepPartialFiles' => false,
 
   /**
-   * When the simultaneous download limit is reaches, new downloads
-   * will be queued. The queued downloads will be processed each
-   * time you access the website or if you setup a conjob calling
-   * index.php?cron.
-   * You can disable this by setting the following option to true.
-   * In that case you will get an error when trying to add more
-   * downloads after the simultaneous download limit has been reached.
+   * Когда лимит одновременных загрузок достигнут, новые загрузки
+   * становятся в очередь. Очередь обрабатывается при каждом заходе
+   * на сайт или если настроить cron-задачу на index.php?cron.
+   * Можно отключить, поставив следующую опцию в true.
+   * В этом случае при попытке добавить загрузку сверх лимита
+   * будет выдана ошибка.
    *
    * 'disableQueue' => false
    */
   'disableQueue' => false,
 
   /**
-   * Specify if users can delete downloaded music and video files
+   * Разрешить ли пользователям удалять скачанные аудио и видео файлы
    *
    * 'allowFileDelete' => true
    */
   'allowFileDelete' => true,
 
   /**
-   * Enable timer view for files. If you use Script for autoremove in 2h.
+   * Включить отображение таймера жизни файлов. Используй, если
+   * настроен скрипт автоудаления через 2 часа.
    *
    * 'showFileLifetime' => false
    */
   'showFileLifetime' => true,
 
   /**
-   * If set to true, the script will output all errors.
-   * DO NOT USE THIS IN PRODUCTION ON OUTSIDE FACING WEBSITES
+   * Если true - скрипт выводит все ошибки.
+   * НЕ ИСПОЛЬЗОВАТЬ НА ПРОДЕ С ВНЕШНИМ ДОСТУПОМ
    *
    * 'debug' => false
    */

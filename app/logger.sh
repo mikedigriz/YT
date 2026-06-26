@@ -1,14 +1,15 @@
 #!/bin/bash
 set -e
 
-YT_ENV="/var/www/.config/yt-dlp"
+YT_ENV="/etc/yt-dlp"
 PLUGIN_DIR="$YT_ENV/plugins/log_plugin/yt_dlp_plugins/postprocessor"
 LOG_FILE="/var/log/yt_dlp.log"
 
 mkdir -p "$PLUGIN_DIR"
-touch "$YT_ENV/plugins/log_plugin/yt_dlp_plugins/__init__.py"
-touch "$PLUGIN_DIR/__init__.py"
-echo '--use-postprocessor LogPluginPP' > "$YT_ENV/config"
+# yt_dlp_plugins/ и postprocessor/ - PEP 420 namespace-пакеты, __init__.py не нужен.
+# Постпроцессор подключается явно в команде yt-dlp (Downloader::executeDownload)
+# через --plugin-dirs + --use-postprocessor, поэтому файл config тут НЕ пишем:
+# иначе LogPluginPP подключился бы дважды и строки в логе дублировались бы.
 
 touch "$LOG_FILE"
 chmod 644 "$LOG_FILE"

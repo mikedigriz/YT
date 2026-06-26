@@ -14,11 +14,11 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
 </script>
 <div class="container" style="margin-bottom: 50px;">
     <ul id="mainnav" class="nav nav-tabs ">
-        <li class="active"><a id="home_link" href="#home" data-bs-toggle="tab" aria-expanded="true">Домой</a></li>
-        <li><a id="dl_link" href="#downloads" data-bs-toggle="tab" aria-expanded="false">Загрузки</a></li>
-        <li><a id="vid_link" href="#videos" data-bs-toggle="tab" aria-expanded="false">Видео<span class="tab-badge"
+        <li class="active"><a id="home_link" href="#home" aria-expanded="true">Домой</a></li>
+        <li><a id="dl_link" href="#downloads" aria-expanded="false">Загрузки</a></li>
+        <li><a id="vid_link" href="#videos" aria-expanded="false">Видео<span class="tab-badge"
                     id="video-badge"></span></a></li>
-        <li><a id="music_link" href="#music" data-bs-toggle="tab" aria-expanded="false">Музыка<span class="tab-badge"
+        <li><a id="music_link" href="#music" aria-expanded="false">Музыка<span class="tab-badge"
                     id="music-badge"></span></a></li>
     </ul>
     <div id="myTabContent" class="tab-content">
@@ -64,6 +64,20 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
 
                                 <div class="btn-download-wrapper">
                                     <button type="submit" class="btn btn-primary btn-download-minimal">Скачать</button>
+                                    <div class="quality-popup-menu" id="quality-popup">
+                                        <div class="quality-popup-item" data-format="4K">
+                                            <span class="quality-label">4K</span>
+                                            <span class="quality-desc">2160p</span>
+                                        </div>
+                                        <div class="quality-popup-item" data-format="1440p">
+                                            <span class="quality-label">2K</span>
+                                            <span class="quality-desc">1440p</span>
+                                        </div>
+                                        <div class="quality-popup-item" data-format="1080p">
+                                            <span class="quality-label">1080p</span>
+                                            <span class="quality-desc">Full HD</span>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <div class="controls-row">
@@ -136,6 +150,9 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                     <select name="format" id="format">
                                         <option value="top">Топ</option>
                                         <option value="worst">Булшит</option>
+                                        <option value="4K">4K</option>
+                                        <option value="1440p">2K</option>
+                                        <option value="1080p">Full HD</option>
                                     </select>
                                 </div>
 

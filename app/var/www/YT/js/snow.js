@@ -1,34 +1,34 @@
 var snowmax=7
 
-// Set the colors for the snow. Add as many colors as you like
+// Цвета снежинок. Можно добавить сколько угодно
 var snowcolor=new Array("#b9dff5","#b9dff5","#b9dff5","#b9dff5","#b9dff5")
 
-// Set the fonts, that create the snowflakes. Add as many fonts as you like
+// Шрифты, которыми рисуются снежинки. Можно добавить сколько угодно
 var snowtype=new Array("Times")
 
-// Set the letter that creates your snowflake (recommended: * )
+// Символ, из которого делается снежинка (рекомендуется: * )
 var snowletter="*"
 
-// Set the speed of sinking (recommended values range from 0.3 to 2)
+// Скорость падения (рекомендуемые значения от 0.3 до 2)
 var sinkspeed=0.6
 
-// Set the maximum-size of your snowflakes
+// Максимальный размер снежинок
 var snowmaxsize=40
 
-// Set the minimal-size of your snowflakes
+// Минимальный размер снежинок
 var snowminsize=8
 
-// Set the snowing-zone
-// Set 1 for all-over-snowing, set 2 for left-side-snowing
-// Set 3 for center-snowing, set 4 for right-side-snowing
+// Зона снегопада
+// 1 - снег по всей области, 2 - снег слева
+// 3 - снег по центру, 4 - снег справа
 var snowingzone=1
 
 ///////////////////////////////////////////////////////////////////////////
-// CONFIGURATION ENDS HERE
+// КОНЕЦ НАСТРОЕК
 ///////////////////////////////////////////////////////////////////////////
 
 
-// Do not edit below this line
+// Ниже эту строку не редактировать
 var snow=new Array()
 var marginbottom
 var marginright

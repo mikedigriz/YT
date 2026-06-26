@@ -5,5 +5,7 @@ services:
     image: yt:latest
     tty: true
     restart: always
+    env_file:
+      - .env
     ports:
       - 8000:80

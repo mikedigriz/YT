@@ -15,6 +15,7 @@
     <noscript>
         <link rel="stylesheet" href="css/<?= preg_replace('/[^a-z0-9\-\_]/i', '', $siteTheme ?? 'default') ?>.min.css">
     </noscript>
+    <script>const KNOWN_SERVICES = <?= json_encode($knownServices ?? [], JSON_UNESCAPED_SLASHES) ?>;</script>
     <script defer src="js/youtubedlwebui.js" fetchpriority="high"></script>
 </head>
 <body>

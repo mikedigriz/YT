@@ -266,7 +266,7 @@ class Downloader
         }
 
         rename($outfile, $completefile);
-        // Strip [USES_PROXY] marker from the logged command to keep file clean
+        // Убираем маркер [USES_PROXY] из записанной команды, чтобы файл был чистым
         $ytcmd = preg_replace('/^\[USES_PROXY\]\s+/', '', $ytcmd);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
         file_put_contents($completefile, "[yturl] " . $urltext . "\n", FILE_APPEND);
@@ -696,13 +696,13 @@ class Downloader
                 $line = rtrim($line, "\r\n");
                 if (($pos = strpos($line, '[ytcmd]')) !== false) {
                     $ytcmd = trim(substr($line, $pos + 8));
-                    // Detect proxy usage either via the [USES_PROXY] marker (still
-                    // present on jobs that haven't been finalized yet) or via the
-                    // masked "env all_proxy=[SOCKS5_PROXY]" prefix that finalize_job_log()
-                    // leaves behind after stripping the marker on completed jobs.
+                    // Определяем использование прокси либо по маркеру [USES_PROXY]
+                    // (он ещё есть у задач, которые не были финализированы), либо по
+                    // замаскированному префиксу "env all_proxy=[SOCKS5_PROXY]", который
+                    // finalize_job_log() оставляет после удаления маркера у завершённых задач.
                     if (strpos($ytcmd, '[USES_PROXY]') === 0) {
                         $usesProxy = true;
-                        $ytcmd = trim(substr($ytcmd, 12)); // Remove '[USES_PROXY]'
+                        $ytcmd = trim(substr($ytcmd, 12)); // Убираем '[USES_PROXY]'
                     } elseif (stripos($ytcmd, 'env all_proxy=') !== false) {
                         $usesProxy = true;
                     }
@@ -720,7 +720,7 @@ class Downloader
         }
 
         // БЕЗОПАСНОСТЬ: Проверка, что команда содержит ожидаемый бинарник
-        // (stripping env vars prefix if present: "env VAR=value ... /path/to/yt-dlp")
+        // (убираем префикс с env-переменными, если есть: "env VAR=value ... /path/to/yt-dlp")
         $expectedExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
         $cmdToCheck = preg_replace('/^env\s+[\w]+=\S+\s+/', '', $ytcmd);
         if (strpos($cmdToCheck, $expectedExe) !== 0) {
@@ -729,13 +729,13 @@ class Downloader
             return;
         }
 
-        // The stored command still carries the masked "env all_proxy=[SOCKS5_PROXY]"
-        // placeholder from the log — strip it before (re-)injecting the real proxy,
-        // otherwise we'd end up with two nested "env" invocations and yt-dlp would
-        // receive the literal placeholder string as its proxy.
+        // В сохранённой команде из лога ещё стоит замаскированный плейсхолдер
+        // "env all_proxy=[SOCKS5_PROXY]" - убираем его перед (повторной) вставкой
+        // настоящего прокси, иначе получим два вложенных вызова "env", и yt-dlp
+        // получит в качестве прокси буквальную строку-плейсхолдер.
         $ytcmd = preg_replace('/^env\s+all_proxy=\S+\s+/', '', $ytcmd);
 
-        // If the original job used a proxy, inject it from current config
+        // Если исходная задача использовала прокси - вставляем его из текущего конфига
         if ($usesProxy && !empty($GLOBALS['config']['socks5'])) {
             $ytcmd = "env all_proxy=" . escapeshellarg($GLOBALS['config']['socks5']) . " " . $ytcmd;
         }
@@ -763,9 +763,9 @@ class Downloader
 
         exec($cmd);
 
-        // Mask the real proxy credentials before persisting the command to disk —
-        // $ytcmd (used above for exec()) still has the real value, only the saved
-        // copy is masked, matching executeDownload()'s behavior.
+        // Маскируем реальные учётные данные прокси перед сохранением команды на диск -
+        // $ytcmd (использован выше для exec()) всё ещё содержит настоящее значение,
+        // маскируется только сохраняемая копия - так же, как делает executeDownload().
         $ytcmd_masked = preg_replace('/env\s+all_proxy=\S+/', 'env all_proxy=[SOCKS5_PROXY]', $ytcmd);
         $proxyMarker = $usesProxy ? "[USES_PROXY] " : "";
         file_put_contents("$logPath/$fnp", $proxyMarker . $ytcmd_masked . "\n", FILE_APPEND);
@@ -863,7 +863,7 @@ class Downloader
 
     private function sanitizeDlFormat($format)
     {
-        $allowed = ['top', 'worst', ''];
+        $allowed = ['top', 'worst', '4K', '1440p', '1080p', ''];
         return in_array($format, $allowed) ? $format : 'top';
     }
 
@@ -916,6 +916,12 @@ class Downloader
     {
         $suffix = "";
         $cmd = $this->config['youtubedlExe'];
+        $cmd .= " --js-runtimes node";
+        // Логгер скачиваний (LogPluginPP -> /var/log/yt_dlp.log) подключаем явно,
+        // не полагаясь на автопоиск config/плагинов yt-dlp. --plugin-dirs указывает
+        // на каталог, содержащий yt_dlp_plugins/ (плагин запечён в образ из logger.sh)
+        $cmd .= " --plugin-dirs " . escapeshellarg("/etc/yt-dlp/plugins/log_plugin");
+        $cmd .= " --use-postprocessor LogPluginPP";
         $cmd .= " -o " . escapeshellarg($this->download_path . "/%(title)s_%(id)s.%(ext)s");
         $cmd .= " --restrict-filenames";
 
@@ -923,11 +929,26 @@ class Downloader
         if ($sanitizedFormat === 'worst') {
             $cmd .= " -f worst";
         } else {
-            // 'top' (default): best video+audio up to 1080p
-            $cmd .= " -S res:1080 -f " . escapeshellarg('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b');
+            // 'top' (по умолчанию): лучшее видео+аудио до maxVideoRes (config.php)
+            // явный выбор качества (долгое нажатие на "Скачать") переопределяет потолок
+            $explicitRes = ['4K' => 2160, '1440p' => 1440, '1080p' => 1080];
+            if (isset($explicitRes[$sanitizedFormat])) {
+                $maxRes = $explicitRes[$sanitizedFormat];
+            } else {
+                $maxRes = (int) ($this->config['maxVideoRes'] ?? 1080);
+                if ($maxRes < 144 || $maxRes > 8640) {
+                    $maxRes = 1080;
+                }
+            }
+            $cmd .= " -S " . escapeshellarg("res:{$maxRes}") . " -f " . escapeshellarg('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b');
         }
 
         if ($useProxy && !empty($this->config['socks5'])) {
+            // googlevideo и подобные CDN часто отдают поток как один URL
+            // с поддержкой Range, а не как фрагментированный манифест -
+            // --http-chunk-size режет его на чанки через Range-запросы,
+            // --concurrent-fragments качает их параллельно (без HLS/DASH-фрагментации)
+            $cmd .= " --concurrent-fragments 8 --http-chunk-size 5M";
             $cmd = "env all_proxy=" . escapeshellarg($this->config['socks5']) . " " . $cmd;
         }
 
@@ -940,7 +961,7 @@ class Downloader
             $suffix = "_a";
         } else {
             $cmd .= " --merge-output-format mp4";
-            $cmd .= " --recode-video mp4";
+            $cmd .= " --remux-video mp4";
         }
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
@@ -963,8 +984,8 @@ class Downloader
         putenv("CLIENT_IP=" . ($onedownload['client_ip'] ?? 'unknown'));
         exec($cmd);
 
-        // Store the command with proxy masked: replace credentials with a placeholder
-        // so logs show proxy was used but without exposing the password
+        // Сохраняем команду с замаскированным прокси: учётные данные заменяются
+        // плейсхолдером, чтобы в логах было видно, что прокси использовался, но без пароля
         $logcmd_masked = preg_replace('/env\s+all_proxy=[^\s]+/', 'env all_proxy=[SOCKS5_PROXY]', $logcmd);
         $proxyMarker = ($useProxy && !empty($this->config['socks5'])) ? "[USES_PROXY] " : "";
         file_put_contents($this->config['logPath'] . "/" . $fnp, $proxyMarker . $logcmd_masked . "\n", FILE_APPEND);

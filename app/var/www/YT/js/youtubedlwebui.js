@@ -30,7 +30,7 @@ let audioSuccess = null;
 let audioError = null;
 let soundsLoading = null;
 
-// === CSRF Protection ===
+// === Защита от CSRF ===
 function getCsrfToken() {
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute('content') : '';
@@ -574,8 +574,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const FALLBACK_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzg4OCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDEgMC04LTMuNTktOC04czMuNTktOCA4LTggOCAzLjU5IDggOC0zLjU5IDgtOCA4eiIvPjwvc3ZnPg==';
     const faviconCache = new Map();
 
-    const KNOWN_SERVICES = ['vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'vkclips.ru', 'ok.ru', 'odnoklassniki.ru', 'rutube.ru', 'rutube.com', 'yandex.ru', 'yandex.com', 'music.yandex.ru', 'music.yandex.com', 'dzen.ru', 'dzen.com', 'zen.yandex.ru', 'coub.com', 'pikabu.ru', 't.me', 'telegram.me', 'telegram.org', 'youtube.com', 'youtu.be', 'youtube-nocookie.com', 'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com', 'instagram.com', 'instagr.am', 'ig.me', 'twitter.com', 'x.com', 't.co', 'facebook.com', 'fb.watch', 'm.facebook.com', 'twitch.tv', 'clips.twitch.tv', 'soundcloud.com', 'snd.sc', 'bandcamp.com', 'mixcloud.com', 'vimeo.com', 'player.vimeo.com', 'dailymotion.com', 'dai.ly', 'bilibili.com', 'b23.tv', 'iq.com', 'iqiyi.com', 'youku.com', 'v.youku.com', 'v.qq.com', 'nicovideo.jp', 'nico.ms', 'tumblr.com', 'streamable.com', 'archive.org', 'smotrim.ru', '1tv.ru', 'russia.tv', 'matchtv.ru', 'ntv.ru', 'ren.tv', 'tvc.ru', '5-tv.ru', 'ctc.ru', 'tnt-online.ru', 'muz-tv.ru', 'tvzvezda.ru', 'my.mail.ru', 'ivi.ru', 'ivi.tv', 'kinopoisk.ru', 'mir24.tv', 'rt.com', 'rtd.rt.com', 'life.ru', 'tvigle.ru', 'video.sibnet.ru', 'fc-zenit.ru', 'noodlemagazine.com', 'goodgame.ru', 'vkplay.ru', 'zvuk.com', 'zaycev.fm', 'muzofond.fm', 'pleer.net', 'rumble.com', 'bitchute.com', 'odysee.com', 'lbry.tv', 'peertube.tv', 'trovo.live', 'kick.com', 'nebula.tv', 'crunchyroll.com', 'ted.com', 'bilibili.tv', 'tubitv.com', 'pluto.tv', 'spotify.com', 'deezer.com', 'tidal.com', 'qobuz.com', 'music.apple.com', 'music.amazon.com', 'pandora.com', 'iheart.com', 'tunein.com', 'kuaishou.com', 'kwai.com', 'ixigua.com', 'mgtv.com', 'sohu.com', 'yapfiles.ru', 'yappy.media', 'news.sportbox.ru',  'mail.ru', 'video.mail.ru', 'yandexvideo.ru', 'yandexvideo.com', 'disk.yandex.ru', 'disk.yandex.com', 'zen.yandex.com', 'okko.tv', 'okko.com', 'more.tv', 'moretv.ru', 'start.ru', 'premier.one', 'reddit.com', 'redd.it', 'v.redd.it', 'vikingfile.com', 'vik1ngfile.site', 'digriz.ddns.net'];
-
+    // KNOWN_SERVICES - глобальная переменная, инжектится в head из
+    // config/favicon_domains.json (см. index.php), общий источник с load_favicons.py
     const KNOWN_SERVICES_SET = new Set(KNOWN_SERVICES);
     const serviceIndex = new Map();
     for (const service of KNOWN_SERVICES) {
@@ -790,6 +790,114 @@ function syncHiddenSelects() {
     if (activeToggle) hiddenAudioFormat.value = activeToggle.getAttribute('data-value');
 }
 
+function initLongPressQualitySelector() {
+    const downloadBtn = document.querySelector('.btn-download-minimal');
+    const qualityPopup = document.getElementById('quality-popup');
+    const downloadForm = document.getElementById('download-form');
+    const formatField = document.getElementById('format');
+    const uiAudioMode = document.getElementById('ui_audio_mode');
+    const controlsRow = document.querySelector('.controls-row');
+
+    if (!downloadBtn || !qualityPopup) return;
+
+    const ALLOWED_FORMATS = new Set(['4K', '1440p', '1080p']);
+    const LONG_PRESS_TIME = 500;
+
+    let longPressTimer = null;
+    let isLongPress = false;
+    let isPointerDown = false;
+    let selectedMenuItem = null;
+
+    downloadBtn.addEventListener('pointerdown', (e) => {
+        const qualityToggle = document.getElementById('ui_quality_toggle');
+        if (uiAudioMode.checked || qualityToggle.checked) return;
+
+        isPointerDown = true;
+        isLongPress = false;
+        selectedMenuItem = null;
+
+        longPressTimer = setTimeout(() => {
+            if (isPointerDown) {
+                isLongPress = true;
+                downloadBtn.classList.add('is-pressed');
+                showQualityMenu();
+            }
+        }, LONG_PRESS_TIME);
+    });
+
+    document.addEventListener('pointermove', (e) => {
+        if (!isLongPress || !qualityPopup.classList.contains('is-visible')) return;
+
+        const menuItems = qualityPopup.querySelectorAll('.quality-popup-item');
+        let hoveredItem = null;
+
+        for (const item of menuItems) {
+            const rect = item.getBoundingClientRect();
+            if (e.clientX >= rect.left && e.clientX <= rect.right &&
+                e.clientY >= rect.top && e.clientY <= rect.bottom) {
+                hoveredItem = item;
+                break;
+            }
+        }
+
+        menuItems.forEach(item => {
+            item.classList.toggle('is-selected', item === hoveredItem);
+        });
+
+        selectedMenuItem = hoveredItem;
+    });
+
+    document.addEventListener('pointerup', (e) => {
+        clearTimeout(longPressTimer);
+        isPointerDown = false;
+        downloadBtn.classList.remove('is-pressed');
+
+        if (isLongPress && selectedMenuItem) {
+            const format = selectedMenuItem.getAttribute('data-format');
+
+            if (ALLOWED_FORMATS.has(format)) {
+                formatField.value = format;
+                hideQualityMenu();
+                downloadForm.requestSubmit();
+            } else {
+                console.warn('Invalid format selected:', format);
+                hideQualityMenu();
+            }
+        } else {
+            hideQualityMenu();
+        }
+
+        isLongPress = false;
+        selectedMenuItem = null;
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && qualityPopup.classList.contains('is-visible')) {
+            hideQualityMenu();
+            isLongPress = false;
+            selectedMenuItem = null;
+        }
+    });
+
+    function showQualityMenu() {
+        if (controlsRow) controlsRow.classList.add('is-controls-hidden');
+
+        qualityPopup.classList.add('is-visible');
+
+        if (navigator.vibrate) {
+            navigator.vibrate(50);
+        }
+    }
+
+    function hideQualityMenu() {
+        if (controlsRow) controlsRow.classList.remove('is-controls-hidden');
+
+        qualityPopup.classList.remove('is-visible');
+        const items = qualityPopup.querySelectorAll('.quality-popup-item');
+        items.forEach(item => item.classList.remove('is-selected'));
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     const hiddenAudioCheckbox = document.getElementById('audio_convert');
     const hiddenAudioFormat = document.getElementById('audio_format');
@@ -812,6 +920,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     initSnejEasterEgg();
+    initLongPressQualitySelector();
 });
 
 const SNEJ_CLICKS_TO_FIRE = 30;

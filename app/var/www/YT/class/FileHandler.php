@@ -29,7 +29,7 @@ class FileHandler
                     $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
 
                     $videos[] = [
-                        "name" => str_replace($folder, "", $file),
+                        "name" => $file,
                         "size" => $this->to_human_filesize(filesize($filepath)),
                         "age_minutes" => $age_minutes,
                         "lifetime_percent" => $lifetime_percent
@@ -88,7 +88,7 @@ class FileHandler
     private function output_folder_exists()
     {
         if(!is_dir($this->get_downloads_folder())) {
-            //Folder doesn't exist
+            // Папки нет
             if(!mkdir($this->get_downloads_folder(), 0755)) {
                 return false; //No folder and creation failed
             }

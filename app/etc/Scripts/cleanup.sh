@@ -1,4 +1,4 @@
 #!/bin/bash
-# Cleanup folder
+# Очистка папок
 rm -rf /var/www/YT/download/*
 rm -rf /var/www/YT/tmp/*
