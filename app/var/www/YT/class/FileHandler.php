@@ -109,6 +109,11 @@ class FileHandler
         return $this->to_human_filesize(disk_free_space($this->get_downloads_folder()));
     }
 
+    public function get_free_space_bytes()
+    {
+        return disk_free_space($this->get_downloads_folder());
+    }
+
     public function get_downloads_folder()
     {
         $path = $this->config["outputFolder"];

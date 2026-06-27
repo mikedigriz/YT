@@ -5,6 +5,7 @@ services:
     image: yt:latest
     tty: true
     restart: always
+    container_name: yt
     env_file:
       - .env
     ports:

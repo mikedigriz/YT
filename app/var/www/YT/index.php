@@ -121,14 +121,20 @@ function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     }
     
     $fileurl = $f["name"];
+    $downloadurl = "";
     if ($config['downloadPath'] != "") {
         $safeName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
         $encodedName = rawurlencode($f["name"]);
-        $fileurl = '<a href="'.$file->get_downloads_link().'/'.$encodedName.'" download>'.$safeName.'</a>';
+        // Относительная ссылка на файл. Фронт превращает её в абсолютную через
+        // window.location, чтобы зашить в QR-код тот же хост, по которому открыта
+        // страница - телефон в той же сети сразу заберёт файл.
+        $downloadurl = $file->get_downloads_link().'/'.$encodedName;
+        $fileurl = '<a href="'.$downloadurl.'" download>'.$safeName.'</a>';
     }
-    
+
     return [
         'file'             => $fileurl,
+        'downloadurl'      => $downloadurl,
         'size'             => $f["size"],
         'deleteurl'        => $deleteurl,
         'age_minutes'      => (int)($f["age_minutes"] ?? 0),
@@ -251,6 +257,7 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
 
     $allowed_audio_formats = [
         'mp3-high' => '--audio-format mp3 --audio-quality 0',
+        'mp3' => '--audio-format mp3',
         'wav' => '--audio-format wav',
         'aac' => '--audio-format aac',
         'flac' => '--audio-format flac',
@@ -295,7 +302,16 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         'client_ip' => $client_ip
     ]];
 
-    $downloader = new Downloader($dl_list);
+    // Проверка свободного места
+    $fh = new FileHandler();
+    $min_free_bytes = 100 * 1024 * 1024; // 100 МБ
+    $free_bytes = $fh->get_free_space_bytes();
+
+    if ($free_bytes < $min_free_bytes) {
+        $_SESSION['errors'] = ["Ой, еей! Диск почти полный, приберись"];
+    } else {
+        $downloader = new Downloader($dl_list);
+    }
 
     if(!isset($_SESSION['errors']) || count($_SESSION['errors']) === 0) {
         header("Location: index.php#" . $config['redirectAfterSubmit']);

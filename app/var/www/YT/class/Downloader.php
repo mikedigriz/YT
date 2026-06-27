@@ -169,6 +169,8 @@ class Downloader
                 if (!empty($jpid) && !file_exists("/proc/" . $jpid)) {
                     @unlink($pidFile);
                     self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext);
+                    // Авторетрей через прокси при гео-блоке/403 для прямых доменов
+                    self::autoRetryIfNeeded($completefile, $ytcmd, $urltext, $fileinfo->getFilename());
                     continue;
                 }
 
@@ -253,6 +255,73 @@ class Downloader
         }
 
         return $bjs;
+    }
+
+    // Проверка, переиспользуемая ли ошибка (сетевая временная ошибка vs постоянная проблема контента)
+    private static function isRetryableError($status)
+    {
+        // Переиспользуемые сетевые ошибки
+        $retryable_keywords = [
+            'Тайм-аут',
+            'ETIMEDOUT',
+            'Connection timed out',
+            'Connection refused',
+            'Соединение оборвалось',
+            'Сеть недоступна',
+            'Network unreachable',
+            'HTTP Error 429',
+            'Too Many Requests',
+            'HTTP Error 503',
+            'Service Unavailable',
+            'Service temporarily unavailable',
+            'DNS не резолвил',
+            "couldn't resolve host",
+            'Failed to resolve',
+            'DNS error',
+            'Name or service not known',
+            'Temporary failure',
+        ];
+
+        foreach ($retryable_keywords as $keyword) {
+            if (stripos($status, $keyword) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Автоматический ретрей через прокси при гео-блоке/403 для прямых доменов
+    private static function autoRetryIfNeeded($completefile, $ytcmd, $urltext, $fpid)
+    {
+        if (!file_exists($completefile)) {
+            return;
+        }
+
+        $log_content = @file_get_contents($completefile);
+        if ($log_content === false) {
+            return;
+        }
+
+        // Проверка: уже был ретрей?
+        if (strpos($log_content, '[RETRY_ATTEMPTED:') !== false) {
+            return;
+        }
+
+        // Парсим ошибку
+        $jobstatus = self::parseYtDlpError($log_content);
+
+        // Проверяем: переиспользуемая ли ошибка?
+        if (!self::isRetryableError($jobstatus)) {
+            return;
+        }
+
+        // Добавляем маркер, чтобы не ретрейтить снова
+        $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей через прокси\n";
+        @file_put_contents($completefile, $retry_marker, FILE_APPEND);
+
+        // Вызываем ретрей с принудительным включением прокси
+        self::restart_download($fpid, true);
     }
 
     // Вспомогательный метод для завершения лога (DRY)
@@ -660,7 +729,7 @@ class Downloader
         }
     }
 
-    public static function restart_download($fpid)
+    public static function restart_download($fpid, $forceUseProxy = false)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
 
@@ -735,9 +804,11 @@ class Downloader
         // получит в качестве прокси буквальную строку-плейсхолдер.
         $ytcmd = preg_replace('/^env\s+all_proxy=\S+\s+/', '', $ytcmd);
 
-        // Если исходная задача использовала прокси - вставляем его из текущего конфига
-        if ($usesProxy && !empty($GLOBALS['config']['socks5'])) {
+        // Если исходная задача использовала прокси ИЛИ нас просят принудительно добавить его
+        // (как при авторетрее с гео-блоком) - вставляем его из текущего конфига
+        if (($usesProxy || $forceUseProxy) && !empty($GLOBALS['config']['socks5'])) {
             $ytcmd = "env all_proxy=" . escapeshellarg($GLOBALS['config']['socks5']) . " " . $ytcmd;
+            $usesProxy = true; // Отмечаем, что теперь используется прокси
         }
 
         $suffix = (strpos($fpid, "_a") !== false || strpos($file, "_a") !== false) ? "_a" : "";
@@ -962,6 +1033,19 @@ class Downloader
         } else {
             $cmd .= " --merge-output-format mp4";
             $cmd .= " --remux-video mp4";
+        }
+
+        $cmd .= " --embed-thumbnail --embed-metadata";
+
+        $isYoutube = false;
+        foreach ($urls as $url) {
+            if (preg_match('/(youtube\.com|youtu\.be)/', $url)) {
+                $isYoutube = true;
+                break;
+            }
+        }
+        if ($isYoutube) {
+            $cmd .= " --sponsorblock-remove sponsor";
         }
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");

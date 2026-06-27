@@ -363,9 +363,20 @@ function renderFinishedRow(item, logURL) {
     </tr>`;
 }
 
+function buildFileActions(file) {
+    const qrIcon = `<svg class="qr-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm-2 8h8v8H3v-8zm2 2v4h4v-4H5zM13 3h8v8h-8V3zm2 2v4h4V5h-4zm-2 8h3v2h-2v3h-2v-5h1zm5 0h3v3h-2v2h-3v-2h2v-3zm-3 5h2v3h-2v-3zm5 0h3v3h-3v-3z"/></svg>`;
+    const qrButton = file.downloadurl
+        ? `<button type="button" class="btn btn-default btn-xs qr-btn" title="Забрать на телефон - покажу QR" data-qr-url="${escapeHtml(file.downloadurl)}">${qrIcon}</button>`
+        : '';
+    if (!qrButton && !file.deleteurl) return '';
+    return `<div class="btn-group btn-group-file">${qrButton}${file.deleteurl}</div>`;
+}
+
 function renderFileRow(file) {
+    const actions = buildFileActions(file);
+
     if (typeof showFileLifetime !== 'undefined' && !showFileLifetime) {
-        return `<tr><td>${file.file}</td><td>${file.size}</td><td>${file.deleteurl}</td></tr>`;
+        return `<tr><td>${file.file}</td><td>${file.size}</td><td>${actions}</td></tr>`;
     }
 
     const age = (typeof file.age_minutes === 'number' && !isNaN(file.age_minutes)) ? file.age_minutes : 0;
@@ -405,9 +416,140 @@ function renderFileRow(file) {
                 </div>
             </td>
             <td>${file.size}</td>
-            <td>${file.deleteurl}</td>
+            <td>${actions}</td>
         </tr>`;
 }
+
+// === QR-код на готовый файл ===
+// Превращаем относительную ссылку файла в абсолютную по текущему адресу страницы:
+// в QR попадает тот же хост, по которому открыта качалка, поэтому телефон в той же
+// сети заберёт файл без проброса маршрутов и прочей возни.
+function buildAbsoluteFileUrl(relativeUrl) {
+    try {
+        return new URL(relativeUrl, window.location.href).href;
+    } catch (e) {
+        return null;
+    }
+}
+
+let qrModalEl = null;
+let qrLibPromise = null;
+
+// Библиотека QR (~56 КБ) нужна только при клике на кнопку, поэтому не висит в
+// критическом пути загрузки страницы, а подтягивается лениво при первом открытии
+// модалки. Промис кэшируется - повторные клики не перезапрашивают скрипт.
+function ensureQrLib() {
+    if (typeof qrcode !== 'undefined') return Promise.resolve();
+    if (qrLibPromise) return qrLibPromise;
+
+    qrLibPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = 'js/qrcode.min.js';
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => {
+            qrLibPromise = null; // дать шанс повторить при следующем клике
+            reject(new Error('Не удалось загрузить библиотеку QR'));
+        };
+        document.head.appendChild(script);
+    });
+    return qrLibPromise;
+}
+
+function ensureQrModal() {
+    if (qrModalEl) return qrModalEl;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'qr-modal-overlay';
+    overlay.innerHTML = `
+        <div class="qr-modal-card" role="dialog" aria-modal="true" aria-label="QR-код, чтобы забрать файл на телефон">
+            <button type="button" class="qr-modal-close" aria-label="Закрыть">&times;</button>
+            <div class="qr-modal-title">Лови на телефон</div>
+            <div class="qr-modal-subtitle">Наведи камеру - и файл уже у тебя</div>
+            <div class="qr-modal-canvas-wrap">
+                <canvas class="qr-modal-canvas" width="320" height="320"></canvas>
+                <div class="qr-modal-bird"><img class="qr-modal-bird-img" src="img/snej.webp" alt="" draggable="false"></div>
+            </div>
+            <div class="qr-modal-filename"></div>
+            <div class="qr-modal-hint">Снегирь покараулит ссылку, не торопись</div>
+            <a class="qr-modal-link" href="#" target="_blank" rel="noopener">Открыть прямо здесь</a>
+        </div>`;
+
+    document.body.appendChild(overlay);
+    qrModalEl = overlay;
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) hideQrModal();
+    });
+    overlay.querySelector('.qr-modal-close').addEventListener('click', hideQrModal);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && overlay.classList.contains('is-visible')) hideQrModal();
+    });
+
+    return overlay;
+}
+
+function drawQrToCanvas(canvas, text) {
+    if (typeof qrcode === 'undefined') throw new Error('Библиотека QR не загружена');
+
+    // 0 - авто-подбор версии под длину данных; 'H' - максимальная коррекция (~30%),
+    // чтобы снегирь в центре не мешал считыванию.
+    const qr = qrcode(0, 'H');
+    qr.addData(text);
+    qr.make();
+
+    const count = qr.getModuleCount();
+    const size = canvas.width;
+    const margin = 4; // тихая зона в модулях
+    const cell = size / (count + margin * 2);
+    const ctx = canvas.getContext('2d');
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#1c1c1c';
+    for (let r = 0; r < count; r++) {
+        for (let c = 0; c < count; c++) {
+            if (qr.isDark(r, c)) {
+                const x = (c + margin) * cell;
+                const y = (r + margin) * cell;
+                ctx.fillRect(Math.floor(x), Math.floor(y), Math.ceil(cell), Math.ceil(cell));
+            }
+        }
+    }
+}
+
+function showQrModal(relativeUrl) {
+    const abs = buildAbsoluteFileUrl(relativeUrl);
+    if (!abs) return;
+
+    const overlay = ensureQrModal();
+
+    let name = relativeUrl;
+    try { name = decodeURIComponent(relativeUrl.split('/').pop()); } catch (e) {}
+    overlay.querySelector('.qr-modal-filename').textContent = name;
+    overlay.querySelector('.qr-modal-link').href = abs;
+
+    // Модалку показываем сразу - моментальный отклик на клик; код рисуем, как
+    // только подтянется библиотека (после первого раза она уже в памяти).
+    overlay.classList.add('is-visible');
+
+    const canvas = overlay.querySelector('.qr-modal-canvas');
+    ensureQrLib()
+        .then(() => drawQrToCanvas(canvas, abs))
+        .catch((e) => console.error('Не удалось построить QR:', e));
+}
+
+function hideQrModal() {
+    if (qrModalEl) qrModalEl.classList.remove('is-visible');
+}
+
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('.qr-btn');
+    if (!btn) return;
+    e.preventDefault();
+    const url = btn.getAttribute('data-qr-url');
+    if (url) showQrModal(url);
+});
 
 function loadList() {
     fetch("index.php?jobs")
@@ -748,6 +890,119 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     if (urlInput.value.trim()) setTimeout(checkUrl, 50);
+
+    // Магия буфера обмена: при возврате на вкладку подставляем ссылку из буфера,
+    // только если домен есть в KNOWN_SERVICES - не лезем в чужой текст и не путаем
+    // пользователя ссылками на неизвестные сайты.
+    //
+    // Браузер сам спросит разрешение на чтение буфера, если вызвать readText()
+    // без жеста пользователя - это пугающий и неожиданный диалог "сайт хочет видеть
+    // скопированный текст" в произвольный момент. Поэтому readText() автоматически
+    // (на visibilitychange/focus) вызывается ТОЛЬКО если пользователь сам явно
+    // включил фичу кнопкой - то есть разрешение запрашивается через осознанный клик,
+    // а не само по себе.
+    const CLIPBOARD_MAGIC_KEY = 'clipboardMagicEnabled';
+    const CLIPBOARD_MAGIC_DISMISSED_KEY = 'clipboardMagicDismissed';
+    let lastClipboardText = null;
+
+    function playSnejWink() {
+        const snejDiv = document.getElementById('snej');
+        if (!snejDiv) return;
+        snejDiv.classList.remove('snej-wink');
+        void snejDiv.offsetWidth;
+        snejDiv.classList.add('snej-wink');
+        setTimeout(() => snejDiv.classList.remove('snej-wink'), 500);
+    }
+
+    function isClipboardMagicEnabled() {
+        try {
+            return localStorage.getItem(CLIPBOARD_MAGIC_KEY) === '1';
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function matchKnownServiceUrl(text) {
+        const trimmed = (text || '').trim();
+        if (!trimmed) return null;
+        let hostname = null;
+        try {
+            let urlToParse = trimmed;
+            if (!/^https?:\/\//i.test(urlToParse)) urlToParse = 'https://' + urlToParse;
+            hostname = new URL(urlToParse).hostname.replace(/^www\./i, '');
+        } catch (e) {
+            return null;
+        }
+        const service = hostname ? getBaseService(hostname) : null;
+        return service ? trimmed : null;
+    }
+
+    function applyClipboardText(trimmed) {
+        urlInput.value = trimmed;
+        checkUrl();
+        playSnejWink();
+    }
+
+    function tryClipboardMagic() {
+        if (!isClipboardMagicEnabled()) return;
+        if (isClearing || !document.hasFocus()) return;
+        if (urlInput.value.trim()) return;
+        if (!navigator.clipboard || !navigator.clipboard.readText) return;
+
+        navigator.clipboard.readText().then((text) => {
+            const trimmed = (text || '').trim();
+            if (!trimmed || trimmed === lastClipboardText) return;
+            lastClipboardText = trimmed;
+            if (urlInput.value.trim() || isClearing) return;
+
+            const matched = matchKnownServiceUrl(trimmed);
+            if (!matched) return;
+            applyClipboardText(matched);
+        }).catch(() => {});
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) tryClipboardMagic();
+    });
+    window.addEventListener('focus', tryClipboardMagic);
+
+    // Опт-ин плашка: показываем один раз, пока пользователь не ответил.
+    const magicPrompt = document.getElementById('clipboard-magic-prompt');
+    const magicYesBtn = document.getElementById('clipboard-magic-yes');
+    const magicNoBtn = document.getElementById('clipboard-magic-no');
+
+    function clipboardMagicDecided() {
+        try {
+            return localStorage.getItem(CLIPBOARD_MAGIC_KEY) !== null
+                || localStorage.getItem(CLIPBOARD_MAGIC_DISMISSED_KEY) === '1';
+        } catch (e) {
+            return true;
+        }
+    }
+
+    if (magicPrompt && magicYesBtn && magicNoBtn
+        && navigator.clipboard && navigator.clipboard.readText
+        && !clipboardMagicDecided()) {
+        magicPrompt.classList.remove('is-hidden');
+
+        magicYesBtn.addEventListener('click', () => {
+            // Запрос идёт прямо из клика - это и есть осознанный жест пользователя,
+            // нативный диалог разрешения (если браузер его покажет) появится
+            // в понятном контексте, сразу после нажатия "Включить".
+            navigator.clipboard.readText().then(() => {
+                try { localStorage.setItem(CLIPBOARD_MAGIC_KEY, '1'); } catch (e) {}
+                magicPrompt.classList.add('is-hidden');
+                tryClipboardMagic();
+            }).catch(() => {
+                magicPrompt.classList.add('is-hidden');
+            });
+        });
+
+        magicNoBtn.addEventListener('click', () => {
+            try { localStorage.setItem(CLIPBOARD_MAGIC_DISMISSED_KEY, '1'); } catch (e) {}
+            magicPrompt.classList.add('is-hidden');
+        });
+    }
 });
 
 function syncLogic() {

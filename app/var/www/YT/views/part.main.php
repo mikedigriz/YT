@@ -57,6 +57,15 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                     <img id="url-favicon-img" src="" alt="">
                                 </div>
                             </div>
+                            <div id="clipboard-magic-prompt" class="clipboard-magic-prompt is-hidden">
+                                <div class="clipboard-magic-bubble">
+                                    <span>Включить магию вставки?</span>
+                                    <div class="clipboard-magic-actions">
+                                        <button type="button" id="clipboard-magic-yes" class="clipboard-magic-btn clipboard-magic-btn-yes" title="Я буду забирать только ссылку и ничего больше">Да</button>
+                                        <button type="button" id="clipboard-magic-no" class="clipboard-magic-btn clipboard-magic-btn-no" title="Больше не спрошу, пока не сбросишь куки">Нет</button>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="col-md-12">
