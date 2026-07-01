@@ -233,3 +233,14 @@
 .qr-modal-link:hover{color:#8a6f08;border-bottom-color:#8a6f08}
 @keyframes qr-bird-pop{0%{opacity:0;transform:translate(-50%,-50%) scale(0.4) rotate(-12deg)}100%{opacity:1;transform:translate(-50%,-50%) scale(1) rotate(0)}}
 @media (max-width:480px){.qr-modal-title{font-size:16px}.qr-modal-bird{border-radius:12px}}
+
+/* Индикатор живости прокси в футере */
+.proxy-status{display:inline-flex;align-items:center;gap:8px;margin-top:6px;font-size:11px;line-height:1;letter-spacing:.04em}
+.proxy-status-label{color:var(--color-text-muted);text-transform:uppercase;font-weight:600;font-size:10px;cursor:help}
+.proxy-dots{display:inline-flex;align-items:center;gap:6px}
+.proxy-dot{width:7px;height:7px;border-radius:50%;background:#cfd2d6;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.12)}
+.proxy-dot.is-work{background:#2fb35f}
+.proxy-dot.is-warn{background:#e3a316}
+.proxy-dot.is-death{background:#e0473f}
+.proxy-dot.is-pending{background:#cfd2d6}
+.proxy-status-unset{color:var(--color-text-muted);font-style:italic;text-shadow:none;letter-spacing:.02em}

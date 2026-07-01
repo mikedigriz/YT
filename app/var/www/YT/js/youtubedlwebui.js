@@ -99,6 +99,32 @@ function updateFileBadges(data) {
     }
 }
 
+function updateProxyStatus(proxy) {
+    const box = document.getElementById('proxy-status');
+    if (!box || !proxy || !proxy.enabled) return;
+
+    // Прокси не задан - серверный рендер уже показал "Прокси не установлен",
+    // трогать нечего.
+    if (proxy.unset) {
+        box.setAttribute('data-state', 'unset');
+        return;
+    }
+
+    const dotClass = v => {
+        if (v === null || v === undefined) return 'is-pending';
+        if (v === 'warn') return 'is-warn';
+        return v === 'death' ? 'is-death' : 'is-work';
+    };
+    const windows = proxy.windows || {};
+    box.querySelectorAll('.proxy-dot').forEach(dot => {
+        const win = dot.getAttribute('data-win');
+        dot.classList.remove('is-work', 'is-warn', 'is-death', 'is-pending');
+        dot.classList.add(dotClass(windows[win]));
+    });
+
+    box.setAttribute('data-state', proxy.state || 'pending');
+}
+
 async function preloadNotificationSounds() {
     if (audioSuccess && audioError) return;
     if (soundsLoading) return soundsLoading;
@@ -599,6 +625,7 @@ function loadList() {
         renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", renderFileRow);
         renderTable(nativeUI.music, data.music, 3, "Музыки нет.", renderFileRow);
         updateFileBadges(data);
+        updateProxyStatus(data.proxy);
 
         const isActive = (data.jobs && data.jobs.length > 0) || (data.queue && data.queue.length > 0);
         scheduleNextRefresh(isActive ? CONFIG.fastInterval : CONFIG.slowInterval);

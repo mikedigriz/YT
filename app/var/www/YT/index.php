@@ -95,10 +95,14 @@ $knownServices = json_decode($faviconDomainsJson, true) ?: [];
 
 require_once 'class/Downloader.php';
 require_once 'class/FileHandler.php';
+require_once 'class/ProxyStatus.php';
 
 session_start();
 $file = new FileHandler;
 $allowFileDelete = $config['allowFileDelete'] ?? false;
+
+// Фоновый замер прокси (сам по себе троттлится, лишнего не дёргает)
+ProxyStatus::maybe_check();
 
 // Продвигаем очередь на каждой загрузке, включая AJAX-поллинг ?jobs -
 // иначе задачи стартуют только когда кто-то вручную перезагрузит страницу
@@ -150,7 +154,8 @@ if(isset($_GET['jobs'])) {
         'finished' => Downloader::get_finished_background_jobs(),
         'videos'   => [],
         'music'    => [],
-        'logURL'   => $config['logURL'] ?? ''
+        'logURL'   => $config['logURL'] ?? '',
+        'proxy'    => ProxyStatus::payload()
     ];
 
     if (!$config['disableQueue']) {
