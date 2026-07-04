@@ -961,25 +961,14 @@ class Downloader
 
     public function addOneDownload($onedownload)
     {
-        $urls = array_filter(array_map('trim', explode("\|\|", $onedownload['url'])));
+        $urls = array_filter(array_map('trim', explode('||', $onedownload['url'])));
 
-        $proxyUrls = [];
-        $directUrls = [];
-
+        // Один URL - один процесс yt-dlp. Так падение одной ссылки не роняет
+        // остальные (общий процесс с --ignore-errors молча пропускал упавшие),
+        // а в UI каждая ссылка идёт отдельной задачей со своим логом.
         foreach ($urls as $url) {
-            if ($this->isDirectAccessDomain($url)) {
-                $directUrls[] = $url;
-            } else {
-                $proxyUrls[] = $url;
-            }
-        }
-
-        if (!empty($proxyUrls)) {
-            $this->executeDownload($onedownload, $proxyUrls, true);
-        }
-
-        if (!empty($directUrls)) {
-            $this->executeDownload($onedownload, $directUrls, false);
+            $useProxy = !$this->isDirectAccessDomain($url);
+            $this->executeDownload($onedownload, [$url], $useProxy);
         }
     }
 
