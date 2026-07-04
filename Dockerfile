@@ -65,5 +65,7 @@ USER www-data
 CMD ["bash", "start.sh"]
 EXPOSE 80
 
+# Бьём в лёгкий health.php (только nginx+php-fpm), а не в ?jobs -
+# тот на каждый вызов сканирует tmp, крутит очередь и дёргает прокси
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1/index.php?jobs')" || exit 1
+    CMD curl -fsS http://127.0.0.1/health.php >/dev/null || exit 1

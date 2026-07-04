@@ -33,6 +33,12 @@ server {
         deny all;
     }
 
+    # Скачанные файлы и иконки не должны исполняться как PHP, даже если
+    # в имя каким-то образом попадёт .php - отдаём их только как статику
+    location ~* ^/(download|favicons)/.*\.php$ {
+        deny all;
+    }
+
     # Картинки и шрифты — редко меняются, кэшируем надолго
     location ~* \.(jpg|jpeg|png|gif|ico|woff|woff2|ttf|svg|eot)$ {
         expires 1w;

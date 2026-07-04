@@ -418,3 +418,5 @@ add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()" always;
 add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'self';" always;
 ```
+
+**Внимание про `script-src` и CSP.** Само приложение уже отдаёт свой заголовок CSP с одноразовым nonce для инлайн-скриптов (`script-src 'self' 'nonce-...'`, см. [Безопасность](08-security.md)). Если внешний nginx добавит второй заголовок CSP со `script-src 'self'` (как в примере выше, без nonce), браузер применит оба и возьмёт пересечение - инлайн-скрипты приложения (с nonce) окажутся заблокированы, и интерфейс сломается. Поэтому либо убери `script-src` из этого сниппета и дай пройти заголовку приложения (не перекрывай его на прокси), либо не добавляй CSP на внешнем nginx вовсе - приложение выставляет его само. Остальные заголовки (HSTS, X-Frame-Options и прочие) дублировать на прокси безопасно.
