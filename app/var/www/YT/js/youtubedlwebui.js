@@ -744,19 +744,6 @@ document.addEventListener('visibilitychange', function () {
     }
 });
 
-function checkControls() {
-    const isChecked = document.getElementById('audio_convert').checked;
-    const videoGroup = document.getElementById('video_group');
-    const audioGroup = document.getElementById('audio_group');
-    if (videoGroup) videoGroup.style.display = 'none';
-    if (audioGroup) audioGroup.style.display = 'none';
-    if (isChecked) {
-        if (audioGroup) audioGroup.style.display = '';
-    } else {
-        if (videoGroup) videoGroup.style.display = '';
-    }
-}
-
 function helpPanel() {
     const panelBody = document.getElementById('helppanel');
     const helpLink = document.getElementById('helplink');
@@ -1091,7 +1078,6 @@ function syncLogic() {
     }
 
     if (isAudio) syncHiddenSelects();
-    if (typeof checkControls === 'function') checkControls();
 }
 
 function syncSubToggles(clickedToggle) {
@@ -1104,7 +1090,6 @@ function syncSubToggles(clickedToggle) {
         if (toggle !== clickedToggle) toggle.checked = false;
     });
     syncHiddenSelects();
-    if (typeof checkControls === 'function') checkControls();
 }
 
 function syncHiddenSelects() {

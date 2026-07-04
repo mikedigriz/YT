@@ -180,7 +180,7 @@ class Downloader
                     @unlink($pidFile);
                     self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext);
                     // Авторетрей через прокси при гео-блоке/403 для прямых доменов
-                    self::autoRetryIfNeeded($completefile, $ytcmd, $urltext, $fileinfo->getFilename());
+                    self::autoRetryIfNeeded($completefile);
                     continue;
                 }
 
@@ -209,12 +209,14 @@ class Downloader
                 $playlist = "";
 
                 while (($line = fgets($handle)) !== false) {
-                    if (strpos($line, '[download] Загрузка') !== false) {
-                        $listpos = "(" . substr($line, 29) . ")";
+                    // yt-dlp печатает по-английски: "[download] Downloading item N of M"
+                    if (preg_match('/\[download\] Downloading item (.+)/', $line, $lm)) {
+                        $listpos = "(" . trim($lm[1]) . ")";
                     }
 
-                    if (strpos($line, '[download] Загружаемый плейлист:') !== false) {
-                        $playlist = substr($line, 33) . "<br />";
+                    // "[extractor] Playlist TITLE: Downloading N items"
+                    if (preg_match('/\] Playlist (.+): Downloading \d+ items?\s*$/', $line, $pm)) {
+                        $playlist = trim($pm[1]) . "<br />";
                     }
 
                     if (trim($line) != "") {
@@ -315,7 +317,7 @@ class Downloader
     }
 
     // Автоматический ретрей через прокси при гео-блоке/403 для прямых доменов
-    private static function autoRetryIfNeeded($completefile, $ytcmd, $urltext, $fpid)
+    private static function autoRetryIfNeeded($completefile)
     {
         if (!file_exists($completefile)) {
             return;
@@ -343,8 +345,10 @@ class Downloader
         $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей через прокси\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
 
-        // Вызываем ретрей с принудительным включением прокси
-        self::restart_download($fpid, true);
+        // Ретрей ищет лог по имени готового файла (ytdl_*), а не по уже удалённому
+        // pid_* - иначе restart_download не находит файл и молча падает в ошибку,
+        // а маркер [RETRY_ATTEMPTED] уже записан, так что второй попытки не будет
+        self::restart_download(basename($completefile), true);
     }
 
     // Вспомогательный метод для завершения лога (DRY)
@@ -485,13 +489,14 @@ class Downloader
                 $jobstatus = "Готово";
 
                 while (($line = fgets($handle)) !== false) {
-                    if (strpos($line, '[download] Загружаю') !== false) {
-                        $tmp = substr($line, 29);
-                        $listpos = trim(substr($tmp, strpos($tmp, " of") + 3));
+                    // "[download] Downloading item N of M" - берём M (всего в плейлисте)
+                    if (preg_match('/\[download\] Downloading item \d+ of (\S+)/', $line, $lm)) {
+                        $listpos = trim($lm[1]);
                     }
 
-                    if (strpos($line, '[download] Загружаемый плейлист:') !== false) {
-                        $playlist = substr($line, 33);
+                    // "[extractor] Playlist TITLE: Downloading N items"
+                    if (preg_match('/\] Playlist (.+): Downloading \d+ items?\s*$/', $line, $pm)) {
+                        $playlist = trim($pm[1]);
                     }
 
                     $verylastline = $line;
@@ -510,10 +515,17 @@ class Downloader
                         $filename = $pos === false ? $line : substr($line, $pos + 1);
                     }
 
+                    // "[download] /path/file.ext has already been downloaded"
+                    // либо "[download] The file has already been downloaded"
                     if (strpos($line, 'has already been downloaded') !== false) {
-                        $posEnd = strpos($line, 'Уже Загружено');
-                        $posStart = strrpos($line, '/');
-                        $filename = $posStart === false ? $line : substr($line, $posStart + 1, $posEnd - 28);
+                        if (preg_match('#\[download\]\s+(.+?)\s+has already been downloaded#', $line, $dm)) {
+                            $name = $dm[1];
+                            $slash = strrpos($name, '/');
+                            $filename = ($slash === false) ? $name : substr($name, $slash + 1);
+                            if ($filename === 'The file') {
+                                $filename = 'Файл';
+                            }
+                        }
                         $jobstatus = "Отменено (Уже Загружено)";
                     }
                 }
