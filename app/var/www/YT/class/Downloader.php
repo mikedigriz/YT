@@ -103,8 +103,17 @@ class Downloader
         }
     }
 
+    // Кэш числа фоновых задач в рамках одного запроса. background_jobs() зовётся
+    // многократно (do_download в цикле, process_queue), а glob+чтение /proc дорогие.
+    // Инкрементируется при запуске нового процесса, сбрасывается при kill.
+    private static $bg_jobs_cache = null;
+
     public static function background_jobs()
     {
+        if (self::$bg_jobs_cache !== null) {
+            return self::$bg_jobs_cache;
+        }
+
         if (!function_exists('shell_exec') || !isset($GLOBALS['config']['logPath'])) {
             return 0;
         }
@@ -125,6 +134,7 @@ class Downloader
             }
         }
 
+        self::$bg_jobs_cache = $count;
         return $count;
     }
 
@@ -227,6 +237,14 @@ class Downloader
 
                 fclose($handle);
 
+                // yt-dlp выводит паузу как "[download] Sleeping N.NN seconds ...".
+                // Ловим её на сырой строке (до перезаписи статуса ниже) и показываем
+                // человеку по-русски, что это осознанное ожидание, а не зависание.
+                $sleepStatus = null;
+                if (preg_match('/Sleeping\s+([\d.]+)\s*second/i', $lastline, $sm)) {
+                    $sleepStatus = "Пауза " . max(1, (int) round($sm[1])) . " сек, чтобы сайт не ругался на частые запросы";
+                }
+
                 if ($filename == "Ща..") {
                     $lastline = "Собираю информацию по сайту";
                 } else {
@@ -241,6 +259,11 @@ class Downloader
 
                 if (strpos($lastline, '100%') !== false || $lastline == "") {
                     $lastline = "В Процессе...";
+                }
+
+                // Пауза важнее прочих статусов - перекрываем в самом конце
+                if ($sleepStatus !== null) {
+                    $lastline = $sleepStatus;
                 }
 
                 $bjs[] = array(
@@ -691,6 +714,8 @@ class Downloader
 
         self::finalize_job_log($outfile, $completed, $ytcmd, $urltext);
         @unlink($file);
+
+        self::$bg_jobs_cache = null;
     }
 
     public static function kill_them_all()
@@ -727,6 +752,8 @@ class Downloader
                 @unlink($file);
             }
         }
+
+        self::$bg_jobs_cache = null;
     }
 
     public static function restart_download($fpid, $forceUseProxy = false)
@@ -834,6 +861,10 @@ class Downloader
 
         exec($cmd);
 
+        if (self::$bg_jobs_cache !== null) {
+            self::$bg_jobs_cache++;
+        }
+
         // Маскируем реальные учётные данные прокси перед сохранением команды на диск -
         // $ytcmd (использован выше для exec()) всё ещё содержит настоящее значение,
         // маскируется только сохраняемая копия - так же, как делает executeDownload().
@@ -899,7 +930,9 @@ class Downloader
         return $uid;
     }
 
-    private function isDirectAccessDomain($url)
+    // Нормализованный хост URL (lowercase, без www). Пустой URL/битый парс -
+    // возвращаем сам URL как ключ, чтобы такая ссылка стала отдельной группой.
+    private function getHost($url)
     {
         $urlToParse = $url;
         if (!preg_match('/^https?:\/\//i', $urlToParse)) {
@@ -908,6 +941,13 @@ class Downloader
 
         $hostname = strtolower(parse_url($urlToParse, PHP_URL_HOST) ?? '');
         $hostname = preg_replace('/^www\./i', '', $hostname);
+
+        return $hostname !== '' ? $hostname : $url;
+    }
+
+    private function isDirectAccessDomain($url)
+    {
+        $hostname = $this->getHost($url);
 
         foreach (self::DIRECT_ACCESS_DOMAINS as $domain) {
             if ($hostname === $domain || str_ends_with($hostname, '.' . $domain)) {
@@ -963,16 +1003,33 @@ class Downloader
     {
         $urls = array_filter(array_map('trim', explode('||', $onedownload['url'])));
 
-        // Один URL - один процесс yt-dlp. Так падение одной ссылки не роняет
-        // остальные (общий процесс с --ignore-errors молча пропускал упавшие),
-        // а в UI каждая ссылка идёт отдельной задачей со своим логом.
+        // Группируем ссылки по хосту. Один сайт - один процесс yt-dlp
+        // (последовательно): иначе параллельные запросы к одному хосту через
+        // общий прокси/IP ловят 429 (rate-limit, "Сайт оверлоуд"). Разные хосты
+        // идут отдельными процессами - падение одного не роняет другой и качается
+        // параллельно.
+        $groups = [];
         foreach ($urls as $url) {
-            $useProxy = !$this->isDirectAccessDomain($url);
-            $this->executeDownload($onedownload, [$url], $useProxy);
+            $groups[$this->getHost($url)][] = $url;
+        }
+
+        foreach ($groups as $groupUrls) {
+            $useProxy = !$this->isDirectAccessDomain($groupUrls[0]);
+
+            if (count($groupUrls) === 1) {
+                $this->executeDownload($onedownload, $groupUrls, $useProxy, false);
+            } else {
+                // Первую ссылку качаем сразу, без паузы - старт загрузки не ждёт.
+                // Остальные того же хоста идут вторым процессом с паузой между
+                // запросами, иначе хост отдаёт 429 на частые запросы с одного IP.
+                $first = array_shift($groupUrls);
+                $this->executeDownload($onedownload, [$first], $useProxy, false);
+                $this->executeDownload($onedownload, $groupUrls, $useProxy, true);
+            }
         }
     }
 
-    private function executeDownload($onedownload, $urls, $useProxy)
+    private function executeDownload($onedownload, $urls, $useProxy, $paceRequests = false)
     {
         $suffix = "";
         $cmd = $this->config['youtubedlExe'];
@@ -1037,6 +1094,13 @@ class Downloader
             $cmd .= " --sponsorblock-remove sponsor";
         }
 
+        // Пауза между запросами - только для "хвоста" мультизагрузки (первая
+        // ссылка идёт без неё, чтобы старт не ждал). --sleep-interval разносит
+        // запросы к хосту, иначе он отдаёт 429 на частые обращения с одного IP.
+        if ($paceRequests) {
+            $cmd .= " --sleep-interval 3 --max-sleep-interval 8 --sleep-requests 1";
+        }
+
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
         $fnp = str_replace("job_", "pid_", $fno);
 
@@ -1056,6 +1120,12 @@ class Downloader
         // LogPluginPP через окружение дочернего процесса, не задевая restart-парсинг
         putenv("CLIENT_IP=" . ($onedownload['client_ip'] ?? 'unknown'));
         exec($cmd);
+
+        // Запущен новый процесс - учитываем в кэше (pid-файл пишется асинхронно,
+        // ре-glob мог бы его не увидеть); держим счётчик в согласии с реальностью
+        if (self::$bg_jobs_cache !== null) {
+            self::$bg_jobs_cache++;
+        }
 
         // Сохраняем команду с замаскированным прокси: учётные данные заменяются
         // плейсхолдером, чтобы в логах было видно, что прокси использовался, но без пароля

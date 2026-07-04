@@ -23,14 +23,18 @@ class FileHandler
             if ($file != "." && $file != "..") {
                 if(preg_match('/^.*\.('.$this->videos_ext.')$/i', $file)) {
                     $filepath = $folder . $file;
-                    $filemtime = @filemtime($filepath); // @ подавляет ошибки, если файл исчез
-                    $age_seconds = $filemtime ? (time() - $filemtime) : 0;
+                    // Файл мог исчезнуть между readdir и stat (крон-очистка) - пропускаем
+                    $filemtime = @filemtime($filepath);
+                    if ($filemtime === false) continue;
+                    $filesize = @filesize($filepath);
+                    if ($filesize === false) continue;
+                    $age_seconds = time() - $filemtime;
                     $age_minutes = max(0, floor($age_seconds / 60));
                     $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
 
                     $videos[] = [
                         "name" => $file,
-                        "size" => $this->to_human_filesize(filesize($filepath)),
+                        "size" => $this->to_human_filesize($filesize),
                         "age_minutes" => $age_minutes,
                         "lifetime_percent" => $lifetime_percent
                     ];
@@ -53,14 +57,18 @@ class FileHandler
             if ($file != "." && $file != "..") {
                 if(preg_match('/^.*\.('.$this->musics_ext.')$/i', $file)) {
                     $filepath = $folder . $file;
+                    // Файл мог исчезнуть между readdir и stat (крон-очистка) - пропускаем
                     $filemtime = @filemtime($filepath);
-                    $age_seconds = $filemtime ? (time() - $filemtime) : 0;
+                    if ($filemtime === false) continue;
+                    $filesize = @filesize($filepath);
+                    if ($filesize === false) continue;
+                    $age_seconds = time() - $filemtime;
                     $age_minutes = max(0, floor($age_seconds / 60));
                     $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
 
                     $musics[] = [
                         "name" => $file,
-                        "size" => $this->to_human_filesize(filesize($filepath)),
+                        "size" => $this->to_human_filesize($filesize),
                         "age_minutes" => $age_minutes,
                         "lifetime_percent" => $lifetime_percent
                     ];
