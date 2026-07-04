@@ -11,72 +11,63 @@ class FileHandler
           $this->config = $GLOBALS['config'];
     }
 
+    // Окно жизни файла (мин): база для lifetime_percent и таймера в UI.
+    // Держи в синхроне с host-cron (2hourcleanup.sh, find -mmin +N).
+    private function retention_minutes()
+    {
+        $m = (int) ($this->config['retentionMinutes'] ?? 120);
+        return $m > 0 ? $m : 120;
+    }
+
     public function listVideos()
     {
-        $videos = [];
-        if(!$this->output_folder_exists()) {
-            return $videos;
-        }
-        $folder = $this->get_downloads_folder().'/';
-        $dir_handle = opendir($folder);
-        while ($file = readdir($dir_handle)) {
-            if ($file != "." && $file != "..") {
-                if(preg_match('/^.*\.('.$this->videos_ext.')$/i', $file)) {
-                    $filepath = $folder . $file;
-                    // Файл мог исчезнуть между readdir и stat (крон-очистка) - пропускаем
-                    $filemtime = @filemtime($filepath);
-                    if ($filemtime === false) continue;
-                    $filesize = @filesize($filepath);
-                    if ($filesize === false) continue;
-                    $age_seconds = time() - $filemtime;
-                    $age_minutes = max(0, floor($age_seconds / 60));
-                    $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
-
-                    $videos[] = [
-                        "name" => $file,
-                        "size" => $this->to_human_filesize($filesize),
-                        "age_minutes" => $age_minutes,
-                        "lifetime_percent" => $lifetime_percent
-                    ];
-                }
-            }
-        }
-        closedir($dir_handle);
-        return $videos;
+        return $this->listByExt($this->videos_ext);
     }
 
     public function listMusics()
     {
-        $musics = [];
-        if(!$this->output_folder_exists()) {
-            return $musics;
-        }
-        $folder = $this->get_downloads_folder().'/';
-        $dir_handle = opendir($folder);
-        while ($file = readdir($dir_handle)) {
-            if ($file != "." && $file != "..") {
-                if(preg_match('/^.*\.('.$this->musics_ext.')$/i', $file)) {
-                    $filepath = $folder . $file;
-                    // Файл мог исчезнуть между readdir и stat (крон-очистка) - пропускаем
-                    $filemtime = @filemtime($filepath);
-                    if ($filemtime === false) continue;
-                    $filesize = @filesize($filepath);
-                    if ($filesize === false) continue;
-                    $age_seconds = time() - $filemtime;
-                    $age_minutes = max(0, floor($age_seconds / 60));
-                    $lifetime_percent = max(0, min(100, round(((120 - $age_minutes) / 120) * 100)));
+        return $this->listByExt($this->musics_ext);
+    }
 
-                    $musics[] = [
-                        "name" => $file,
-                        "size" => $this->to_human_filesize($filesize),
-                        "age_minutes" => $age_minutes,
-                        "lifetime_percent" => $lifetime_percent
-                    ];
-                }
-            }
+    // Список файлов папки загрузок по маске расширений, с размером, возрастом
+    // и остатком жизни. Единая логика для видео и музыки.
+    private function listByExt($ext_pattern)
+    {
+        $files = [];
+        if (!$this->output_folder_exists()) {
+            return $files;
+        }
+        $folder = $this->get_downloads_folder() . '/';
+        $dir_handle = opendir($folder);
+        if ($dir_handle === false) {
+            return $files;
+        }
+
+        $retention = $this->retention_minutes();
+
+        while (($file = readdir($dir_handle)) !== false) {
+            if ($file === "." || $file === "..") continue;
+            if (!preg_match('/^.*\.(' . $ext_pattern . ')$/i', $file)) continue;
+
+            $filepath = $folder . $file;
+            // Файл мог исчезнуть между readdir и stat (крон-очистка) - пропускаем
+            $filemtime = @filemtime($filepath);
+            if ($filemtime === false) continue;
+            $filesize = @filesize($filepath);
+            if ($filesize === false) continue;
+
+            $age_minutes = max(0, floor((time() - $filemtime) / 60));
+            $lifetime_percent = max(0, min(100, round((($retention - $age_minutes) / $retention) * 100)));
+
+            $files[] = [
+                "name" => $file,
+                "size" => $this->to_human_filesize($filesize),
+                "age_minutes" => $age_minutes,
+                "lifetime_percent" => $lifetime_percent
+            ];
         }
         closedir($dir_handle);
-        return $musics;
+        return $files;
     }
 
     public function delete($id)

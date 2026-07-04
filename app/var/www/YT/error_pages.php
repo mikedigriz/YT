@@ -156,10 +156,14 @@ function showCsrfErrorPage() {
             </ol>
 
             <div class="button-group">
-                <button class="btn-primary" onclick="location.reload(true);">Обновить страницу</button>
-                <button class="btn-secondary" onclick="history.back();">Вернуться назад</button>
+                <button class="btn-primary" id="csrf-reload">Обновить страницу</button>
+                <button class="btn-secondary" id="csrf-back">Вернуться назад</button>
             </div>
         </div>
+        <script nonce="<?= htmlspecialchars($GLOBALS['cspNonce'] ?? '', ENT_QUOTES) ?>">
+            document.getElementById('csrf-reload').addEventListener('click', function () { location.reload(); });
+            document.getElementById('csrf-back').addEventListener('click', function () { history.back(); });
+        </script>
     </body>
     </html>
     <?php

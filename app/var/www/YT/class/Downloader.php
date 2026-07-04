@@ -422,9 +422,49 @@ class Downloader
     public static function get_finished_background_jobs()
     {
         if (!isset($GLOBALS['config']['logPath'])) return [];
-
-        $bjs = [];
         $logPath = $GLOBALS['config']['logPath'];
+
+        // Сигнатура завершённых логов (имя+mtime+размер каждого ytdl_). Меняется
+        // при появлении/переименовании/дозаписи лога - тогда и пересобираем.
+        // Поллинг без изменений делает только stat, без открытия и разбора
+        // каждого файла - основная стоимость метода снималась именно на разборе.
+        $sig = self::finished_signature($logPath);
+        $cacheFile = $logPath . '/.finished_cache';
+
+        $cached = @file_get_contents($cacheFile);
+        if ($cached !== false) {
+            $data = json_decode($cached, true);
+            if (is_array($data) && ($data['sig'] ?? null) === $sig
+                && isset($data['jobs']) && is_array($data['jobs'])) {
+                return $data['jobs'];
+            }
+        }
+
+        $jobs = self::build_finished_jobs($logPath);
+        @file_put_contents(
+            $cacheFile,
+            json_encode(['sig' => $sig, 'jobs' => $jobs], JSON_UNESCAPED_UNICODE),
+            LOCK_EX
+        );
+        return $jobs;
+    }
+
+    private static function finished_signature($logPath)
+    {
+        $parts = [];
+        $dir = new DirectoryIterator($logPath);
+        foreach ($dir as $fileinfo) {
+            if (!$fileinfo->isDot() && $fileinfo->isFile() && strpos($fileinfo->getFilename(), "ytdl_") === 0) {
+                $parts[] = $fileinfo->getFilename() . ':' . $fileinfo->getMTime() . ':' . $fileinfo->getSize();
+            }
+        }
+        sort($parts);
+        return md5(implode('|', $parts));
+    }
+
+    private static function build_finished_jobs($logPath)
+    {
+        $bjs = [];
         $dir = new DirectoryIterator($logPath);
 
         foreach ($dir as $fileinfo) {
@@ -555,121 +595,64 @@ class Downloader
      * Парсит лог yt-dlp и возвращает человекочитаемое сообщение об ошибке.
      * Перед анализом лог санитизируется  - прокси/IP/токены не попадут в вывод.
      */
+    // Правила «регексп -> сообщение», по порядку приоритета. Первое совпадение
+    // выигрывает, поэтому порядок значим (сетевые -> доступность -> форматы ->
+    // постобработка -> системные). Добавлять новую ошибку - вставить строку.
+    private const ERROR_RULES = [
+        // === Сетевые ошибки ===
+        ['/Name or service not known|Could not resolve host|No address associated with hostname/i', "DNS не резолвил хост 🌐\nПроверь ссылку или интернет"],
+        ['/Connection refused|ECONNREFUSED/i', "Сервер сказал «нет» 🚪\nConnection refused"],
+        ['/timed out|ETIMEDOUT|Connection timed out/i', "Тайм-аут ⏳\nСервер слишком долго молчит"],
+        ['/Network is unreachable|ENETUNREACH/i', "Сеть недоступна 🔌"],
+        ['/No route to host/i', "Маршрута до хоста нет 🗺️\nПроверь прокси/сеть"],
+        ['/HTTP Error 429|Too Many Requests/i', "Сайт оверлоуд 🚦\nПодожди"],
+        ['/HTTP Error 403|403 Forbidden/i', "403 Forbidden 🚫\nНе пущает - нужен прокси/куки"],
+        ['/HTTP Error 404|404 Not Found/i', "404 Not Found 👻\nСтраницы больше нет"],
+        ['/HTTP Error 503|503 Service Unavailable/i', "503 💤\nСайт прилёг"],
+        ['/HTTP Error 500|500 Internal Server Error/i', "500 💥\nУ сайта внутренние проблемы"],
+        ['/SSL.*handshake|certificate verify failed|SSL_ERROR/i', "Ошибка SSL/HTTPS 🔒\nСертификат не прошёл проверку"],
+        ['/Unable to download webpage/i', "Не удалось открыть страницу 🕸️"],
+        ['/Unable to connect to|Connection aborted/i', "Соединение оборвалось 🔌\nПопробуй ещё раз"],
+
+        // === Доступность контента ===
+        ['/Video unavailable|This video is not available|video is unavailable/i', "Видео недоступно 🙈"],
+        ['/Private video|this video is private/i', "Приватное видео 🔐\nТолько для своих"],
+        ['/has been removed|removed by the uploader/i', "Видео удалено автором 🗑️"],
+        ['/age-restricted|Sign in to confirm your age|confirm your age/i', "18+ контент 🔞\nНужны куки авторизованного аккаунта \nКуки я вам не дам"],
+        ['/only available for registered users|login required|Sign in to/i', "Нужна авторизация 👤\nА её нет, ха-ха-ха"],
+        ['/members-only|Members only content/i', "Members-only 💎\nНужна платная подписка, увыыы"],
+        ['/Music Premium|YouTube Music Premium/i', "YTMusic Premium 🎵\nТребуется лухари подписка"],
+        ['/requires payment|paid content|purchase this/i', "Платный контент 💰\nСкачивание невозможно \nГде деньги?"],
+        ['/live event will begin|Premieres in|is live and is being watched/i', "Ну начинается - пойду поссу, пойду посру 📡"],
+        ['/region-locked|not available in your country|geo-blocked|country-specific/i', "Гео-блок 🌍\nВидео недоступно в регионе Качалки"],
+        ['/This channel is not available|channel does not exist/i', "Канал не существует или удалён 📭"],
+
+        // === Форматы и извлечение ===
+        ['/Unsupported URL|no suitable extractor|no extractor/i', "Сайт не поддерживается 🤷\nПроверь ссылку"],
+        ['/No video formats|no formats available|no playable media/i', "Форматов для скачивания нет 📦\nВидео без дорожек?"],
+        ['/unable to extract video url|Unable to extract.*url|Could not extract URL/i', "Не удалось извлечь ссылку на видео 🔍\nСайт поменялся?"],
+        ['/Incomplete YouTube ID|Invalid YouTube URL|not a valid URL|Invalid URL/i', "Ссылка выглядит кривой ✏️\nПроверь URL"],
+        ['/This video is encrypted|encrypted media/i', "Видео зашифровано 🔑\nСкачивание невозможно"],
+        ['/DRM-protected|has DRM/i', "DRM-защита 🛡️\nОбход невозможен"],
+
+        // === Постобработка ===
+        ['/ffmpeg.*not found|ffmpeg.*is not recognized|unable to open ffmpeg|No ffmpeg/i', "FFmpeg не найден 🎬\nУстанови его на сервер"],
+        ['/Postprocessing.*failed|conversion failed|merge failed/i', "Ошибка постобработки (ffmpeg) ⚙️\nФайл мог повредиться"],
+
+        // === Системные ошибки ===
+        ['/Permission denied|EACCES/i', "Нет прав на запись 🔒\nПроверь права на папку"],
+        ['/No space left on device|ENOSPC/i', "Диск переполнен 💾\nАхтунг!"],
+    ];
+
     private static function parseYtDlpError(string $log): string
     {
         // СНАЧАЛА чистим, ПОТОМ матчим
         $log = self::sanitizeLog($log);
 
-        // === Сетевые ошибки ===
-        if (preg_match('/Name or service not known|Could not resolve host|No address associated with hostname/i', $log)) {
-            return "DNS не резолвил хост 🌐\nПроверь ссылку или интернет";
-        }
-        if (preg_match('/Connection refused|ECONNREFUSED/i', $log)) {
-            return "Сервер сказал «нет» 🚪\nConnection refused";
-        }
-        if (preg_match('/timed out|ETIMEDOUT|Connection timed out/i', $log)) {
-            return "Тайм-аут ⏳\nСервер слишком долго молчит";
-        }
-        if (preg_match('/Network is unreachable|ENETUNREACH/i', $log)) {
-            return "Сеть недоступна 🔌";
-        }
-        if (preg_match('/No route to host/i', $log)) {
-            return "Маршрута до хоста нет 🗺️\nПроверь прокси/сеть";
-        }
-        if (preg_match('/HTTP Error 429|Too Many Requests/i', $log)) {
-            return "Сайт оверлоуд 🚦\nПодожди";
-        }
-        if (preg_match('/HTTP Error 403|403 Forbidden/i', $log)) {
-            return "403 Forbidden 🚫\nНе пущает - нужен прокси/куки";
-        }
-        if (preg_match('/HTTP Error 404|404 Not Found/i', $log)) {
-            return "404 Not Found 👻\nСтраницы больше нет";
-        }
-        if (preg_match('/HTTP Error 503|503 Service Unavailable/i', $log)) {
-            return "503 💤\nСайт прилёг";
-        }
-        if (preg_match('/HTTP Error 500|500 Internal Server Error/i', $log)) {
-            return "500 💥\nУ сайта внутренние проблемы";
-        }
-        if (preg_match('/SSL.*handshake|certificate verify failed|SSL_ERROR/i', $log)) {
-            return "Ошибка SSL/HTTPS 🔒\nСертификат не прошёл проверку";
-        }
-        if (preg_match('/Unable to download webpage/i', $log)) {
-            return "Не удалось открыть страницу 🕸️";
-        }
-        if (preg_match('/Unable to connect to|Connection aborted/i', $log)) {
-            return "Соединение оборвалось 🔌\nПопробуй ещё раз";
-        }
-
-        // === Доступность контента ===
-        if (preg_match('/Video unavailable|This video is not available|video is unavailable/i', $log)) {
-            return "Видео недоступно 🙈";
-        }
-        if (preg_match('/Private video|this video is private/i', $log)) {
-            return "Приватное видео 🔐\nТолько для своих";
-        }
-        if (preg_match('/has been removed|removed by the uploader/i', $log)) {
-            return "Видео удалено автором 🗑️";
-        }
-        if (preg_match('/age-restricted|Sign in to confirm your age|confirm your age/i', $log)) {
-            return "18+ контент 🔞\nНужны куки авторизованного аккаунта \nКуки я вам не дам";
-        }
-        if (preg_match('/only available for registered users|login required|Sign in to/i', $log)) {
-            return "Нужна авторизация 👤\nА её нет, ха-ха-ха";
-        }
-        if (preg_match('/members-only|Members only content/i', $log)) {
-            return "Members-only 💎\nНужна платная подписка, увыыы";
-        }
-        if (preg_match('/Music Premium|YouTube Music Premium/i', $log)) {
-            return "YTMusic Premium 🎵\nТребуется лухари подписка";
-        }
-        if (preg_match('/requires payment|paid content|purchase this/i', $log)) {
-            return "Платный контент 💰\nСкачивание невозможно \nГде деньги?";
-        }
-        if (preg_match('/live event will begin|Premieres in|is live and is being watched/i', $log)) {
-            return "Ну начинается - пойду поссу, пойду посру 📡";
-        }
-        if (preg_match('/region-locked|not available in your country|geo-blocked|country-specific/i', $log)) {
-            return "Гео-блок 🌍\nВидео недоступно в регионе Качалки";
-        }
-        if (preg_match('/This channel is not available|channel does not exist/i', $log)) {
-            return "Канал не существует или удалён 📭";
-        }
-
-        // === Форматы и извлечение ===
-        if (preg_match('/Unsupported URL|no suitable extractor|no extractor/i', $log)) {
-            return "Сайт не поддерживается 🤷\nПроверь ссылку";
-        }
-        if (preg_match('/No video formats|no formats available|no playable media/i', $log)) {
-            return "Форматов для скачивания нет 📦\nВидео без дорожек?";
-        }
-        if (preg_match('/unable to extract video url|Unable to extract.*url|Could not extract URL/i', $log)) {
-            return "Не удалось извлечь ссылку на видео 🔍\nСайт поменялся?";
-        }
-        if (preg_match('/Incomplete YouTube ID|Invalid YouTube URL|not a valid URL|Invalid URL/i', $log)) {
-            return "Ссылка выглядит кривой ✏️\nПроверь URL";
-        }
-        if (preg_match('/This video is encrypted|encrypted media/i', $log)) {
-            return "Видео зашифровано 🔑\nСкачивание невозможно";
-        }
-        if (preg_match('/DRM-protected|has DRM/i', $log)) {
-            return "DRM-защита 🛡️\nОбход невозможен";
-        }
-
-        // === Постобработка ===
-        if (preg_match('/ffmpeg.*not found|ffmpeg.*is not recognized|unable to open ffmpeg|No ffmpeg/i', $log)) {
-            return "FFmpeg не найден 🎬\nУстанови его на сервер";
-        }
-        if (preg_match('/Postprocessing.*failed|conversion failed|merge failed/i', $log)) {
-            return "Ошибка постобработки (ffmpeg) ⚙️\nФайл мог повредиться";
-        }
-
-        // === Системные ошибки ===
-        if (preg_match('/Permission denied|EACCES/i', $log)) {
-            return "Нет прав на запись 🔒\nПроверь права на папку";
-        }
-        if (preg_match('/No space left on device|ENOSPC/i', $log)) {
-            return "Диск переполнен 💾\nАхтунг!";
+        foreach (self::ERROR_RULES as [$pattern, $message]) {
+            if (preg_match($pattern, $log)) {
+                return $message;
+            }
         }
 
         // Фоллбэк: вытащим сам текст ошибки yt-dlp, если ничего не подошло.
@@ -905,7 +888,13 @@ class Downloader
 
     private function is_valid_url($url)
     {
-        return filter_var($url, FILTER_VALIDATE_URL) !== false;
+        if (filter_var($url, FILTER_VALIDATE_URL) === false) {
+            return false;
+        }
+        // Только http/https - иначе yt-dlp можно скормить file://, ftp:// и прочие
+        // схемы, дающие доступ к локальным путям сервера
+        $scheme = strtolower(parse_url($url, PHP_URL_SCHEME) ?? '');
+        return $scheme === 'http' || $scheme === 'https';
     }
 
     private function check_output_folder()

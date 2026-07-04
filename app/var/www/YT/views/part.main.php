@@ -1,6 +1,8 @@
 <?php if (!isset($GLOBALS['config'])) { die("No direct script access"); } ?>
 <?php
     $showLifetime = isset($config['showFileLifetime']) && $config['showFileLifetime'];
+    $retentionMinutes = (int)($config['retentionMinutes'] ?? 120);
+    if ($retentionMinutes <= 0) $retentionMinutes = 120;
 ?>
 <?php
 $video_hidden_class = $audio_check ? ' is-hidden' : '';
@@ -9,8 +11,9 @@ $audio_hidden_class = $audio_check ? '' : ' is-hidden';
 $video_form_style = preg_replace('/display\s*:\s*[^;]+;?/i', '', $video_form_style);
 $audio_form_style = preg_replace('/display\s*:\s*[^;]+;?/i', '', $audio_form_style);
 ?>
-<script>
+<script nonce="<?= htmlspecialchars($cspNonce ?? '', ENT_QUOTES) ?>">
 var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
+var retentionMinutes = <?php echo $retentionMinutes; ?>;
 </script>
 <div class="container" style="margin-bottom: 50px;">
     <ul id="mainnav" class="nav nav-tabs ">
@@ -96,7 +99,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                         <label class="minimal-toggle"
                                             <?php echo($config['disableExtraction'] ? " style=\"display: none;\"" : ""); ?>>
                                             <input type="checkbox" id="ui_audio_mode" class="toggle-input-main"
-                                                <?php echo($audio_check); ?> onchange="syncLogic()">
+                                                <?php echo($audio_check); ?>>
                                             <span class="toggle-track"></span>
                                             <span class="toggle-text">В аудио</span>
                                         </label>
@@ -112,8 +115,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                             <span class="side-label label-left">Топ</span>
                                             <label class="minimal-toggle-inner">
                                                 <input type="checkbox" id="ui_quality_toggle"
-                                                    class="toggle-input-single"
-                                                    onchange="syncLogic()">
+                                                    class="toggle-input-single">
                                                 <span class="toggle-track"></span>
                                             </label>
                                             <span class="side-label label-right">
@@ -128,19 +130,17 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
                                             id="params-audio" <?php echo($audio_form_style); ?>>
                                             <label class="minimal-toggle-inner">
                                                 <input type="checkbox" class="toggle-input-sub" data-value="mp3-high"
-                                                    checked onchange="syncSubToggles(this)">
+                                                    checked>
                                                 <span class="toggle-track"></span>
                                                 <span class="toggle-text">HQ</span>
                                             </label>
                                             <label class="minimal-toggle-inner">
-                                                <input type="checkbox" class="toggle-input-sub" data-value="mp3"
-                                                    onchange="syncSubToggles(this)">
+                                                <input type="checkbox" class="toggle-input-sub" data-value="mp3">
                                                 <span class="toggle-track"></span>
                                                 <span class="toggle-text">MP3</span>
                                             </label>
                                             <label class="minimal-toggle-inner">
-                                                <input type="checkbox" class="toggle-input-sub" data-value="wav"
-                                                    onchange="syncSubToggles(this)">
+                                                <input type="checkbox" class="toggle-input-sub" data-value="wav">
                                                 <span class="toggle-track"></span>
                                                 <span class="toggle-text">WAV</span>
                                             </label>
@@ -291,7 +291,7 @@ var showFileLifetime = <?php echo $showLifetime ? 'true' : 'false'; ?>;
         </div>
     </div>
 </div>
-<script>
+<script nonce="<?= htmlspecialchars($cspNonce ?? '', ENT_QUOTES) ?>">
 function showTab(link) {
     var id = link.getAttribute('href').substr(1);
 

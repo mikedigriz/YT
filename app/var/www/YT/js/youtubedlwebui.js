@@ -342,7 +342,7 @@ function renderJobRow(job) {
         <td style="vertical-align: middle;">${escapeHtml(job.status)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <button style="width: 100px;" onclick="confirmAction('kill', '${safePid(job.pid)}')" class="btn btn-danger btn-xs">Стоп</button>
+                <button type="button" style="width: 100px;" data-action="kill" data-value="${safePid(job.pid)}" class="btn btn-danger btn-xs">Стоп</button>
             </div>
         </td>
     </tr>`;
@@ -357,7 +357,7 @@ function renderQueueRow(item) {
         <td style="vertical-align: middle;">${escapeHtml(item.dl_format)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <button style="width: 160px" onclick="confirmAction('removeQueued', '${safePid(item.pid)}')" class="btn btn-danger btn-xs">Удалить</button>
+                <button type="button" style="width: 160px" data-action="removeQueued" data-value="${safePid(item.pid)}" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -382,8 +382,8 @@ function renderFinishedRow(item, logURL) {
         <td style="vertical-align: middle;">
             <div class="btn-group">
                 ${logButton}
-                <button style="width: ${actionBtnWidth}" onclick="confirmAction('restart', '${safePid(item.pid)}')" class="btn btn-success btn-xs">↺</button>
-                <button style="width: ${actionBtnWidth}" onclick="confirmAction('clear', '${safePid(item.pid)}')" class="btn btn-danger btn-xs">Удалить</button>
+                <button type="button" style="width: ${actionBtnWidth}" data-action="restart" data-value="${safePid(item.pid)}" class="btn btn-success btn-xs">↺</button>
+                <button type="button" style="width: ${actionBtnWidth}" data-action="clear" data-value="${safePid(item.pid)}" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -409,7 +409,8 @@ function renderFileRow(file) {
     const percent = (typeof file.lifetime_percent === 'number' && !isNaN(file.lifetime_percent)) ? file.lifetime_percent : 100;
     let timeText = '';
     let colorClass = 'bg-safe';
-    const remainingMinutes = Math.max(0, 120 - age);
+    const retention = (typeof retentionMinutes !== 'undefined' && retentionMinutes > 0) ? retentionMinutes : 120;
+    const remainingMinutes = Math.max(0, retention - age);
 
     if (percent > 60) colorClass = 'bg-safe';
     else if (percent > 30) colorClass = 'bg-warn';
@@ -577,6 +578,46 @@ document.addEventListener('click', function (e) {
     if (url) showQrModal(url);
 });
 
+// Делегированные обработчики вместо inline on* (CSP без unsafe-inline).
+// Ловим клики на динамически отрисованных строках и статичных кнопках.
+document.addEventListener('click', function (e) {
+    // Деструктивные действия: kill/delete/clear/restart/removeQueued
+    const act = e.target.closest('[data-action]');
+    if (act) {
+        e.preventDefault();
+        const extra = {};
+        const type = act.getAttribute('data-type');
+        if (type) extra.type = type;
+        confirmAction(act.getAttribute('data-action'), act.getAttribute('data-value') || '', extra);
+        return;
+    }
+    // Свернуть/развернуть панель помощи в футере
+    if (e.target.closest('[data-ui="help"]')) {
+        helpPanel();
+        return;
+    }
+    // Переход на вкладку по ссылкам из футера (data-goto = id ссылки в навигации)
+    const goto = e.target.closest('[data-goto]');
+    if (goto) {
+        e.preventDefault();
+        const nav = document.getElementById(goto.getAttribute('data-goto'));
+        if (nav) nav.click();
+        return;
+    }
+});
+
+// Тумблеры аудио/качество и подрежимы: раньше были onchange="syncLogic()" /
+// onchange="syncSubToggles(this)"
+document.addEventListener('change', function (e) {
+    const t = e.target;
+    if (!t) return;
+    if (t.id === 'ui_audio_mode' || t.id === 'ui_quality_toggle') {
+        syncLogic();
+    } else if (t.classList && t.classList.contains('toggle-input-sub')) {
+        syncSubToggles(t);
+    }
+});
+
 function loadList() {
     fetch("index.php?jobs")
         .then(resp => resp.json())
@@ -612,15 +653,15 @@ function loadList() {
 
         renderTable(nativeUI.progress, data.jobs, 4, "Активных загрузок нет.", renderJobRow, `
             <td></td><td></td><td></td>
-            <td><div class="btn-group"><button id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" onclick="confirmAction('kill', 'all')">Стоп ВСЕ</button></div></td>`);
+            <td><div class="btn-group"><button type="button" id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" data-action="kill" data-value="all">Стоп ВСЕ</button></div></td>`);
 
         renderTable(nativeUI.queue, data.queue, 3, "Очередь пуста.", renderQueueRow, `
             <td></td><td></td>
-            <td><div class="btn-group"><button id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" onclick="confirmAction('clear', 'queue')">Удалить Все</button></div></td>`);
+            <td><div class="btn-group"><button type="button" id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="queue">Удалить Все</button></div></td>`);
 
         renderTable(nativeUI.completed, data.finished, 4, "Завершенных загрузок нет.", item => renderFinishedRow(item, data.logURL), `
             <td></td><td></td><td></td>
-            <td><div class="btn-group"><button id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" onclick="confirmAction('clear', 'recent')">Удалить Все</button></div></td>`);
+            <td><div class="btn-group"><button type="button" id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="recent">Удалить Все</button></div></td>`);
 
         renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", renderFileRow);
         renderTable(nativeUI.music, data.music, 3, "Музыки нет.", renderFileRow);

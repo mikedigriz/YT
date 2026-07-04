@@ -21,7 +21,7 @@ $proxyDotClass = function ($v) {
 <footer class="footer">
   <div class="footer-wrapper">
     <div class="panel panel-info">
-      <div onclick="helpPanel()" style="cursor: pointer;" class="panel-heading">
+      <div data-ui="help" style="cursor: pointer;" class="panel-heading">
         <h3 id="helplink" class="panel-title">Жмак</h3>
       </div>
       <div id="helppanel" class="panel-body panel-collapsed">
@@ -69,7 +69,7 @@ $proxyDotClass = function ($v) {
           <tr>
             <td><b>Как забрать файлы с сервера?</b></td>
             <td>
-              Нажать на <a href="#videos" onclick="document.getElementById('vid_link').click()" aria-expanded="false">файл</a> или открыть в новой вкладке
+              Нажать на <a href="#videos" data-goto="vid_link" aria-expanded="false">файл</a> или открыть в новой вкладке
             </td>
           </tr>
           <tr>
@@ -77,7 +77,7 @@ $proxyDotClass = function ($v) {
             <td>
               Проверить корректность URL<br>
               Ссылка должна быть прямой и указывать на видео или плейлист<br>
-              Файл уже скачан - <a href="#downloads" onclick="document.getElementById('dl_link').click()" aria-expanded="false">проверь историю</a> или <a href="#videos" onclick="document.getElementById('vid_link').click()" aria-expanded="false">имя файла</a><br>
+              Файл уже скачан - <a href="#downloads" data-goto="dl_link" aria-expanded="false">проверь историю</a> или <a href="#videos" data-goto="vid_link" aria-expanded="false">имя файла</a><br>
               "В процессе" - файл конвертируется в mp4<br>
               Бэкенд еще не поддерживает ваш ресурс
             </td>

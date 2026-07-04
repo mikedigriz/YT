@@ -59,13 +59,19 @@ function validateCsrfToken(): bool {
     return true;
 }
 
+// Одноразовый nonce для инлайн-скриптов: позволяет убрать 'unsafe-inline' из
+// script-src (иначе любой внедрённый <script> исполнился бы). Пробрасывается во
+// вьюхи как $cspNonce и в CSP-заголовок ниже.
+$cspNonce = base64_encode(random_bytes(16));
+$GLOBALS['cspNonce'] = $cspNonce;
+
 // === Заголовки безопасности ===
 header("X-Content-Type-Options: nosniff");
 header("X-Frame-Options: SAMEORIGIN");
 header("X-XSS-Protection: 1; mode=block");
 header("Referrer-Policy: strict-origin-when-cross-origin");
 header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
-header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; media-src 'self' blob:;");
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; media-src 'self' blob:;");
 
 if ($isSecure) {
     header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
@@ -115,13 +121,13 @@ if (!$config['disableQueue']) {
 function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     $deleteurl = "";
     if ($allowFileDelete) {
-        // json_encode даёт корректный JS string literal; htmlspecialchars затем экранирует его
-        // для безопасной вставки в HTML-атрибут. Одного htmlspecialchars() тут НЕ достаточно:
-        // браузер HTML-декодирует значение атрибута перед тем, как выполнить его как JS, поэтому
-        // сущность вроде &#039; раскодируется обратно в ' и сможет выйти за пределы JS-строки (DOM XSS).
-        $jsName = htmlspecialchars(json_encode($f["name"], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
-        $jsType = htmlspecialchars(json_encode($type, JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8');
-        $deleteurl = '<button onclick="confirmAction(\'delete\', ' . $jsName . ', {type: ' . $jsType . '})" class="btn btn-danger btn-xs">Удалить</button>';
+        // Данные уходят в data-атрибуты (атрибутный контекст), обработчик вешается
+        // делегированием в JS - никакого inline onclick, поэтому CSP без unsafe-inline.
+        // htmlspecialchars(ENT_QUOTES) достаточно: это чистый атрибутный контекст,
+        // JS-строку тут уже не собираем.
+        $attrName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
+        $attrType = htmlspecialchars($type, ENT_QUOTES, 'UTF-8');
+        $deleteurl = '<button type="button" data-action="delete" data-value="' . $attrName . '" data-type="' . $attrType . '" class="btn btn-danger btn-xs">Удалить</button>';
     }
     
     $fileurl = $f["name"];
