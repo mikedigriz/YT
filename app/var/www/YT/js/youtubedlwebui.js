@@ -5,6 +5,14 @@ const CONFIG = {
 
 const nativeUI = {};
 let previousFinishedPids = null;
+let previousVideoKeys = null;
+let previousMusicKeys = null;
+let lastActiveState = false;
+let originalDocTitle = null;
+let notifyEnabled = false;
+let notifyToggleBtn = null;
+const NOTIFY_KEY = 'yt_notify_enabled';
+const BG_POLL_INTERVAL = 5000;
 
 function escapeHtml(value) {
     return String(value ?? "")
@@ -187,6 +195,7 @@ function isDownloadFailed(item) {
 }
 
 const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || (window.innerWidth <= 768 && 'ontouchstart' in window);
+const notificationsSupported = !isMobileDevice && ('Notification' in window);
 let isSoundMuted = localStorage.getItem('yt_sound_muted') === 'true';
 
 if (!isMobileDevice && !isSoundMuted) {
@@ -278,6 +287,134 @@ function playNotificationSound(isSuccess) {
     audio.play().catch(error => {
         console.warn("Браузер заблокировал автовоспроизведение звука:", error);
     });
+}
+
+// === Уведомления о готовности + прогресс в заголовке вкладки ===
+// Плашкой ОС зовём ТОЛЬКО когда вкладка скрыта (document.hidden): если человек
+// смотрит на страницу, ему хватает звука и таблицы, лишний раз не дёргаем.
+// Плашка - точный сигнал "вернись, готово", а не фоновый шум.
+function showCompletionNotification(successItems, failureItems) {
+    if (!notifyEnabled || !notificationsSupported || Notification.permission !== 'granted') return;
+
+    const okCount = successItems.length;
+    const failCount = failureItems.length;
+    if (okCount + failCount === 0) return;
+
+    let title, body;
+    if (failCount && !okCount) {
+        title = failCount === 1 ? 'Не вышло скачать' : `Не вышло: ${failCount} шт.`;
+        body = failCount === 1 ? (failureItems[0].file || '') : '';
+    } else if (okCount && !failCount) {
+        title = okCount === 1 ? 'Готово, лови' : `Готово: ${okCount} шт.`;
+        body = okCount === 1 ? (successItems[0].file || '') : '';
+    } else {
+        title = 'Загрузки завершились';
+        body = `Готово ${okCount}, не вышло ${failCount}`;
+    }
+
+    try {
+        const note = new Notification(title, {
+            body: body,
+            icon: 'img/snej.webp',
+            tag: 'yt-download',   // одна плашка на сайт, стек не копим
+            silent: true          // свой звук уже играет, системный не дублируем
+        });
+        note.onclick = () => {
+            window.focus();
+            window.location.hash = '#downloads';
+            note.close();
+        };
+    } catch (e) {}
+}
+
+// Процент вперёд: заголовок браузер режет с конца, значит число доживает до
+// самой узкой вкладки. Нет активных задач - возвращаем исходный заголовок.
+function updateTabTitleProgress(jobs) {
+    if (originalDocTitle === null) originalDocTitle = document.title;
+
+    if (!jobs || jobs.length === 0) {
+        if (document.title !== originalDocTitle) document.title = originalDocTitle;
+        return;
+    }
+
+    let pct = null;
+    for (const job of jobs) {
+        const m = /(\d{1,3}(?:\.\d+)?)%/.exec(job.status || '');
+        if (m) { pct = Math.min(100, Math.round(parseFloat(m[1]))); break; }
+    }
+
+    const next = (pct !== null ? pct + '% ' : '⏳ ') + originalDocTitle;
+    if (document.title !== next) document.title = next;
+}
+
+function updateNotifyButtonVisuals(btn) {
+    const denied = notificationsSupported && Notification.permission === 'denied';
+    btn.innerHTML = notifyEnabled ? '🔔' : '🔕';
+    if (denied) {
+        btn.title = 'Браузер заблокировал уведомления. Разреши их в настройках сайта у адресной строки.';
+    } else if (notifyEnabled) {
+        btn.title = 'Позову, когда файл будет готов. Нажми, чтобы выключить.';
+    } else {
+        btn.title = 'Нажми - и позову, когда файл скачается, даже если ты на другой вкладке.';
+    }
+}
+
+function updateNotifyButtonVisibility() {
+    if (!notifyToggleBtn) return;
+    notifyToggleBtn.classList.toggle('is-visible', isOnHomePage());
+}
+
+function initNotifyToggle() {
+    if (!notificationsSupported) return;
+
+    try {
+        notifyEnabled = localStorage.getItem(NOTIFY_KEY) === 'true' && Notification.permission === 'granted';
+    } catch (e) {
+        notifyEnabled = false;
+    }
+
+    const btn = document.createElement('div');
+    btn.id = 'notify-toggle';
+    btn.className = 'notify-toggle';
+    notifyToggleBtn = btn;
+    updateNotifyButtonVisuals(btn);
+    updateNotifyButtonVisibility();
+
+    btn.addEventListener('click', () => {
+        if (Notification.permission === 'granted') {
+            notifyEnabled = !notifyEnabled;
+            try { localStorage.setItem(NOTIFY_KEY, notifyEnabled); } catch (e) {}
+            updateNotifyButtonVisuals(btn);
+        } else if (Notification.permission === 'denied') {
+            // Сами включить не можем - разрешение зарублено в браузере. Коротко
+            // качнём кнопку, чтобы человек заметил и глянул подсказку.
+            btn.classList.remove('notify-nudge');
+            void btn.offsetWidth;
+            btn.classList.add('notify-nudge');
+        } else {
+            // Запрос из клика - осознанный жест, нативный диалог выйдет в понятном
+            // контексте, сразу после нажатия.
+            Notification.requestPermission().then((perm) => {
+                notifyEnabled = perm === 'granted';
+                try { localStorage.setItem(NOTIFY_KEY, notifyEnabled); } catch (e) {}
+                updateNotifyButtonVisuals(btn);
+            });
+        }
+    });
+
+    document.body.appendChild(btn);
+}
+
+if (notificationsSupported) {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            initNotifyToggle();
+            window.addEventListener('hashchange', updateNotifyButtonVisibility);
+        });
+    } else {
+        initNotifyToggle();
+        window.addEventListener('hashchange', updateNotifyButtonVisibility);
+    }
 }
 
 function getIconClass(type) {
@@ -390,19 +527,31 @@ function renderFinishedRow(item, logURL) {
 }
 
 function buildFileActions(file) {
+    const playIcon = `<svg class="play-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>`;
+    const playButton = file.downloadurl
+        ? `<button type="button" class="btn btn-default btn-xs play-btn" title="Глянуть/послушать прямо тут" data-play-url="${escapeHtml(file.downloadurl)}" data-play-kind="${escapeHtml(file.kind || 'video')}">${playIcon}</button>`
+        : '';
+
     const qrIcon = `<svg class="qr-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm-2 8h8v8H3v-8zm2 2v4h4v-4H5zM13 3h8v8h-8V3zm2 2v4h4V5h-4zm-2 8h3v2h-2v3h-2v-5h1zm5 0h3v3h-2v2h-3v-2h2v-3zm-3 5h2v3h-2v-3zm5 0h3v3h-3v-3z"/></svg>`;
     const qrButton = file.downloadurl
         ? `<button type="button" class="btn btn-default btn-xs qr-btn" title="Забрать на телефон - покажу QR" data-qr-url="${escapeHtml(file.downloadurl)}">${qrIcon}</button>`
         : '';
-    if (!qrButton && !file.deleteurl) return '';
-    return `<div class="btn-group btn-group-file">${qrButton}${file.deleteurl}</div>`;
+    if (!playButton && !qrButton && !file.deleteurl) return '';
+    return `<div class="btn-group btn-group-file">${playButton}${qrButton}${file.deleteurl}</div>`;
 }
 
-function renderFileRow(file) {
+// Ключ файла для отслеживания "новых" строк между опросами - downloadurl
+// стабилен и уникален per-файл, имя внутри HTML-ссылки как запасной вариант.
+function getFileKey(file) {
+    return file.downloadurl || file.file;
+}
+
+function renderFileRow(file, isNew) {
     const actions = buildFileActions(file);
+    const enterClass = isNew ? ' row-enter-cell' : '';
 
     if (typeof showFileLifetime !== 'undefined' && !showFileLifetime) {
-        return `<tr><td>${file.file}</td><td>${file.size}</td><td>${actions}</td></tr>`;
+        return `<tr><td><span class="file-name-plain${enterClass}">${file.file}</span></td><td>${file.size}</td><td>${actions}</td></tr>`;
     }
 
     const age = (typeof file.age_minutes === 'number' && !isNaN(file.age_minutes)) ? file.age_minutes : 0;
@@ -437,7 +586,7 @@ function renderFileRow(file) {
     return `
         <tr>
             <td>
-                <div class="file-row-content">
+                <div class="file-row-content${enterClass}">
                     ${badge}
                     <span class="file-name">${file.file}</span>
                 </div>
@@ -578,6 +727,112 @@ document.addEventListener('click', function (e) {
     if (url) showQrModal(url);
 });
 
+// === Плеер прямо на странице ===
+// Модалка живёт вне таблиц Видео/Музыка намеренно: те перерисовываются целиком
+// на каждом фоновом опросе ?jobs (см. renderTable), и живой <video>/<audio>
+// внутри строки обрывался бы на середине воспроизведения при первом же
+// обновлении. Модалка от опроса не зависит - открыл, слушай/смотри спокойно.
+let playerModalEl = null;
+
+function ensurePlayerModal() {
+    if (playerModalEl) return playerModalEl;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'qr-modal-overlay player-modal-overlay';
+    overlay.innerHTML = `
+        <div class="qr-modal-card player-modal-card" role="dialog" aria-modal="true" aria-label="Просмотр файла">
+            <button type="button" class="qr-modal-close" aria-label="Закрыть">&times;</button>
+            <div class="qr-modal-title player-modal-title"></div>
+            <div class="player-modal-video-wrap is-hidden">
+                <video class="player-modal-video" controls playsinline preload="metadata"></video>
+            </div>
+            <div class="player-modal-audio-wrap is-hidden">
+                <audio class="player-modal-audio" controls preload="metadata"></audio>
+            </div>
+            <div class="qr-modal-filename player-modal-filename"></div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+    playerModalEl = overlay;
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) hidePlayerModal();
+    });
+    overlay.querySelector('.qr-modal-close').addEventListener('click', hidePlayerModal);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && overlay.classList.contains('is-visible')) hidePlayerModal();
+    });
+
+    return overlay;
+}
+
+// preload="metadata" - браузер заранее тянет только длительность/заголовок
+// файла, не всё содержимое; сам поток пойдёт кусками через Range-запросы
+// только после нажатия play, ровно как при перемотке.
+function showPlayerModal(relativeUrl, kind) {
+    const abs = buildAbsoluteFileUrl(relativeUrl);
+    if (!abs) return;
+
+    const overlay = ensurePlayerModal();
+    const videoWrap = overlay.querySelector('.player-modal-video-wrap');
+    const audioWrap = overlay.querySelector('.player-modal-audio-wrap');
+    const video = overlay.querySelector('.player-modal-video');
+    const audio = overlay.querySelector('.player-modal-audio');
+    const isAudio = kind === 'audio';
+
+    overlay.querySelector('.player-modal-title').textContent = isAudio ? 'Слушаем' : 'Смотрим';
+
+    let name = relativeUrl;
+    try { name = decodeURIComponent(relativeUrl.split('/').pop()); } catch (e) {}
+    overlay.querySelector('.player-modal-filename').textContent = name;
+
+    videoWrap.classList.toggle('is-hidden', isAudio);
+    audioWrap.classList.toggle('is-hidden', !isAudio);
+
+    // Не переигрываем чужой src, а полностью останавливаем неиспользуемый плеер -
+    // иначе он мог бы тихо продолжать тянуть предыдущий файл в фоне.
+    if (isAudio) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        audio.src = abs;
+    } else {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+        video.src = abs;
+    }
+
+    // Автоплей нарочно не включаем - открыл превью сам, сам и жми play, без
+    // внезапного звука на весь звук системы.
+    overlay.classList.add('is-visible');
+}
+
+function hidePlayerModal() {
+    if (!playerModalEl) return;
+    playerModalEl.classList.remove('is-visible');
+
+    // Останавливаем оба плеера и снимаем src сразу при закрытии - иначе браузер
+    // может продолжать тянуть файл в фоне, даже когда модалка уже спрятана.
+    const video = playerModalEl.querySelector('.player-modal-video');
+    const audio = playerModalEl.querySelector('.player-modal-audio');
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
+}
+
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('.play-btn');
+    if (!btn) return;
+    e.preventDefault();
+    const url = btn.getAttribute('data-play-url');
+    const kind = btn.getAttribute('data-play-kind');
+    if (url) showPlayerModal(url, kind);
+});
+
 // Делегированные обработчики вместо inline on* (CSP без unsafe-inline).
 // Ловим клики на динамически отрисованных строках и статичных кнопках.
 document.addEventListener('click', function (e) {
@@ -628,24 +883,25 @@ function loadList() {
         }
 
         if (previousFinishedPids !== null) {
-            let hasNewSuccess = false;
-            let hasNewFailure = false;
+            const newSuccess = [];
+            const newFailure = [];
 
             for (let item of data.finished) {
                 const pid = String(item.pid);
                 if (!previousFinishedPids.has(pid)) {
-                    if (isDownloadFailed(item)) {
-                        hasNewFailure = true;
-                    } else {
-                        hasNewSuccess = true;
-                    }
+                    (isDownloadFailed(item) ? newFailure : newSuccess).push(item);
                 }
             }
 
-            if (hasNewFailure) {
+            if (newFailure.length) {
                 playNotificationSound(false);
-            } else if (hasNewSuccess) {
+            } else if (newSuccess.length) {
                 playNotificationSound(true);
+            }
+
+            // Плашкой зовём только при скрытой вкладке - иначе звука и таблицы хватает.
+            if (document.hidden && (newSuccess.length || newFailure.length)) {
+                showCompletionNotification(newSuccess, newFailure);
             }
         }
 
@@ -663,13 +919,38 @@ function loadList() {
             <td></td><td></td><td></td>
             <td><div class="btn-group"><button type="button" id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="recent">Удалить Все</button></div></td>`);
 
-        renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", renderFileRow);
-        renderTable(nativeUI.music, data.music, 3, "Музыки нет.", renderFileRow);
+        // Плавное появление строк только для реально новых файлов - если пометить
+        // так весь список при любом обновлении (например, у бейджа "времени жизни"
+        // сменился процент), анимация будет переигрываться на каждый опрос и
+        // раздражать. Первый опрос за сессию - это база, а не "новые" файлы,
+        // иначе весь список анимировался бы разом при обычном открытии страницы.
+        const currentVideoKeys = new Set((data.videos || []).map(getFileKey));
+        const newVideoKeys = previousVideoKeys === null ? new Set()
+            : new Set([...currentVideoKeys].filter(k => !previousVideoKeys.has(k)));
+        previousVideoKeys = currentVideoKeys;
+
+        const currentMusicKeys = new Set((data.music || []).map(getFileKey));
+        const newMusicKeys = previousMusicKeys === null ? new Set()
+            : new Set([...currentMusicKeys].filter(k => !previousMusicKeys.has(k)));
+        previousMusicKeys = currentMusicKeys;
+
+        renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", item => renderFileRow(item, newVideoKeys.has(getFileKey(item))));
+        renderTable(nativeUI.music, data.music, 3, "Музыки нет.", item => renderFileRow(item, newMusicKeys.has(getFileKey(item))));
         updateFileBadges(data);
         updateProxyStatus(data.proxy);
+        updateTabTitleProgress(data.jobs);
 
         const isActive = (data.jobs && data.jobs.length > 0) || (data.queue && data.queue.length > 0);
-        scheduleNextRefresh(isActive ? CONFIG.fastInterval : CONFIG.slowInterval);
+        lastActiveState = isActive;
+
+        // В фоне (вкладка скрыта) держим опрос живым, только пока реально ждём
+        // финиша. Всё стихло - гасим сами, чтобы не молотить впустую.
+        if (document.hidden && !isActive) {
+            stopAutoRefresh();
+            return;
+        }
+
+        scheduleNextRefresh(document.hidden ? BG_POLL_INTERVAL : (isActive ? CONFIG.fastInterval : CONFIG.slowInterval));
 
     }).catch(function () {
         console.error("Не удалось загрузить данные");
@@ -736,10 +1017,22 @@ window.addEventListener('beforeunload', function () {
 
 document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
-        stopAutoRefresh();
+        // Уведомления включены и что-то качается - не глушим опрос, роняем в редкий
+        // фоновый интервал, чтобы поймать финиш и позвать. Иначе как раньше: стоп.
+        if (notifyEnabled && lastActiveState && notificationsSupported
+            && Notification.permission === 'granted') {
+            scheduleNextRefresh(BG_POLL_INTERVAL);
+        } else {
+            stopAutoRefresh();
+        }
     } else {
-        if (nativeUI.progress && !refreshActive) {
-            startAutoRefresh();
+        if (nativeUI.progress) {
+            if (!refreshActive) {
+                startAutoRefresh();
+            } else {
+                clearTimeout(refreshTimer);
+                loadList();
+            }
         }
     }
 });

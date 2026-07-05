@@ -1065,8 +1065,11 @@ class Downloader
             // googlevideo и подобные CDN часто отдают поток как один URL
             // с поддержкой Range, а не как фрагментированный манифест -
             // --http-chunk-size режет его на чанки через Range-запросы,
-            // --concurrent-fragments качает их параллельно (без HLS/DASH-фрагментации)
-            $cmd .= " --concurrent-fragments 8 --http-chunk-size 5M";
+            // --concurrent-fragments качает их параллельно (без HLS/DASH-фрагментации).
+            // 4 (не 8): скорость упирается в прокси, а не в число соединений,
+            // а меньше параллельных Range-запросов с одного IP к CDN - меньше
+            // шанс поймать 403 на чанк и вести себя заметно.
+            $cmd .= " --concurrent-fragments 4 --http-chunk-size 5M";
             $cmd = "env all_proxy=" . escapeshellarg($this->config['socks5']) . " " . $cmd;
         }
 
@@ -1085,20 +1088,36 @@ class Downloader
         $cmd .= " --embed-thumbnail --embed-metadata";
 
         $isYoutube = false;
+        $isYoutubeMulti = false;
         foreach ($urls as $url) {
-            if (preg_match('/(youtube\.com|youtu\.be)/', $url)) {
+            if (preg_match('/(youtube\.com|youtu\.be)/i', $url)) {
                 $isYoutube = true;
-                break;
+                // Плейлист/канал/хэндл разворачивается в десятки роликов внутри
+                // одного процесса yt-dlp - тогда нужен сон и между самими
+                // загрузками, а не только между HTTP-запросами.
+                if (preg_match('#[?&]list=|/playlist|/channel/|/@|/c/|/user/#i', $url)) {
+                    $isYoutubeMulti = true;
+                }
             }
         }
         if ($isYoutube) {
             $cmd .= " --sponsorblock-remove sponsor";
         }
 
-        // Пауза между запросами - только для "хвоста" мультизагрузки (первая
-        // ссылка идёт без неё, чтобы старт не ждал). --sleep-interval разносит
-        // запросы к хосту, иначе он отдаёт 429 на частые обращения с одного IP.
-        if ($paceRequests) {
+        // Пауза между запросами - защита от 429/бот-чека YouTube (частые
+        // обращения к player API с одного прокси-IP). Сон виден юзеру как статус
+        // "Пауза N сек" (см. разбор "Sleeping ... seconds" выше), поэтому вешаем
+        // его только там, где запросов реально много:
+        // - Плейлист/канал YouTube приходит одним URL (ветка count===1 в
+        //   addOneDownload, paceRequests=false), но yt-dlp разворачивает его в
+        //   десятки роликов подряд - без пауз это залп extraction-запросов с
+        //   одного IP, прямой путь к 429. Пейсим и запросы, и сами загрузки.
+        // - "Хвост" мультизагрузки одного хоста ($paceRequests) - тот же случай.
+        // Одиночный ролик делает пару запросов, риск бана мизерный - сон не
+        // навешиваем, иначе юзер видит частокол "Пауза N сек" на пустом месте.
+        if ($isYoutubeMulti) {
+            $cmd .= " --sleep-requests 1.5 --sleep-interval 3 --max-sleep-interval 8";
+        } elseif ($paceRequests) {
             $cmd .= " --sleep-interval 3 --max-sleep-interval 8 --sleep-requests 1";
         }
 

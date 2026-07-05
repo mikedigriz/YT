@@ -145,6 +145,7 @@ function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     return [
         'file'             => $fileurl,
         'downloadurl'      => $downloadurl,
+        'kind'             => ($type === 'v') ? 'video' : 'audio',
         'size'             => $f["size"],
         'deleteurl'        => $deleteurl,
         'age_minutes'      => (int)($f["age_minutes"] ?? 0),
