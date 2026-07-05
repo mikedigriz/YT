@@ -243,9 +243,11 @@ class Downloader
                     $verylastline = $line;
 
                     if (!$siteset) {
-                        $siteset = true;
-                        $site = explode("]", $line)[0];
-                        $site = ucfirst(str_replace(["[", "]"], "", $site));
+                        $detected = self::detectSite($line);
+                        if ($detected !== null) {
+                            $siteset = true;
+                            $site = $detected;
+                        }
                     }
 
                     if (strpos($line, 'Destination') !== false) {
@@ -401,6 +403,29 @@ class Downloader
         file_put_contents($completefile, "[yturl] " . $urltext . "\n", FILE_APPEND);
     }
 
+    // Служебные теги yt-dlp и наши маркеры, которые НЕ являются именем сайта.
+    // В translate-задачах vot-cli пишет в тот же лог параллельно с yt-dlp,
+    // поэтому имя сайта берём только со строки-анонса экстрактора ("[youtube] ..."),
+    // пропуская и не-скобочный вывод vot-cli, и эти служебные теги.
+    private const NON_EXTRACTOR_TAGS = [
+        'download', 'info', 'debug', 'vot', 'ffmpeg', 'merger', 'metadata',
+        'extractaudio', 'embedthumbnail', 'videoconvertor', 'sponsorblock',
+        'ytcmd', 'yturl', 'retry_attempted',
+    ];
+
+    // Имя сайта из строки лога, либо null если строка не похожа на тег экстрактора.
+    private static function detectSite($line)
+    {
+        if (!preg_match('/^\[([^\]]+)\]/', $line, $m)) {
+            return null;
+        }
+        $base = explode(':', strtolower(trim($m[1])))[0]; // "youtube:tab" -> "youtube"
+        if (in_array($base, self::NON_EXTRACTOR_TAGS, true)) {
+            return null;
+        }
+        return ucfirst($m[1]);
+    }
+
     public static function get_queued_jobs()
     {
         if (!isset($GLOBALS['config']['logPath'])) return [];
@@ -535,8 +560,11 @@ class Downloader
                     $verylastline = $line;
 
                     if (!$siteset) {
-                        $siteset = true;
-                        $site = ucfirst(str_replace(["[", "]"], "", explode("]", $line)[0]));
+                        $detected = self::detectSite($line);
+                        if ($detected !== null) {
+                            $siteset = true;
+                            $site = $detected;
+                        }
                     }
 
                     if (strpos($line, '[yturl]') !== false) {
