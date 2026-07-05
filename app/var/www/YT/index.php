@@ -291,6 +291,9 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         }
     }
 
+    // Перевод озвучки через Яндекс-VOT - только для видео, для аудио бессмысленно
+    $translate = !$audio_only && !empty($_POST['translate']);
+
     // X-Forwarded-For/X-Real-IP подделываются любым клиентом, что достучится до
     // контейнера напрямую (порт опубликован в compose) - доверяем им только
     // если запрос реально пришёл с приватного/служебного адреса (наш nginx/докер-бридж)
@@ -311,7 +314,8 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         'audio_only' => $audio_only,
         'dl_format' => $dl_format,
         'audio_format' => $audio_format,
-        'client_ip' => $client_ip
+        'client_ip' => $client_ip,
+        'translate' => $translate
     ]];
 
     // Проверка свободного места

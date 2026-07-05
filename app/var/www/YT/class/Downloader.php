@@ -207,11 +207,28 @@ class Downloader
                 $isaudio = (strpos($fileinfo->getFilename(), "_a") !== false);
                 $listpos = "";
                 $playlist = "";
+                // Фазы задачи с переводом озвучки (Яндекс-VOT). Маркеры встречаются
+                // только у translate-задач, поэтому обычные загрузки их не покажут.
+                $votPhase = false;
+                $muxPhase = false;
 
                 while (($line = fgets($handle)) !== false) {
                     // yt-dlp печатает по-английски: "[download] Downloading item N of M"
                     if (preg_match('/\[download\] Downloading item (.+)/', $line, $lm)) {
                         $listpos = "(" . trim($lm[1]) . ")";
+                    }
+
+                    // yt-dlp записал путь файла (--print-to-file) - значит скачивание
+                    // кончилось. В параллельном режиме vot-cli работает и во время
+                    // скачивания, поэтому фазу "перевожу" включаем именно по этому
+                    // маркеру, а не по раннему баннеру vot-cli, - пока идёт закачка,
+                    // пользователь видит её проценты, а не преждевременное "перевожу".
+                    if (strpos($line, "Writing '%(filepath)s'") !== false) {
+                        $votPhase = true;
+                    }
+                    // mux_translated.sh печатает "[vot] ...", а сырой ffmpeg-микс - "frame="
+                    if (strpos($line, '[vot]') !== false || strpos($line, 'frame=') !== false) {
+                        $muxPhase = true;
                     }
 
                     // "[extractor] Playlist TITLE: Downloading N items"
@@ -266,6 +283,22 @@ class Downloader
                 // Пауза важнее прочих статусов - перекрываем в самом конце
                 if ($sleepStatus !== null) {
                     $lastline = $sleepStatus;
+                }
+
+                // Фаза перевода перекрывает всё: скачивание уже позади, а vot/ffmpeg
+                // не пишут проценты - без этого юзер видел бы вечное "В Процессе".
+                if ($muxPhase) {
+                    $lastline = "Вклеиваю русскую дорожку в видео, почти готово";
+                } elseif ($votPhase) {
+                    // Живой таймер: сколько уже идёт перевод. Считаем от старта задачи
+                    // (mtime pid-файла) - в параллельном режиме vot-cli стартует вместе
+                    // со скачиванием, так что это и есть длительность перевода. Фронт
+                    // опрашивает ?jobs каждые секунды и перерисовывает - счётчик растёт.
+                    $elapsed = max(0, time() - $fileinfo->getMTime());
+                    $mins = intdiv($elapsed, 60);
+                    $secs = $elapsed % 60;
+                    $human = $mins > 0 ? ($mins . " мин " . $secs . " сек") : ($secs . " сек");
+                    $lastline = "Перевожу озвучку через Яндекс, идёт уже " . $human;
                 }
 
                 $bjs[] = array(
@@ -611,6 +644,10 @@ class Downloader
     // выигрывает, поэтому порядок значим (сетевые -> доступность -> форматы ->
     // постобработка -> системные). Добавлять новую ошибку - вставить строку.
     private const ERROR_RULES = [
+        // === Бот-детект YouTube (выше всех: часто идёт в паре с 429, но
+        // истинная причина - именно бот-чек, а не перегрузка сайта) ===
+        ['/not a bot|Sign in to confirm you.re not a bot/i', "YouTube принял нас за бота 🤖\nIP PROXY засвечен - лучше подождать"],
+
         // === Сетевые ошибки ===
         ['/Name or service not known|Could not resolve host|No address associated with hostname/i', "DNS не резолвил хост 🌐\nПроверь ссылку или интернет"],
         ['/Connection refused|ECONNREFUSED/i', "Сервер сказал «нет» 🚪\nConnection refused"],
@@ -811,9 +848,10 @@ class Downloader
         }
 
         // БЕЗОПАСНОСТЬ: Проверка, что команда содержит ожидаемый бинарник
-        // (убираем префикс с env-переменными, если есть: "env VAR=value ... /path/to/yt-dlp")
+        // (убираем префикс с env-переменными, если есть: "env VAR=value ... /path/to/yt-dlp").
+        // Переменных может быть несколько (all_proxy + no_proxy/NO_PROXY) - снимаем все.
         $expectedExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
-        $cmdToCheck = preg_replace('/^env\s+[\w]+=\S+\s+/', '', $ytcmd);
+        $cmdToCheck = preg_replace('/^env\s+(?:[\w]+=\S+\s+)+/', '', $ytcmd);
         if (strpos($cmdToCheck, $expectedExe) !== 0) {
             $_SESSION['errors'] = ["Подозрительная команда в логе. Рестарт отменен"];
             error_log("[YTDL] Security: Command mismatch on restart.");
@@ -1037,7 +1075,11 @@ class Downloader
         $cmd .= " --js-runtimes node";
         // Логгер скачиваний (LogPluginPP -> /var/log/yt_dlp.log) подключаем явно,
         // не полагаясь на автопоиск config/плагинов yt-dlp. --plugin-dirs указывает
-        // на каталог, содержащий yt_dlp_plugins/ (плагин запечён в образ из logger.sh)
+        // на каталог, содержащий yt_dlp_plugins/ (плагин запечён в образ из logger.sh).
+        // "default" обязателен: без него --plugin-dirs ЗАМЕНЯЕТ дефолтные пути, и
+        // pip-плагины из site-packages (bgutil PO-token провайдер) не грузятся -
+        // YouTube тогда режет бот-чеком. С "default" ищутся оба набора.
+        $cmd .= " --plugin-dirs default";
         $cmd .= " --plugin-dirs " . escapeshellarg("/etc/yt-dlp/plugins/log_plugin");
         $cmd .= " --use-postprocessor LogPluginPP";
         $cmd .= " -o " . escapeshellarg($this->download_path . "/%(title)s_%(id)s.%(ext)s");
@@ -1070,7 +1112,10 @@ class Downloader
             // а меньше параллельных Range-запросов с одного IP к CDN - меньше
             // шанс поймать 403 на чанк и вести себя заметно.
             $cmd .= " --concurrent-fragments 4 --http-chunk-size 5M";
-            $cmd = "env all_proxy=" . escapeshellarg($this->config['socks5']) . " " . $cmd;
+            // no_proxy для localhost: запрос yt-dlp к серверу PO-токенов (bgutil на
+            // 127.0.0.1:4416) не должен уходить в SOCKS5, иначе токен не получить.
+            $cmd = "env all_proxy=" . escapeshellarg($this->config['socks5'])
+                . " no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost " . $cmd;
         }
 
         if ($onedownload['audio_only']) {
@@ -1132,6 +1177,49 @@ class Downloader
         $urltext = trim($urltext, ",");
 
         $cmd .= " --ignore-errors";
+
+        // Перевод озвучки через Яндекс-VOT. Только для видео (не для -x аудио).
+        // yt-dlp качает ролик как обычно (прокси/директ уже в $cmd), затем vot-cli
+        // тянет переведённую дорожку по URL, mux_translated.sh вклеивает её.
+        // Обёртка bash -c: yt-dlp остаётся в cmdline процесса, liveness-проверка
+        // в get_current_background_jobs() продолжает видеть задачу как yt-dlp.
+        if (!empty($onedownload['translate']) && empty($onedownload['audio_only'])) {
+            $votTmp = $this->config['logPath'] . "/vot_" . uniqid();
+            $pathFile = $votTmp . "/vpath";
+
+            // Путь скачанного файла yt-dlp пишет в $pathFile - оттуда его берёт mux
+            $ytPart = $cmd . " --print-to-file " . escapeshellarg('after_move:filepath') . " " . escapeshellarg($pathFile);
+
+            // Приводим ссылку к виду, который понимает Яндекс-VOT. yt-dlp качает
+            // и оригинальную форму - правим URL только для vot-cli.
+            $votUrl = $urls[0];
+            if (preg_match('#youtube\.com/shorts/([\w-]+)#i', $votUrl, $ym)) {
+                // Shorts -> канонический watch?v=ID
+                $votUrl = 'https://www.youtube.com/watch?v=' . $ym[1];
+            } elseif (preg_match('#(?:vkvideo\.ru|vk\.ru|vkvideo\.com)/(video-?[\d_]+)#i', $votUrl, $vm)) {
+                // Новый домен VK -> привычный vk.com/video...
+                $votUrl = 'https://vk.com/' . $vm[1];
+            }
+            // Яндекс сам тянет ролик со своих серверов - vot-cli идёт без прокси
+            $votPart = "vot-cli --reslang=ru --output=" . escapeshellarg($votTmp) . " " . escapeshellarg($votUrl);
+            $muxPart = "bash /mux_translated.sh \"\$(cat " . escapeshellarg($pathFile) . ")\" "
+                . escapeshellarg($votTmp) . " " . escapeshellarg($this->download_path);
+
+            // Параллельно: Яндекс переводит ролик у себя на серверах и не ждёт наш
+            // файл, поэтому vot-cli стартует ОДНОВРЕМЕННО с yt-dlp - долгая обработка
+            // Яндекса идёт во время скачивания, а не плюсом к нему. Ждём оба процесса,
+            // mux запускаем только если оба успешны; иначе остаётся скачанное видео
+            // без перевода (мягкая деградация, как было с &&).
+            $inner = "mkdir -p " . escapeshellarg($votTmp)
+                . ' ; ' . $ytPart . ' & ytpid=$!'
+                . ' ; ' . $votPart . ' & votpid=$!'
+                . ' ; wait $ytpid ; ytrc=$?'
+                . ' ; wait $votpid ; votrc=$?'
+                . ' ; if [ $ytrc -eq 0 ] && [ $votrc -eq 0 ]; then ' . $muxPart . ' ; fi'
+                . ' ; rm -rf ' . escapeshellarg($votTmp);
+
+            $cmd = "bash -c " . escapeshellarg($inner);
+        }
 
         $logcmd = $cmd;
         $cmd .= " > " . escapeshellarg($this->config['logPath'] . "/" . $fno) . " 2>&1 & echo $! > " . escapeshellarg($this->config['logPath'] . "/" . $fnp);
@@ -1200,7 +1288,8 @@ class Downloader
                     'dl_format' => $urlParts[1] ?? '',
                     'audio_only' => $urlParts[2] ?? '',
                     'audio_format' => $urlParts[3] ?? '',
-                    'client_ip' => trim($urlParts[4] ?? 'unknown')
+                    'client_ip' => trim($urlParts[4] ?? 'unknown'),
+                    'translate' => trim($urlParts[5] ?? '')
                 );
                 $currently_running++;
             } else {
@@ -1238,7 +1327,8 @@ class Downloader
     {
         $queue_file = $this->config['logPath'] . "/dl_queue";
         $clientIp = $onedownload['client_ip'] ?? 'unknown';
-        $fcontent = "queueid" . uniqid() . "=" . urlencode($onedownload['url']) . ">" . $onedownload['dl_format'] . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . ">" . $clientIp . "\n";
+        $translate = !empty($onedownload['translate']) ? '1' : '';
+        $fcontent = "queueid" . uniqid() . "=" . urlencode($onedownload['url']) . ">" . $onedownload['dl_format'] . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . ">" . $clientIp . ">" . $translate . "\n";
 
         // LOCK_EX важен здесь
         file_put_contents($queue_file, $fcontent, FILE_APPEND | LOCK_EX);

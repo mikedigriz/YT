@@ -89,6 +89,10 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
                                             <span class="quality-label">1080p</span>
                                             <span class="quality-desc">Full HD</span>
                                         </div>
+                                        <div class="quality-popup-item quality-popup-item-translate" data-format="translate">
+                                            <span class="quality-label">Перевод 🇷🇺</span>
+                                            <span class="quality-desc">Озвучка Яндекс</span>
+                                        </div>
                                     </div>
                                 </div>
 
@@ -151,6 +155,7 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
 
                                 <div style="display: none !important;">
                                     <input id="audio_convert" type="checkbox" name="audio">
+                                    <input type="hidden" name="translate" id="translate_field" value="">
                                     <select name="audio_format" id="audio_format">
                                         <option value="mp3-high">mp3 HQ</option>
                                         <option value="mp3">mp3</option>
@@ -173,13 +178,13 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
         </div>
         <div class="tab-pane fade" id="downloads">
             <div style="text-align: center;" class="row">
-                <br /><br />
+                <br />
                 <h4>Текущие Загрузки</h4>
                 <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
-                            <th style="width: 10%; height:35px;">Сайт/Тип</th>
+                            <th style="width: 10%; height:35px; white-space:nowrap;">Сайт/Тип</th>
                             <th>Файл</th>
                             <th style="width: 25%;">Статус</th>
                             <th style="width: 120px;">Действия</th>
@@ -192,7 +197,7 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
                     </tbody>
                 </table>
                 </div>
-                <br /><br />
+                <br />
                 <?php if(!$config['disableQueue']) : ?>
                 <h4>Очередь</h4>
                 <div class="table-responsive">
@@ -211,14 +216,14 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
                     </tbody>
                 </table>
                 </div>
-                <br /><br />
+                <br />
                 <?php endif; ?>
                 <h4>Последние Загрузки</h4>
                 <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
-                            <th style="width: 10%; height:35px;">Сайт/Тип</th>
+                            <th style="width: 10%; height:35px; white-space:nowrap;">Сайт/Тип</th>
                             <th>Файл/Плейлист</th>
                             <th style="width: 25%;">Статус</th>
                             <th style="width: 180px;">Действия</th>
@@ -234,7 +239,7 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
             </div>
         </div>
         <div class="tab-pane fade" id="videos">
-            <br /><br />
+            <br />
             <h4 style="text-align: center;">Загруженные Видео</h4>
             <div class="table-responsive">
             <table style="text-align: left;" class="table table-striped table-hover ">
@@ -259,10 +264,10 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
                 </tbody>
             </table>
             </div>
-            <br /><br />
+            <br />
         </div>
         <div class="tab-pane fade" id="music">
-            <br /><br />
+            <br />
             <h4 style="text-align: center;">Загруженные Аудио</h4>
             <div class="table-responsive">
             <table style="text-align: left;" class="table table-striped table-hover ">
@@ -287,7 +292,7 @@ var retentionMinutes = <?php echo $retentionMinutes; ?>;
                 </tbody>
             </table>
             </div>
-            <br /><br />
+            <br />
         </div>
     </div>
 </div>

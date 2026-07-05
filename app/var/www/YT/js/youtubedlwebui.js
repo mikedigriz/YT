@@ -1396,6 +1396,7 @@ function initLongPressQualitySelector() {
     const qualityPopup = document.getElementById('quality-popup');
     const downloadForm = document.getElementById('download-form');
     const formatField = document.getElementById('format');
+    const translateField = document.getElementById('translate_field');
     const uiAudioMode = document.getElementById('ui_audio_mode');
     const controlsRow = document.querySelector('.controls-row');
 
@@ -1456,7 +1457,13 @@ function initLongPressQualitySelector() {
         if (isLongPress && selectedMenuItem) {
             const format = selectedMenuItem.getAttribute('data-format');
 
-            if (ALLOWED_FORMATS.has(format)) {
+            if (format === 'translate') {
+                // Перевод озвучки Яндексом: качество остаётся дефолтным (top),
+                // ставим только флаг translate. Бэк игнорирует его для аудио.
+                if (translateField) translateField.value = '1';
+                hideQualityMenu();
+                downloadForm.requestSubmit();
+            } else if (ALLOWED_FORMATS.has(format)) {
                 formatField.value = format;
                 hideQualityMenu();
                 downloadForm.requestSubmit();
