@@ -1,12 +1,11 @@
 <div align="center">
 
-# Качалка
+# 🚀 Качалка
 
 **Вставляешь ссылку - получаешь готовый файл. Без рекламы, без регистрации, без мороки.**
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/mikedigriz/yt?style=flat-square&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)](https://hub.docker.com/r/mikedigriz/yt)
 [![Docker Image Size](https://img.shields.io/docker/image-size/mikedigriz/yt/latest?style=flat-square&logo=docker&logoColor=white&labelColor=2496ED&color=1E3A8A)](https://hub.docker.com/r/mikedigriz/yt)
-[![GitHub Stars](https://img.shields.io/github/stars/mikedigriz/YT?style=flat-square&logo=github&logoColor=white&color=4A90D9)](https://github.com/mikedigriz/YT)
 [![Powered by yt-dlp](https://img.shields.io/badge/powered%20by-yt--dlp-FF0000?style=flat-square&logo=youtube&logoColor=white)](https://github.com/yt-dlp/yt-dlp)
 
 </div>
@@ -35,7 +34,13 @@
 
 ## Попробовать за 2 минуты
 
-Нужен только установленный Docker.
+Нужен только установленный Docker. Готовый образ уже лежит на [Docker Hub](https://hub.docker.com/r/mikedigriz/yt) - собирать ничего не нужно:
+
+```bash
+docker run -it -p 8000:80 mikedigriz/yt
+```
+
+Если хочешь собрать образ из исходников сам (например, чтобы внести правки):
 
 ```bash
 git clone https://github.com/mikedigriz/YT.git && cd YT

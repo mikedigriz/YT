@@ -2,7 +2,43 @@
 
 Если тебе нужен только рабочий сервис, а не разбор внутренностей - вот прямой путь.
 
-## Собрать и запустить
+## Запустить готовый образ
+
+Собирать ничего не нужно - готовый образ лежит на [Docker Hub](https://hub.docker.com/r/mikedigriz/yt):
+
+```bash
+docker run -it -p 8000:80 mikedigriz/yt
+```
+
+Сайт откроется на `http://localhost:8000`.
+
+Хочешь через `docker-compose` (удобнее, если сервис будет жить долго) - создай рядом `docker-compose.yml`:
+
+```yaml
+services:
+  app:
+    image: mikedigriz/yt
+    tty: true
+    restart: always
+    container_name: yt
+    env_file:
+      - .env
+    ports:
+      - 8000:80
+```
+
+Создай рядом файл `.env` (можно пустой) и запусти:
+
+```bash
+touch .env
+docker-compose up -d
+```
+
+Как прописать в `.env` прокси - в разделе [Настроить прокси через .env](#настроить-прокси-через-env) ниже.
+
+## Собрать образ из исходников
+
+Нужно, если планируешь вносить правки в код или хочешь собрать образ с нуля сам:
 
 ```bash
 git clone https://github.com/mikedigriz/YT.git && cd YT
@@ -10,16 +46,7 @@ docker build -t yt .
 docker run -it -p 8000:80 yt
 ```
 
-Сайт откроется на `http://localhost:8000`.
-
-Хочешь через `docker-compose` (удобнее, если сервис будет жить долго):
-
-```bash
-cp .env.example .env
-docker-compose up -d
-```
-
-Порт и имя контейнера заданы в `docker-compose.yml`.
+Готовый `docker-compose.yml` в репозитории ссылается на локальный образ `yt:latest` - перед `docker-compose up -d` его нужно один раз собрать той же командой `docker build -t yt .`.
 
 ## Настроить прокси через .env
 
