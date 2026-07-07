@@ -180,7 +180,33 @@ class Downloader
                     @unlink($pidFile);
                     self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext);
                     // Авторетрей через прокси при гео-блоке/403 для прямых доменов
-                    self::autoRetryIfNeeded($completefile);
+                    $retryPid = self::autoRetryIfNeeded($completefile);
+                    $retryStatus = "Первая попытка не прошла, пробую через прокси";
+                    if ($retryPid === null) {
+                        // Авторетрей с куками YouTube при бот-чеке/приватности/возрасте
+                        $retryPid = self::autoRetryWithCookiesIfNeeded($completefile);
+                        $retryStatus = "Обычный способ заблокирован, пробую с куками аккаунта";
+                    }
+
+                    // Ретрей запускается тут же, но его pid_-файл пишется асинхронно
+                    // (echo $! в фоне) и в ЭТОТ ответ ?jobs ещё не попадает: каталог
+                    // уже проитерирован DirectoryIterator. Без подсказки фронтенд
+                    // увидел бы "активных нет", ушёл в медленный опрос (12с) и загрузка
+                    // на эти секунды "провалилась" бы, пока юзер не нажмёт F5. Поэтому
+                    // сразу отдаём синтетическую активную строку с РЕАЛЬНЫМ pid ретрея -
+                    // на следующем быстром опросе настоящая задача с тем же pid просто
+                    // заменит её бесшовно.
+                    if ($retryPid !== null) {
+                        $isaudioRetry = (strpos($retryPid, "_a") !== false);
+                        $bjs[] = array(
+                            'file'   => "Повторная попытка",
+                            'site'   => "Повтор",
+                            'status' => $retryStatus,
+                            'type'   => $isaudioRetry ? "audio" : "video",
+                            'pid'    => $retryPid,
+                            'url'    => $urltext
+                        );
+                    }
                     continue;
                 }
 
@@ -351,21 +377,23 @@ class Downloader
         return false;
     }
 
-    // Автоматический ретрей через прокси при гео-блоке/403 для прямых доменов
+    // Автоматический ретрей через прокси при гео-блоке/403 для прямых доменов.
+    // Возвращает имя нового pid_-файла ретрея (для синтетической активной строки
+    // в ?jobs), либо null, если ретрей не запускался.
     private static function autoRetryIfNeeded($completefile)
     {
         if (!file_exists($completefile)) {
-            return;
+            return null;
         }
 
         $log_content = @file_get_contents($completefile);
         if ($log_content === false) {
-            return;
+            return null;
         }
 
         // Проверка: уже был ретрей?
         if (strpos($log_content, '[RETRY_ATTEMPTED:') !== false) {
-            return;
+            return null;
         }
 
         // Парсим ошибку
@@ -373,7 +401,7 @@ class Downloader
 
         // Проверяем: переиспользуемая ли ошибка?
         if (!self::isRetryableError($jobstatus)) {
-            return;
+            return null;
         }
 
         // Добавляем маркер, чтобы не ретрейтить снова
@@ -383,7 +411,92 @@ class Downloader
         // Ретрей ищет лог по имени готового файла (ytdl_*), а не по уже удалённому
         // pid_* - иначе restart_download не находит файл и молча падает в ошибку,
         // а маркер [RETRY_ATTEMPTED] уже записан, так что второй попытки не будет
-        self::restart_download(basename($completefile), true);
+        $newpid = self::restart_download(basename($completefile), true);
+        return $newpid ?: null;
+    }
+
+    // Ошибки, для которых имеет смысл точечно повторить попытку с куками
+    // (приватность/возраст/подписка) - в отличие от isRetryableError() выше,
+    // это не временные сетевые сбои, а признак закрытого контента.
+    //
+    // Бот-чек тоже в списке: если bgutil не смог получить PO-токен (сбой
+    // сервиса, обновление YouTube и т.п.), настоящие куки авторизованного
+    // аккаунта - рабочий обходной путь независимо от здоровья bgutil.
+    // Без этого пункта сбой bgutil ронял бы вообще все YouTube-загрузки,
+    // хотя куки, если настроены, реально могли бы их спасти.
+    private static function needsCookiesRetry($status)
+    {
+        $keywords = [
+            'Приватное видео',
+            '18+ контент',
+            'Нужна авторизация',
+            'Members-only',
+            'принял нас за бота',
+        ];
+
+        foreach ($keywords as $keyword) {
+            if (stripos($status, $keyword) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // Точечный авторетрей с куками: первая попытка всегда идёт БЕЗ куки (см.
+    // комментарий в executeDownload про Data Sync ID), куки подключаются только
+    // если реально понадобились - обычный/публичный контент их вообще не видит.
+    // Возвращает имя нового pid_-файла ретрея (для синтетической активной строки
+    // в ?jobs), либо null, если ретрей не запускался.
+    private static function autoRetryWithCookiesIfNeeded($completefile)
+    {
+        $cookiesFile = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
+        if (empty($cookiesFile) || !is_readable($cookiesFile)) {
+            return null;
+        }
+
+        if (!file_exists($completefile)) {
+            return null;
+        }
+
+        $log_content = @file_get_contents($completefile);
+        if ($log_content === false) {
+            return null;
+        }
+
+        // Общий маркер с проксийным ретреем - не более одной авто-попытки на задачу
+        if (strpos($log_content, '[RETRY_ATTEMPTED:') !== false) {
+            return null;
+        }
+
+        // Куки уже были в команде (например, при ручном restart) - повтор не поможет.
+        // Проверяем ТОЛЬКО строку [ytcmd] (реальную команду), а не весь лог: yt-dlp
+        // в тексте ошибки бот-чека сам советует "...or --cookies for the auth", и
+        // проверка по всему логу ложно срабатывала на этой прозе, глуша ретрей.
+        if (preg_match('/^\[ytcmd\].*--cookies\s/m', $log_content)) {
+            return null;
+        }
+
+        $jobstatus = self::parseYtDlpError($log_content);
+        if (!self::needsCookiesRetry($jobstatus)) {
+            return null;
+        }
+
+        $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей с куками YouTube\n";
+        @file_put_contents($completefile, $retry_marker, FILE_APPEND);
+
+        // restart_download читает completefile синхронно ДО запуска нового процесса,
+        // поэтому его безопасно удалить сразу после успешного старта. Убираем лог
+        // снятой (первой, без кук) попытки, чтобы в "Последних" не висели две строки
+        // на одну ссылку - остаётся только итог ретрея. Удаляем ТОЛЬКО при успехе:
+        // если старт не удался (например, не прошла security-проверка команды),
+        // первый лог остаётся на месте, задача не исчезает бесследно.
+        $newpid = self::restart_download(basename($completefile), false, true);
+        if ($newpid) {
+            @unlink($completefile);
+            return $newpid;
+        }
+        return null;
     }
 
     // Вспомогательный метод для завершения лога (DRY)
@@ -545,6 +658,7 @@ class Downloader
                 $playlist = "";
                 $urltext = "";
                 $jobstatus = "Готово";
+                $usedCookies = false;
 
                 while (($line = fgets($handle)) !== false) {
                     // "[download] Downloading item N of M" - берём M (всего в плейлисте)
@@ -569,6 +683,13 @@ class Downloader
 
                     if (strpos($line, '[yturl]') !== false) {
                         $urltext = trim(substr($line, 8));
+                    }
+
+                    // [ytcmd] пишется finalize_job_log() одной строкой с полной командой -
+                    // если в ней есть --cookies, значит это была точечная попытка после
+                    // блокировки обычного способа (см. autoRetryWithCookiesIfNeeded())
+                    if (strpos($line, '[ytcmd]') !== false && stripos($line, '--cookies') !== false) {
+                        $usedCookies = true;
                     }
 
                     if (strpos($line, 'Destination') !== false) {
@@ -618,6 +739,11 @@ class Downloader
                     }
                 } else {
                     $type = $isaudio ? "audio" : "video";
+                    // Пояснение только для чистого "Готово" - "Отменено"/"Отменено
+                    // (Уже Загружено)" и так информативны сами по себе
+                    if ($usedCookies && $jobstatus === "Готово") {
+                        $jobstatus = "Готово 🍪\nОбычный способ заблокировал YouTube, сработало с куки аккаунта";
+                    }
                 }
 
                 $bjs[] = array(
@@ -672,6 +798,11 @@ class Downloader
     // выигрывает, поэтому порядок значим (сетевые -> доступность -> форматы ->
     // постобработка -> системные). Добавлять новую ошибку - вставить строку.
     private const ERROR_RULES = [
+        // === Протухшие куки YouTube (выше бот-детекта: отдельный признак от
+        // yt-dlp - "cookies are no longer valid" - не путать с обычным
+        // бот-чеком, чинится по-разному: см. youtubeCookiesFile в config.php) ===
+        ['/cookies are no longer valid|cookies have expired|cookies are not valid|Failed to load cookies/i', "Куки YouTube протухли 🍪\nНадо зайти под тем же аккаунтом и обновить cookies.txt на сервере"],
+
         // === Бот-детект YouTube (выше всех: часто идёт в паре с 429, но
         // истинная причина - именно бот-чек, а не перегрузка сайта) ===
         ['/not a bot|Sign in to confirm you.re not a bot/i', "YouTube принял нас за бота 🤖\nIP PROXY засвечен - лучше подождать"],
@@ -695,9 +826,9 @@ class Downloader
         ['/Video unavailable|This video is not available|video is unavailable/i', "Видео недоступно 🙈"],
         ['/Private video|this video is private/i', "Приватное видео 🔐\nТолько для своих"],
         ['/has been removed|removed by the uploader/i', "Видео удалено автором 🗑️"],
-        ['/age-restricted|Sign in to confirm your age|confirm your age/i', "18+ контент 🔞\nНужны куки авторизованного аккаунта \nКуки я вам не дам"],
-        ['/only available for registered users|login required|Sign in to/i', "Нужна авторизация 👤\nА её нет, ха-ха-ха"],
-        ['/members-only|Members only content/i', "Members-only 💎\nНужна платная подписка, увыыы"],
+        ['/age-restricted|Sign in to confirm your age|confirm your age/i', "18+ контент 🔞\nНужны куки авторизованного аккаунта"],
+        ['/only available for registered users|login required|Sign in to/i', "Нужна авторизация 👤\nНужны куки авторизованного аккаунта"],
+        ['/members-only|Members only content/i', "Members-only 💎\nНужна подписка на канал тем же аккаунтом, чьи куки настроены"],
         ['/Music Premium|YouTube Music Premium/i', "YTMusic Premium 🎵\nТребуется лухари подписка"],
         ['/requires payment|paid content|purchase this/i', "Платный контент 💰\nСкачивание невозможно \nГде деньги?"],
         ['/live event will begin|Premieres in|is live and is being watched/i', "Ну начинается - пойду поссу, пойду посру 📡"],
@@ -816,9 +947,13 @@ class Downloader
         self::$bg_jobs_cache = null;
     }
 
-    public static function restart_download($fpid, $forceUseProxy = false)
+    // Возвращает имя нового pid_-файла запущенной задачи (строку), либо false,
+    // если старт не удался. Вызывающему авторетрею это нужно, чтобы: (1) удалить
+    // лог снятой попытки только при успешном старте, (2) сразу показать ретрей
+    // активной строкой в ?jobs (реальный pid новой задачи, без асинхронного окна).
+    public static function restart_download($fpid, $forceUseProxy = false, $forceUseCookies = false)
     {
-        if (!isset($GLOBALS['config']['logPath'])) return;
+        if (!isset($GLOBALS['config']['logPath'])) return false;
 
         $logPath = $GLOBALS['config']['logPath'];
 
@@ -840,7 +975,7 @@ class Downloader
         if (!file_exists($file)) {
             $_SESSION['errors'] = ["Лог-файл не найден: $fpid"];
             error_log("[YTDL] Restart failed: file not found: $file");
-            return;
+            return false;
         }
 
         $ytcmd = "";
@@ -872,7 +1007,7 @@ class Downloader
 
         if (empty($ytcmd)) {
             $_SESSION['errors'] = ["Команда не найдена в логе!"];
-            return;
+            return false;
         }
 
         // БЕЗОПАСНОСТЬ: Проверка, что команда содержит ожидаемый бинарник
@@ -883,7 +1018,7 @@ class Downloader
         if (strpos($cmdToCheck, $expectedExe) !== 0) {
             $_SESSION['errors'] = ["Подозрительная команда в логе. Рестарт отменен"];
             error_log("[YTDL] Security: Command mismatch on restart.");
-            return;
+            return false;
         }
 
         // В сохранённой команде из лога ещё стоит замаскированный плейсхолдер
@@ -897,6 +1032,20 @@ class Downloader
         if (($usesProxy || $forceUseProxy) && !empty($GLOBALS['config']['socks5'])) {
             $ytcmd = "env all_proxy=" . escapeshellarg($GLOBALS['config']['socks5']) . " " . $ytcmd;
             $usesProxy = true; // Отмечаем, что теперь используется прокси
+        }
+
+        // Точечное добавление куки при ретрее из-за приватности/возраста/подписки.
+        // Вставляем флаг сразу после бинарника yt-dlp (а не в конец команды, после
+        // уже подставленных URL) - так он гарантированно читается как опция, а не
+        // как позиционный аргумент. stripos-проверка на случай повторного ретрея
+        // с уже вставленными куками (форс не задваивает флаг).
+        $cookiesFile = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
+        if ($forceUseCookies && !empty($cookiesFile) && is_readable($cookiesFile) && stripos($ytcmd, '--cookies ') === false) {
+            $exePos = strpos($ytcmd, $expectedExe);
+            if ($exePos !== false) {
+                $insertPos = $exePos + strlen($expectedExe);
+                $ytcmd = substr($ytcmd, 0, $insertPos) . " --cookies " . escapeshellarg($cookiesFile) . substr($ytcmd, $insertPos);
+            }
         }
 
         $suffix = (strpos($fpid, "_a") !== false || strpos($file, "_a") !== false) ? "_a" : "";
@@ -933,6 +1082,8 @@ class Downloader
         $proxyMarker = $usesProxy ? "[USES_PROXY] " : "";
         file_put_contents("$logPath/$fnp", $proxyMarker . $ytcmd_masked . "\n", FILE_APPEND);
         file_put_contents("$logPath/$fnp", $urltext . "\n", FILE_APPEND);
+
+        return $fnp;
     }
 
     public static function clear_one_finished($fpid)
@@ -1176,6 +1327,13 @@ class Downloader
         if ($isYoutube) {
             $cmd .= " --sponsorblock-remove sponsor";
         }
+
+        // Куки НЕ подключаются к обычной загрузке: аккаунт-based PO-токен запросы
+        // (tv_downgraded/web_safari) требуют Data Sync ID, которого без реальной
+        // необходимости в куках взяться неоткуда - только лишние WARNING в логе
+        // и лишняя аккаунт-привязанная активность на пустом месте. Куки
+        // подключаются точечно, только повторной попыткой, если первая упёрлась
+        // именно в приватность/возраст/подписку - см. autoRetryWithCookiesIfNeeded().
 
         // Пауза между запросами - защита от 429/бот-чека YouTube (частые
         // обращения к player API с одного прокси-IP). Сон виден юзеру как статус

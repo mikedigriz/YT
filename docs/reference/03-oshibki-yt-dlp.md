@@ -8,6 +8,7 @@ yt-dlp сам по себе выдаёт технические сообщени
 
 | Что видит yt-dlp | Что видит пользователь |
 |---|---|
+| `cookies are no longer valid` / `cookies have expired` | Куки YouTube протухли. Надо зайти под тем же аккаунтом и обновить cookies.txt на сервере |
 | `not a bot` / `Sign in to confirm you're not a bot` | YouTube принял нас за бота. IP прокси засвечен - лучше подождать |
 
 ## Сетевые ошибки
@@ -35,9 +36,9 @@ yt-dlp сам по себе выдаёт технические сообщени
 | `Video unavailable` | Видео недоступно |
 | `Private video` | Приватное видео. Только для своих |
 | `has been removed` | Видео удалено автором |
-| `age-restricted` / `confirm your age` | 18+ контент. Нужны куки авторизованного аккаунта. Куки я вам не дам |
-| `login required` / `Sign in to` | Нужна авторизация, а её нет, ха-ха-ха |
-| `members-only` | Members-only. Нужна платная подписка |
+| `age-restricted` / `confirm your age` | 18+ контент. Нужны куки авторизованного аккаунта |
+| `login required` / `Sign in to` | Нужна авторизация. Нужны куки авторизованного аккаунта |
+| `members-only` | Members-only. Нужна подписка на канал тем же аккаунтом, чьи куки настроены |
 | `Music Premium` | YTMusic Premium. Требуется подписка |
 | `requires payment` / `purchase this` | Платный контент. Скачивание невозможно |
 | `live event will begin` / `Premieres in` | Ну начинается - пойду поссу, пойду посру |
