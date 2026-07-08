@@ -174,11 +174,17 @@ class Downloader
                 $jpid = $jpid_parts[0] ?? '';
                 $ytcmd = $jpid_parts[1] ?? '';
                 $urltext = $jpid_parts[2] ?? '';
+                $clientip = trim($jpid_parts[3] ?? '');
 
                 // Проверка: процесс существует?
                 if (!empty($jpid) && !file_exists("/proc/" . $jpid)) {
                     @unlink($pidFile);
-                    self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext);
+                    // pid умершей задачи снят - сбрасываем кэш счётчика, чтобы
+                    // canSpawnRetry() в авторетрее увидел честное число живых задач,
+                    // а не устаревшее (с этой уже мёртвой), иначе ретрей мог бы
+                    // ошибочно упереться в max_dl из-за самого себя.
+                    self::$bg_jobs_cache = null;
+                    self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip);
                     // Авторетрей через прокси при гео-блоке/403 для прямых доменов
                     $retryPid = self::autoRetryIfNeeded($completefile);
                     $retryStatus = "Первая попытка не прошла, пробую через прокси";
@@ -215,7 +221,7 @@ class Downloader
                     $pidcmd = @file_get_contents('/proc/' . $jpid . '/cmdline');
                     if ($pidcmd !== false && strpos($pidcmd, $youtubedlExe) === false) {
                         @unlink($pidFile);
-                        self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext);
+                        self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip);
                         continue;
                     }
                 }
@@ -404,6 +410,13 @@ class Downloader
             return null;
         }
 
+        // Лимит одновременных загрузок добит другими задачами - не пробиваем его
+        // ретреем. Маркер НЕ пишем: задача остаётся неудачной без пометки, юзер
+        // видит ошибку и может перезапустить руками.
+        if (!self::canSpawnRetry()) {
+            return null;
+        }
+
         // Добавляем маркер, чтобы не ретрейтить снова
         $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей через прокси\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
@@ -443,6 +456,63 @@ class Downloader
         return false;
     }
 
+    // Куки - это полный доступ к Google-аккаунту, поэтому файл должен быть закрыт
+    // (права 600/400, владелец www-data). Проверяем, что он существует, читаем и
+    // НЕ доступен группе/остальным: файл с 644/640 на мультиюзерном хосте - прямая
+    // утечка сессии. Если права слишком открыты, СНАЧАЛА пытаемся закрыть файл сами
+    // (владелец www-data = наш процесс, chmod разрешён) - чтобы юзеру не приходилось
+    // руками chmod 600 после каждой замены кук. Отказываемся, только если закрыть не
+    // удалось (не владелец / ФС без unix-прав, напр. bind-mount с Windows). Значение
+    // пути берётся из config.php (не из HTTP), поэтому проверяем безопасность
+    // хранения, а не источник строки.
+    private static function cookiesFileUsable($cookiesFile)
+    {
+        if (empty($cookiesFile) || !is_readable($cookiesFile)) {
+            return false;
+        }
+        $perms = @fileperms($cookiesFile);
+        if ($perms === false) {
+            return false;
+        }
+        // 0o077 - биты доступа для группы и остальных. У файла кук их быть не должно.
+        if (($perms & 0077) !== 0) {
+            // Пробуем закрыть сами, затем перепроверяем (clearstatcache - fileperms кэширует)
+            @chmod($cookiesFile, 0600);
+            clearstatcache(true, $cookiesFile);
+            $perms = @fileperms($cookiesFile);
+            if ($perms === false || ($perms & 0077) !== 0) {
+                error_log("[YTDL] Security: файл кук " . $cookiesFile . " доступен группе/остальным ("
+                    . ($perms === false ? '?' : substr(sprintf('%o', $perms), -4))
+                    . ") и закрыть его до 600 не удалось, использовать не буду. Сделай chmod 600 вручную.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Куки прописаны в конфиге, но использовать их нельзя (нет файла / не читаем /
+    // небезопасные права, которые не удалось починить). Нужно, чтобы показать юзеру
+    // причину в статусе задачи, а не молчать при бот-чеке с настроенными куками.
+    private static function cookiesConfiguredButUnusable()
+    {
+        $f = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
+        return !empty($f) && !self::cookiesFileUsable($f);
+    }
+
+    // Уважает лимит одновременных загрузок (max_dl) при авторетрее. Смерть задачи
+    // уже освободила слот (её pid_ снят до вызова авторетрея), поэтому в норме
+    // ретрей законно занимает освободившийся слот. Отказываем, только если лимит
+    // уже добит другими задачами - иначе ретрей + поднятая из очереди задача дали
+    // бы два параллельных процесса на один IP, подтачивая защиту от бана.
+    private static function canSpawnRetry()
+    {
+        $max = $GLOBALS['config']['max_dl'] ?? 3;
+        if ($max <= 0) {
+            return true; // -1 (без лимита) или невалидное значение - как в do_download
+        }
+        return self::background_jobs() < $max;
+    }
+
     // Точечный авторетрей с куками: первая попытка всегда идёт БЕЗ куки (см.
     // комментарий в executeDownload про Data Sync ID), куки подключаются только
     // если реально понадобились - обычный/публичный контент их вообще не видит.
@@ -451,7 +521,7 @@ class Downloader
     private static function autoRetryWithCookiesIfNeeded($completefile)
     {
         $cookiesFile = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
-        if (empty($cookiesFile) || !is_readable($cookiesFile)) {
+        if (!self::cookiesFileUsable($cookiesFile)) {
             return null;
         }
 
@@ -482,6 +552,12 @@ class Downloader
             return null;
         }
 
+        // Не пробиваем лимит одновременных загрузок ретреем (см. canSpawnRetry).
+        // Маркер не пишем - задача остаётся неудачной, доступна для ручного рестарта.
+        if (!self::canSpawnRetry()) {
+            return null;
+        }
+
         $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей с куками YouTube\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
 
@@ -500,7 +576,7 @@ class Downloader
     }
 
     // Вспомогательный метод для завершения лога (DRY)
-    private static function finalize_job_log($outfile, $completefile, $ytcmd, $urltext)
+    private static function finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip = '')
     {
         if (!file_exists($outfile)) return;
 
@@ -514,6 +590,12 @@ class Downloader
         $ytcmd = preg_replace('/^\[USES_PROXY\]\s+/', '', $ytcmd);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
         file_put_contents($completefile, "[yturl] " . $urltext . "\n", FILE_APPEND);
+        // IP отправителя (уже провалидирован FILTER_VALIDATE_IP, инъекция невозможна).
+        // Нужен, чтобы restart_download восстановил его и logger записал реальный IP,
+        // а не потерянный/чужой (putenv живёт в FPM-воркере между запросами).
+        if ($clientip !== '') {
+            file_put_contents($completefile, "[ytip] " . $clientip . "\n", FILE_APPEND);
+        }
     }
 
     // Служебные теги yt-dlp и наши маркеры, которые НЕ являются именем сайта.
@@ -523,7 +605,7 @@ class Downloader
     private const NON_EXTRACTOR_TAGS = [
         'download', 'info', 'debug', 'vot', 'ffmpeg', 'merger', 'metadata',
         'extractaudio', 'embedthumbnail', 'videoconvertor', 'sponsorblock',
-        'ytcmd', 'yturl', 'retry_attempted',
+        'ytcmd', 'yturl', 'ytip', 'retry_attempted',
     ];
 
     // Имя сайта из строки лога, либо null если строка не похожа на тег экстрактора.
@@ -733,6 +815,13 @@ class Downloader
                             $jobstatus = "Порнографию я вам не дам 🔞";
                         } else {
                             $jobstatus = self::parseYtDlpError($log_content);
+                            // Ошибка из тех, что лечатся куками, куки в конфиге есть,
+                            // но использовать их нельзя (обычно небезопасные права,
+                            // которые не удалось починить). Молчать нельзя - иначе юзер
+                            // видит только бот-чек и не понимает, почему куки не помогли.
+                            if (self::needsCookiesRetry($jobstatus) && self::cookiesConfiguredButUnusable()) {
+                                $jobstatus .= "\nКуки настроены, но файл непригоден (права/доступ) - нужен chmod 600";
+                            }
                         }
                     } else {
                         $jobstatus = "Лог пуст 🤷\nЗагрузка даже не стартовала";
@@ -892,6 +981,7 @@ class Downloader
         $ytcmd = $jid_parts[1] ?? '';
         $urltext = $jid_parts[2] ?? '';
         $jpid = $jid_parts[0] ?? '';
+        $clientip = trim($jid_parts[3] ?? '');
 
         // Убиваем только конкретный процесс, а не весь ffmpeg на сервере
         if (!empty($jpid) && file_exists('/proc/'.$jpid)) {
@@ -903,7 +993,7 @@ class Downloader
             }
         }
 
-        self::finalize_job_log($outfile, $completed, $ytcmd, $urltext);
+        self::finalize_job_log($outfile, $completed, $ytcmd, $urltext, $clientip);
         @unlink($file);
 
         self::$bg_jobs_cache = null;
@@ -925,7 +1015,8 @@ class Downloader
                 $jid_parts = explode("\n", trim($content));
                 $ytcmd = $jid_parts[1] ?? '';
                 $urltext = $jid_parts[2] ?? '';
-                self::finalize_job_log($jobfile, $completed, $ytcmd, $urltext);
+                $clientip = trim($jid_parts[3] ?? '');
+                self::finalize_job_log($jobfile, $completed, $ytcmd, $urltext, $clientip);
             }
             @unlink($file);
         }
@@ -980,11 +1071,15 @@ class Downloader
 
         $ytcmd = "";
         $urltext = "";
+        $clientip = "";
         $usesProxy = false;
         $handle = fopen($file, "r");
         if ($handle) {
             while (($line = fgets($handle)) !== false) {
                 $line = rtrim($line, "\r\n");
+                if (($pos = strpos($line, '[ytip]')) !== false) {
+                    $clientip = trim(substr($line, $pos + 7));
+                }
                 if (($pos = strpos($line, '[ytcmd]')) !== false) {
                     $ytcmd = trim(substr($line, $pos + 8));
                     // Определяем использование прокси либо по маркеру [USES_PROXY]
@@ -1040,7 +1135,7 @@ class Downloader
         // как позиционный аргумент. stripos-проверка на случай повторного ретрея
         // с уже вставленными куками (форс не задваивает флаг).
         $cookiesFile = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
-        if ($forceUseCookies && !empty($cookiesFile) && is_readable($cookiesFile) && stripos($ytcmd, '--cookies ') === false) {
+        if ($forceUseCookies && self::cookiesFileUsable($cookiesFile) && stripos($ytcmd, '--cookies ') === false) {
             $exePos = strpos($ytcmd, $expectedExe);
             if ($exePos !== false) {
                 $insertPos = $exePos + strlen($expectedExe);
@@ -1058,6 +1153,14 @@ class Downloader
 
         $ytcmd = preg_replace('/\s{2,}/', ' ', $ytcmd);
         $ytcmd = rtrim($ytcmd);
+
+        // Восстанавливаем IP отправителя из [ytip] лога и передаём logger'у через
+        // окружение. Ре-валидируем FILTER_VALIDATE_IP: значение приходит из файла,
+        // и хотя каталог tmp закрыт nginx, доверять содержимому на слово не стоит.
+        // ОБЯЗАТЕЛЬНО putenv даже при пустом IP - иначе в CLIENT_IP останется чужое
+        // значение от прошлой загрузки на этом же FPM-воркере и logger запишет не тот IP.
+        $clientip = filter_var($clientip, FILTER_VALIDATE_IP) ?: 'unknown';
+        putenv("CLIENT_IP=" . $clientip);
 
         // Используем exec вместо passthru, чтобы не выводить мусор в браузер
         $cmd = sprintf(
@@ -1082,6 +1185,9 @@ class Downloader
         $proxyMarker = $usesProxy ? "[USES_PROXY] " : "";
         file_put_contents("$logPath/$fnp", $proxyMarker . $ytcmd_masked . "\n", FILE_APPEND);
         file_put_contents("$logPath/$fnp", $urltext . "\n", FILE_APPEND);
+        // Строка 4 - IP отправителя, чтобы он пережил и последующую финализацию/рестарт
+        // этой перезапущенной задачи (как в executeDownload).
+        file_put_contents("$logPath/$fnp", $clientip . "\n", FILE_APPEND);
 
         return $fnp;
     }
@@ -1427,6 +1533,10 @@ class Downloader
         $proxyMarker = ($useProxy && !empty($this->config['socks5'])) ? "[USES_PROXY] " : "";
         file_put_contents($this->config['logPath'] . "/" . $fnp, $proxyMarker . $logcmd_masked . "\n", FILE_APPEND);
         file_put_contents($this->config['logPath'] . "/" . $fnp, $urltext . "\n", FILE_APPEND);
+        // Строка 4 pid-файла - IP отправителя. Позиционный парсинг pid читает только
+        // [0..2] (pid/cmd/url), так что это не мешает; нужен, чтобы при рестарте
+        // (ретрей/ручной) восстановить исходный IP для logger'а.
+        file_put_contents($this->config['logPath'] . "/" . $fnp, ($onedownload['client_ip'] ?? 'unknown') . "\n", FILE_APPEND);
     }
 
     public function process_queue()

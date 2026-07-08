@@ -48,6 +48,7 @@ docker build --no-cache -t yt . && docker-compose up -d
    docker exec -u root yt chown www-data:www-data /var/www/YT/config/youtube_cookies.txt
    docker exec -u root yt chmod 600 /var/www/YT/config/youtube_cookies.txt
    ```
+   Права `600` (или `400`) важны: куки - это доступ ко всему аккаунту, и файл, читаемый группой/остальными, - утечка на мультиюзерном хосте. Руками каждый раз `chmod` делать не нужно: если файл принадлежит `www-data`, код сам закрывает его до `600` при использовании. Ручной `chmod 600` понадобится, только если код не смог этого сделать (файл не принадлежит `www-data` или лежит на ФС без unix-прав, например bind-mount с Windows в dev) - тогда в статусе задачи появится подсказка `Куки настроены, но файл непригоден (права/доступ) - нужен chmod 600`.
 4. Пропиши путь в `config.php` (ключ по умолчанию пустой - функция выключена, пока не укажешь путь):
    ```php
    'youtubeCookiesFile' => '/var/www/YT/config/youtube_cookies.txt'
