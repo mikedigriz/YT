@@ -49,7 +49,7 @@ $proxyDotClass = function ($v) {
           </tr>
           <!--<tr>
             <td><b>Свободно места на сервере:</b></td>
-            <td><?= htmlspecialchars($file->free_space(), ENT_QUOTES, 'UTF-8') ?>B</td>
+            <td><?= htmlspecialchars($file->free_space(), ENT_QUOTES, 'UTF-8') ?></td>
           </tr>
           <tr>
             <td><b>Папка Загрузки:</b></td>

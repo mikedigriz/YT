@@ -96,11 +96,13 @@ class FileHandler
         return true;
     }
 
-    public function to_human_filesize($bytes, $decimals = 0)
+    public function to_human_filesize($bytes, $decimals = 1)
     {
-        $sz = 'BKMGTP';
+        $units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ', 'ПБ'];
         $factor = $bytes > 0 ? floor(log($bytes, 1024)) : 0;
-        return sprintf("%.{$decimals}f", $bytes / pow(1024, $factor)) . @$sz[$factor];
+        $factor = min($factor, count($units) - 1);
+        $decimals = $factor > 0 ? $decimals : 0;
+        return sprintf("%.{$decimals}f", $bytes / pow(1024, $factor)) . ' ' . $units[$factor];
     }
 
     public function free_space()

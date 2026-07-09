@@ -41,7 +41,7 @@ YT/
 | `app/start.sh` | старт контейнера | сохраняет версию yt-dlp, запускает php-fpm, nginx и сервер токенов bgutil |
 | `app/logger.sh` | сборка образа | генерирует Python-постпроцессор логирования для yt-dlp |
 | `app/etc/Scripts/cleanup.sh` | вручную | удаляет всё из `download/` и `tmp/` |
-| `app/etc/Scripts/2hourcleanup.sh` | хостовый cron, раз в час | удаляет файлы старше `retentionMinutes` |
+| `app/etc/Scripts/2hourcleanup.sh` | хостовый cron, каждые 15 минут | удаляет файлы старше `retentionMinutes` |
 | `app/etc/Scripts/update-ytdlp.sh` | хостовый cron, раз в сутки | обновляет yt-dlp и переналагает патч имён файлов |
 | `minify_js.sh` | вручную, после правки JS | пересобирает `js/youtubedlwebui.min.js` из читаемого исходника |
 | `patch_replace_insane.sh` | вручную | переналагает патч мягкой очистки имён файлов без пересборки образа |

@@ -20,7 +20,8 @@
 # replace_insane и обновит файл версии в подвале сайта.
 3 0 * * * docker exec -u root yt /etc/Scripts/update-ytdlp.sh >> /var/log/yt/ytdlp-update.log 2>&1
 
-# Ежечасная чистка файлов старше 120 минут из download/ и tmp/. Запуск от www-data
-# (владельца файлов) - root не нужен. Окно 120 минут синхронизировано с таймером
-# "времени жизни файла" в интерфейсе (FileHandler::lifetime_percent).
-0 * * * * docker exec yt /etc/Scripts/2hourcleanup.sh >> /var/log/yt/cleanup.log 2>&1
+# Чистка файлов старше 120 минут из download/ и tmp/, каждые 15 минут - чтобы файл
+# не задерживался сверх заявленного времени жизни до следующего запуска. Запуск от
+# www-data (владельца файлов) - root не нужен. Окно 120 минут синхронизировано с
+# таймером "времени жизни файла" в интерфейсе (FileHandler::lifetime_percent).
+*/15 * * * * docker exec yt /etc/Scripts/2hourcleanup.sh >> /var/log/yt/cleanup.log 2>&1

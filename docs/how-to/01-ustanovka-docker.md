@@ -101,8 +101,8 @@ crontab -e
 # Обновление yt-dlp каждый день в 03:00
 3 0 * * * docker exec -u root yt /etc/Scripts/update-ytdlp.sh >> /var/log/yt/ytdlp-update.log 2>&1
 
-# Чистка файлов старше 120 минут каждый час
-0 * * * * docker exec yt /etc/Scripts/2hourcleanup.sh >> /var/log/yt/cleanup.log 2>&1
+# Чистка файлов старше 120 минут, каждые 15 минут
+*/15 * * * * docker exec yt /etc/Scripts/2hourcleanup.sh >> /var/log/yt/cleanup.log 2>&1
 ```
 
 Проверить, что очистка работает:
