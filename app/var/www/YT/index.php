@@ -1,7 +1,6 @@
 <?php
 require_once __DIR__ . '/error_pages.php';
 
-// === Настройка сессии ДО session_start ===
 $isSecure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') 
     || $_SERVER['SERVER_PORT'] == 443 
     || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
@@ -19,7 +18,6 @@ ini_set('session.use_strict_mode', '1');
 ini_set('session.use_only_cookies', '1');
 ini_set('session.cookie_samesite', 'Lax');
 
-// === Защита от CSRF ===
 function generateCsrfToken(): string {
     if (empty($_SESSION['csrf_token'])) {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
@@ -38,40 +36,44 @@ function validateCsrfToken(): bool {
     
     $origin = $_SERVER['HTTP_ORIGIN'] ?? null;
     $referer = $_SERVER['HTTP_REFERER'] ?? null;
-    $host = $_SERVER['HTTP_HOST'] ?? '';
+    $host = strtolower($_SERVER['HTTP_HOST'] ?? '');
 
     if ($origin === 'null') {
         $origin = null;
     }
 
-    if ($origin !== null) {
-        $parsed = parse_url($origin);
-        if (($parsed['host'] ?? '') !== $host) {
-            return false;
+    // parse_url() отдаёт host/port раздельно - HTTP_HOST порт содержит, голый ['host'] нет.
+    // Пересобираем "host[:port]" вручную, иначе сравнение мимо на dev/prod портах (25567/8000).
+    $checkUrl = $origin ?? $referer;
+    if ($checkUrl !== null) {
+        $parsed = parse_url($checkUrl);
+        $authority = strtolower($parsed['host'] ?? '');
+        if (isset($parsed['port'])) {
+            $authority .= ':' . $parsed['port'];
         }
-    } elseif ($referer !== null) {
-        $parsed = parse_url($referer);
-        if (($parsed['host'] ?? '') !== $host) {
+        if ($authority !== $host) {
             return false;
         }
     }
-    
+
     return true;
 }
 
-// Одноразовый nonce для инлайн-скриптов: позволяет убрать 'unsafe-inline' из
-// script-src (иначе любой внедрённый <script> исполнился бы). Пробрасывается во
-// вьюхи как $cspNonce и в CSP-заголовок ниже.
+// Одноразовый nonce для инлайн-скриптов - убирает 'unsafe-inline' из script-src.
 $cspNonce = base64_encode(random_bytes(16));
 $GLOBALS['cspNonce'] = $cspNonce;
 
-// === Заголовки безопасности ===
 header("X-Content-Type-Options: nosniff");
 header("X-Frame-Options: SAMEORIGIN");
 header("X-XSS-Protection: 1; mode=block");
 header("Referrer-Policy: strict-origin-when-cross-origin");
 header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
-header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; media-src 'self' blob:;");
+// img-src сужен до 'self' data: - все картинки локальные, 'https:' был лишним.
+// object-src/base-uri/form-action/frame-ancestors - defense in depth; form-action не даёт увести форму при XSS.
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$cspNonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self';");
+// COOP/CORP - защита от Spectre-класса side-channel и window.opener-атак.
+header("Cross-Origin-Opener-Policy: same-origin");
+header("Cross-Origin-Resource-Policy: same-origin");
 
 if ($isSecure) {
     header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
@@ -93,12 +95,6 @@ if (isset($_GET['theme'])) {
     $siteTheme = $_GET['theme'];
 }
 
-// Единый источник доменов для favicon-детекта - тот же список, что читает
-// load_favicons.py. PHP-список Downloader::DIRECT_ACCESS_DOMAINS отдельный,
-// у него другая задача (прямой доступ против прокси), сюда не входит.
-$faviconDomainsJson = file_get_contents(__DIR__ . '/config/favicon_domains.json');
-$knownServices = json_decode($faviconDomainsJson, true) ?: [];
-
 require_once 'class/Downloader.php';
 require_once 'class/FileHandler.php';
 require_once 'class/ProxyStatus.php';
@@ -110,55 +106,67 @@ $allowFileDelete = $config['allowFileDelete'] ?? false;
 // Фоновый замер прокси (сам по себе троттлится, лишнего не дёргает)
 ProxyStatus::maybe_check();
 
-// Продвигаем очередь на каждой загрузке, включая AJAX-поллинг ?jobs -
-// иначе задачи стартуют только когда кто-то вручную перезагрузит страницу
+// Единый скан tmp/ на весь запрос - раньше process_queue()/get_current_background_jobs()/
+// get_finished_background_jobs() сканировали logPath отдельно (до 3-4 проходов на ?jobs).
+$logPathFileList = Downloader::scanLogPath();
+
+// Продвигаем очередь на каждом GET (включая ?jobs), иначе задачи стартуют только
+// вручную. Возврат - распарсенный остаток очереди, переиспользуется ниже на ?jobs.
+$queuedJobsAfterProcessing = [];
 if (!$config['disableQueue']) {
     $downloader = new Downloader([]);
-    $downloader->process_queue();
+    $queuedJobsAfterProcessing = $downloader->process_queue($logPathFileList);
 }
 
-// Вспомогательная функция для построения строки файла
 function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
+    // Данные в data-атрибуты, обработчик вешается делегированием в JS - без inline onclick,
+    // CSP без unsafe-inline. htmlspecialchars(ENT_QUOTES) достаточно для чистого атрибутного контекста.
+    $attrName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
+    $attrType = htmlspecialchars($type, ENT_QUOTES, 'UTF-8');
+
     $deleteurl = "";
     if ($allowFileDelete) {
-        // Данные уходят в data-атрибуты (атрибутный контекст), обработчик вешается
-        // делегированием в JS - никакого inline onclick, поэтому CSP без unsafe-inline.
-        // htmlspecialchars(ENT_QUOTES) достаточно: это чистый атрибутный контекст,
-        // JS-строку тут уже не собираем.
-        $attrName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-        $attrType = htmlspecialchars($type, ENT_QUOTES, 'UTF-8');
         $deleteurl = '<button type="button" data-action="delete" data-value="' . $attrName . '" data-type="' . $attrType . '" class="btn btn-danger btn-xs">Удалить</button>';
     }
     
-    $fileurl = $f["name"];
+    // Экранируем даже на случай пустого downloadPath (ссылка не строится) - иначе
+    // на фронте (renderFileRow()) имя шло бы в DOM без экранирования.
+    $fileurl = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
     $downloadurl = "";
     if ($config['downloadPath'] != "") {
         $safeName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
         $encodedName = rawurlencode($f["name"]);
-        // Относительная ссылка на файл. Фронт превращает её в абсолютную через
-        // window.location, чтобы зашить в QR-код тот же хост, по которому открыта
-        // страница - телефон в той же сети сразу заберёт файл.
+        // Относительная ссылка - фронт делает её абсолютной через window.location для QR-кода.
         $downloadurl = $file->get_downloads_link().'/'.$encodedName;
         $fileurl = '<a href="'.$downloadurl.'" download>'.$safeName.'</a>';
     }
 
     return [
         'file'             => $fileurl,
+        'name'             => $attrName,
         'downloadurl'      => $downloadurl,
         'kind'             => ($type === 'v') ? 'video' : 'audio',
         'size'             => $f["size"],
         'deleteurl'        => $deleteurl,
+        'pinned'           => (bool)($f["pinned"] ?? false),
         'age_minutes'      => (int)($f["age_minutes"] ?? 0),
         'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
     ];
 }
 
-// Возвращаем JSON со всеми текущими задачами и историей задач
+// $_SESSION дальше в этой ветке не трогается (только в part.main.php при полном рендере
+// и в POST-обработчиках ниже) - закрываем сессию пораньше, иначе file-based session handler
+// держит эксклюзивный lock на весь ?jobs (частый опрос, 1.5с) и блокирует параллельные запросы
+// с той же cookie: вторую вкладку или клик "Стоп"/"Удалить" во время идущего опроса.
+if (isset($_GET['jobs'])) {
+    session_write_close();
+}
+
 if(isset($_GET['jobs'])) {
     $response = [
-        'jobs'     => Downloader::get_current_background_jobs(),
+        'jobs'     => Downloader::get_current_background_jobs($logPathFileList),
         'queue'    => [],
-        'finished' => Downloader::get_finished_background_jobs(),
+        'finished' => Downloader::get_finished_background_jobs($logPathFileList),
         'videos'   => [],
         'music'    => [],
         'logURL'   => $config['logURL'] ?? '',
@@ -166,7 +174,7 @@ if(isset($_GET['jobs'])) {
     ];
 
     if (!$config['disableQueue']) {
-        foreach(Downloader::get_queued_jobs() as $key) {
+        foreach($queuedJobsAfterProcessing as $key) {
             $dl_type = "video";
             $formatLabels = ['worst' => 'Булшит', '4K' => '4K', '1440p' => '2K', '1080p' => 'Full HD'];
             $dl_format = $formatLabels[$key['dl_format']] ?? "Топ";
@@ -184,11 +192,13 @@ if(isset($_GET['jobs'])) {
         }
     }
 
-    foreach($file->listVideos() as $f) {
+    $media = $file->listMedia();
+
+    foreach($media['videos'] as $f) {
         $response['videos'][] = generateFileRow($f, $config, $file, $allowFileDelete, 'v');
     }
 
-    foreach($file->listMusics() as $f) {
+    foreach($media['musics'] as $f) {
         $response['music'][] = generateFileRow($f, $config, $file, $allowFileDelete, 'm');
     }
 
@@ -199,10 +209,12 @@ if(isset($_GET['jobs'])) {
     die();
 }
 
-// === Обработчики POST для деструктивных действий ===
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $isDestructive = isset($_POST['removeQueued']) 
-        || isset($_POST['delete']) 
+    $isDestructive = isset($_POST['removeQueued'])
+        || isset($_POST['delete'])
+        || isset($_POST['clearDownloads'])
+        || isset($_POST['pin'])
+        || isset($_POST['reorderQueue'])
         || (isset($_POST['kill']) && !empty($_POST['kill']))
         || (isset($_POST['clear']) && !empty($_POST['clear']))
         || (isset($_POST['restart']) && !empty($_POST['restart']));
@@ -211,53 +223,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         showCsrfErrorPage();
     }
 
-    if(isset($_POST["removeQueued"])) {
-        Downloader::remove_queued_job($_POST["removeQueued"]);
-        header("Location: index.php#downloads");
+    // JSON, не редирект - кнопки бьются через fetch (submitActionFetch()), loadList()
+    // перерисовывает только изменившиеся строки. Прокидывает $_SESSION['errors'] (например
+    // от restart_download() при испорченной команде), иначе сообщение терялось бы без reload.
+    function jsonActionResponse(callable $action): void {
+        unset($_SESSION['errors']);
+        $action();
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => empty($_SESSION['errors']), 'errors' => $_SESSION['errors'] ?? []]);
+        unset($_SESSION['errors']);
         die();
     }
 
+    if(isset($_POST["removeQueued"])) {
+        jsonActionResponse(fn() => Downloader::remove_queued_job($_POST["removeQueued"]));
+    }
+
+    if(isset($_POST["reorderQueue"]) && in_array($_POST["direction"] ?? '', ['up', 'down'], true)) {
+        jsonActionResponse(fn() => Downloader::reorder_queued_job($_POST["reorderQueue"], $_POST["direction"]));
+    }
+
+    // Закреп не завязан на allowFileDelete - защищает файлы от deleteAll() и от чистки
+    // хост-крона (FileHandler::setPinned()), не удаляет. JSON через fetch (togglePin()),
+    // без полной навигации - та сбрасывала прокрутку и мигала маскотом ради одной иконки.
+    if(isset($_POST["pin"])) {
+        $pinned = ($_POST["pinned"] ?? '') === '1';
+        $ok = $file->setPinned($_POST["pin"], $pinned);
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => $ok]);
+        die();
+    }
+
+    // JSON, не редирект - те же причины, что у пина выше (deleteFile() в JS).
     if(isset($_POST["delete"]) && $allowFileDelete) {
-        $file->delete($_POST["delete"]);
-        $redirect = (($_POST["type"] ?? '') == "m") ? "index.php#music" : "index.php#videos";
-        header("Location: " . $redirect);
+        $ok = $file->delete($_POST["delete"]);
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => $ok]);
+        die();
+    }
+
+    // Не путать с 'clear' (тот про логи задач, не про файлы) - имена разделены нарочно.
+    if(isset($_POST["clearDownloads"]) && $allowFileDelete) {
+        $type = $_POST["type"] ?? '';
+        $deleted = $file->deleteAll($type, Downloader::background_jobs() > 0);
+        header('Content-Type: application/json');
+        echo json_encode(['ok' => true, 'deleted' => $deleted]);
         die();
     }
 
     if(isset($_POST['kill']) && !empty($_POST['kill'])) {
-        if ($_POST['kill'] === "all") {
-            Downloader::kill_them_all();
-        } else {
-            Downloader::kill_one_of_them($_POST['kill']);
-        }
-        header("Location: index.php#downloads");
-        die();
+        jsonActionResponse(function() {
+            if ($_POST['kill'] === "all") {
+                Downloader::kill_them_all();
+            } else {
+                Downloader::kill_one_of_them($_POST['kill']);
+            }
+        });
     }
 
     if(isset($_POST['clear']) && !empty($_POST['clear'])) {
-        switch ($_POST['clear']) {
-            case "recent":
-                Downloader::clear_finished();
-                break;
-            case "queue":
-                Downloader::remove_all_queued_jobs();
-                break;
-            default:
-                Downloader::clear_one_finished($_POST['clear']);
-                break;
-        }
-        header("Location: index.php#downloads");
-        die();
+        jsonActionResponse(function() {
+            switch ($_POST['clear']) {
+                case "recent":
+                    Downloader::clear_finished();
+                    break;
+                case "queue":
+                    Downloader::remove_all_queued_jobs();
+                    break;
+                default:
+                    Downloader::clear_one_finished($_POST['clear']);
+                    break;
+            }
+        });
     }
 
     if(isset($_POST['restart']) && !empty($_POST['restart'])) {
-        Downloader::restart_download($_POST['restart']);
-        header("Location: index.php#downloads");
-        die();
+        jsonActionResponse(fn() => Downloader::restart_download($_POST['restart']));
     }
 }
 
-// Скачиваем видео
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     if (!validateCsrfToken()) {
         showCsrfErrorPage();
@@ -285,18 +329,19 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         $audio_format = $allowed_audio_formats[$audio_format_key];
     }
 
-    if(isset($_POST['format']) && !empty($_POST['format'])) {
-        if($_POST['format'] != "best") {
-            $dl_format = $_POST['format'];
-        }
+    // Whitelist, как audio_format выше - непровалидированное значение уходит в dl_queue
+    // без urlencode, ">" сдвинет поля, "\n" сломает парсинг всего файла очереди.
+    $allowed_dl_formats = ['top', 'worst', '4K', '1440p', '1080p'];
+    $format_key = $_POST['format'] ?? '';
+    if ($format_key !== 'best' && in_array($format_key, $allowed_dl_formats, true)) {
+        $dl_format = $format_key;
     }
 
     // Перевод озвучки через Яндекс-VOT - только для видео, для аудио бессмысленно
     $translate = !$audio_only && !empty($_POST['translate']);
 
-    // X-Forwarded-For/X-Real-IP подделываются любым клиентом, что достучится до
-    // контейнера напрямую (порт опубликован в compose) - доверяем им только
-    // если запрос реально пришёл с приватного/служебного адреса (наш nginx/докер-бридж)
+    // X-Forwarded-For/X-Real-IP подделываются любым клиентом, достучавшимся до контейнера
+    // напрямую (порт открыт в compose) - доверяем только запросам с приватного/служебного адреса.
     $remote_addr = $_SERVER['REMOTE_ADDR'] ?? '';
     $is_valid_remote = filter_var($remote_addr, FILTER_VALIDATE_IP) !== false;
     $is_public_remote = filter_var($remote_addr, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
@@ -318,7 +363,6 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         'translate' => $translate
     ]];
 
-    // Проверка свободного места
     $fh = new FileHandler();
     $min_free_bytes = 100 * 1024 * 1024; // 100 МБ
     $free_bytes = $fh->get_free_space_bytes();
@@ -335,7 +379,29 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     }
 }
 
-// Готовим данные для отображения страницы
+// Новогодний маскот (ноябрь - март) - месяц считается один раз тут и
+// прокидывается в PHP-разметку и JS, чтобы обе стороны не считали его отдельно и не разошлись.
+$nowMonth = (int) date('n');
+$isWinterMascot = in_array($nowMonth, [11, 12, 1, 2, 3], true);
+// Ручной оверрайд из конфига: 'on'/'off' форсируют режим без перевода часов,
+// 'auto' (или отсутствие ключа) - по календарю. См. config.php 'winterMascot'.
+$winterOverride = $config['winterMascot'] ?? 'auto';
+if ($winterOverride === 'on') {
+    $isWinterMascot = true;
+} elseif ($winterOverride === 'off') {
+    $isWinterMascot = false;
+}
+$mascotImg = $isWinterMascot ? 'img/snej_new_year.webp' : 'img/snej.webp';
+
+// PWA share target (manifest.json) - ОС "Поделиться" шлёт сюда обычный GET без JS/CSRF-токена
+// (взять неоткуда). Просто подставляем ссылку в поле, сабмит - вручную через штатный POST.
+$sharedUrl = '';
+if (!empty($_GET['shared_url'])) {
+    $sharedUrl = trim($_GET['shared_url']);
+} elseif (!empty($_GET['shared_text']) && preg_match('#https?://\S+#i', $_GET['shared_text'], $sm)) {
+    $sharedUrl = $sm[0];
+}
+
 if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
     $audio_check = " checked=\"checked\"";
     $video_form_style = " style=\"display: none;\"";
@@ -345,6 +411,12 @@ if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
     $video_form_style = "";
     $audio_form_style = "style=\"display: none;\"";
 }
+
+// Тот же список доменов, что читает load_favicons.py. Downloader::DIRECT_ACCESS_DOMAINS -
+// отдельный список (прямой доступ vs прокси), сюда не входит. Читается только тут, не в начале
+// файла - единственный потребитель part.header.php, куда ?jobs/destructive POST не доходят (die() раньше).
+$faviconDomainsJson = file_get_contents(__DIR__ . '/config/favicon_domains.json');
+$knownServices = json_decode($faviconDomainsJson, true) ?: [];
 
 require_once 'views/part.header.php';
 require_once 'views/part.main.php';

@@ -1,49 +1,32 @@
 <?php
 if (!isset($GLOBALS['config'])) { die("No direct script access"); }
 
-/**
- * Проверка живости SOCKS5-прокси для индикатора в футере.
- *
- * Замер выполняется в фоне (fire-and-forget curl через тот же прокси, что и
- * загрузки), не блокируя ответ страницы/поллинга. Результат каждого замера -
- * одна строка "unix_ts ok" в logPath/proxy_probe.log. По истории строятся три
- * окна: 1, 5 и 15 минут. Окно "work" (зелёное), если за этот период не было ни
- * одного провала; "death" (красное), если был.
- *
- * Прокси нигде не раскрывается: в лог пишутся только timestamp и 0/1, в JSON и
- * футер уходят только булевы статусы и слова work/death. Сама строка прокси
- * живёт лишь в окружении временного curl-процесса (как и при загрузках).
- */
+// Живость SOCKS5-прокси для индикатора в футере. Замер - фоновый fire-and-forget curl, не блокирует ответ.
+// Каждый замер - строка "unix_ts ok" в proxy_probe.log; по истории строятся окна 1/5/15 минут (work/death).
+// Прокси-строка нигде не логируется, только timestamp+0/1; живёт лишь в окружении curl-процесса.
 class ProxyStatus
 {
-    // Нейтральная точка проверки связности: пустой ответ 204, никакого тела,
-    // не палит ни нас, ни прокси. Через прокси подтверждает, что канал живой.
+    // Нейтральная точка проверки связности: пустой 204, не палит ни нас, ни прокси.
     const CHECK_URL = 'https://www.gstatic.com/generate_204';
 
-    // Как часто реально дёргать прокси (сек). Поллинг ходит чаще - лишние вызовы
-    // отсекаются по mtime маркера, чтобы не долбить прокси на каждый ?jobs.
+    // Реальный интервал опроса прокси; поллинг ходит чаще, лишнее отсекается по mtime маркера.
     const CHECK_INTERVAL = 60;
 
-    // Таймаут одного замера (сек). Короткий, чтобы фоновый curl не висел.
     const CHECK_TIMEOUT = 6;
 
-    // Горизонт истории и максимальное окно (мин).
     const HISTORY_MINUTES = 15;
 
-    // Доля провалов в окне, до которой это "незначительные пропуски" (жёлтый).
-    // Выше - красный. Ноль провалов - зелёный.
+    // Доля провалов в окне до жёлтого; выше - красный, ноль - зелёный.
     const WARN_RATIO = 0.34;
 
-    // Максимальный размер лога в байтах. Если превышен - ротировать, оставляя 15м.
+    // Лимит размера лога (байт), при превышении - ротация до 15м.
     const LOG_MAX_SIZE = 102400;
 
-    // Фича индикатора включена в конфиге (независимо от того, задан ли прокси).
     public static function feature_on(): bool
     {
         return !empty($GLOBALS['config']['proxyStatus']);
     }
 
-    // Прокси реально задан - только тогда есть что проверять.
     private static function proxy_set(): bool
     {
         return !empty($GLOBALS['config']['socks5']);
@@ -69,10 +52,7 @@ class ProxyStatus
         return rtrim($GLOBALS['config']['logPath'], '/') . '/proxy_probe.at';
     }
 
-    /**
-     * Читает историю замеров, отсекая записи старше HISTORY_MINUTES.
-     * Возвращает массив [['t' => int, 'ok' => bool], ...] по возрастанию времени.
-     */
+    // Читает историю, отсекая записи старше HISTORY_MINUTES.
     private static function read_checks(): array
     {
         $file = self::log_path();
@@ -84,14 +64,16 @@ class ProxyStatus
             return [];
         }
         $cutoff = time() - self::HISTORY_MINUTES * 60;
+        $now = time();
         $checks = [];
+        // explode() вместо preg_split(): формат строки наш собственный (printf в launch_probe()), regex тут был бы лишним оверхедом на каждый ?jobs.
         foreach ($raw as $line) {
-            $parts = preg_split('/\s+/', trim($line));
+            $parts = explode(' ', trim($line));
             if (count($parts) < 2) {
                 continue;
             }
             $t = (int)$parts[0];
-            if ($t < $cutoff || $t > time() + 60) {
+            if ($t < $cutoff || $t > $now + 60) {
                 continue;
             }
             $checks[] = ['t' => $t, 'ok' => $parts[1] === '1'];
@@ -99,11 +81,7 @@ class ProxyStatus
         return $checks;
     }
 
-    /**
-     * Запускает фоновый замер, если с прошлого прошло >= CHECK_INTERVAL.
-     * Под неблокирующим flock, чтобы параллельные запросы не плодили процессы.
-     * Заодно подрезает историю до горизонта.
-     */
+    // Фоновый замер, если прошло >= CHECK_INTERVAL. Неблокирующий flock защищает от гонки параллельных запросов; заодно подрезает историю.
     public static function maybe_check(): void
     {
         if (!self::enabled_config()) {
@@ -142,7 +120,7 @@ class ProxyStatus
         fclose($lock);
     }
 
-    // Ротация логов: если файл больше лимита, оставить только свежие 15м.
+    // Если файл больше лимита - оставить только свежие 15м.
     private static function maybe_rotate(): void
     {
         $file = self::log_path();
@@ -154,8 +132,7 @@ class ProxyStatus
             return;
         }
 
-        // Читаем, фильтруем по времени (это не рекурсия, т.к. `read_checks`
-        // не вызывает `maybe_rotate`), и перезаписываем компактно.
+        // Не рекурсия: read_checks() не вызывает maybe_rotate().
         $raw = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         if ($raw === false) {
             return;
@@ -163,7 +140,7 @@ class ProxyStatus
         $cutoff = time() - self::HISTORY_MINUTES * 60;
         $lines = '';
         foreach ($raw as $line) {
-            $parts = preg_split('/\s+/', trim($line));
+            $parts = explode(' ', trim($line));
             if (count($parts) < 2) continue;
             $t = (int)$parts[0];
             if ($t >= $cutoff) {
@@ -173,11 +150,7 @@ class ProxyStatus
         @file_put_contents($file, $lines, LOCK_EX);
     }
 
-    /**
-     * Фоновый curl через прокси. Пишет одну строку "ts 0|1" в лог.
-     * Прокси передаётся через окружение (как в Downloader), в argv скрипта не
-     * попадает. Вывод curl отбрасывается - утечь нечему.
-     */
+    // Фоновый curl через прокси, пишет "ts 0|1" в лог. Прокси передаётся через окружение (как в Downloader), не через argv.
     private static function launch_probe(): void
     {
         $proxy = $GLOBALS['config']['socks5'];
@@ -193,13 +166,7 @@ class ProxyStatus
         exec('sh -c ' . escapeshellarg($probe) . ' >/dev/null 2>&1 &');
     }
 
-    /**
-     * Статусы трёх окон. Значение: 'work' (зелёный, провалов нет),
-     * 'warn' (жёлтый, до WARN_RATIO провалов - незначительные пропуски),
-     * 'death' (красный, провалов больше), null - данных в окне нет.
-     * Если окно пустое - берём общий последний известный результат, чтобы
-     * точка не гасла между замерами.
-     */
+    // Статусы окон 1/5/15м: work/warn/death, null если данных нет. Пустое окно берёт последний известный результат, чтобы точка не гасла.
     public static function get_windows(): array
     {
         $checks = self::read_checks();
@@ -230,18 +197,12 @@ class ProxyStatus
         return $result;
     }
 
-    /**
-     * Общий статус: work / warn / death / pending (нет данных).
-     * Опирается на минутное окно - самое свежее.
-     */
+    // Опирается на минутное окно - самое свежее.
     public static function overall_state(array $windows): string
     {
         return $windows['1'] ?? 'pending';
     }
 
-    /**
-     * Данные для ?jobs JSON. Пусто, если фича выключена.
-     */
     public static function payload(): array
     {
         if (!self::feature_on()) {

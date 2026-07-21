@@ -2,11 +2,67 @@ version: '3'
 
 services:
   app:
-    image: yt:latest
+    image: yt_prod
     tty: true
     restart: always
-    container_name: yt
+    container_name: YT-prod
+    # tini как PID 1 (Docker поднимает его сам, ничего не нужно ставить в
+    # образ) - без этого php-fpm/node(bgutil)/tail, запущенные в фоне из
+    # start.sh, не получают SIGTERM напрямую при docker stop и не reap'ятся
+    # как зомби, а PID 1 (сейчас - nginx после exec) не умеет ни то, ни другое.
+    init: true
+    # Docker capability hardening (H.3). Контейнер целиком под www-data (не root),
+    # запускает yt-dlp против непроверенного удалённого контента - самая широкая
+    # поверхность атаки в проекте, cap_drop:[ALL] + узкий cap_add ужимает то, что
+    # скомпрометированный процесс сможет сделать с ядром/хостом даже при RCE внутри
+    # yt-dlp-экстрактора.
+    #
+    # ПРОВЕРЕНО ЖИВЬЁМ (2026-07) и ОПРОВЕРГНУТО: cap_add сюда НЕ работает -
+    # "docker exec -u www-data ... chmod ..." падает "Operation not permitted"
+    # даже с FOWNER/CHOWN в списке, "grep CapEff /proc/1/status" внутри
+    # контейнера - нулевой. Контейнер стартует сразу не-root'ом (USER www-data
+    # в Dockerfile) - известное ограничение Docker/runc: added capability
+    # реально долетают до ambient/effective набора процесса только когда
+    # init-процесс контейнера стартует root'ом и сам явно опускает привилегии
+    # (gosu/su-exec/setpriv --ambient-caps). Простой cap_add в compose для
+    # контейнера, который с самого начала non-root, практически no-op - список
+    # ниже оставлен как задокументированное намерение и не вредит, но НЕ
+    # считай, что он реально что-то даёт www-data-процессам. nginx при этом
+    # всё равно биндится на 80 - видимо через setcap на бинарнике (Dockerfile)
+    # независимо от cap_add/no-new-privileges, механизм эмпирически работает,
+    # объяснение не до конца подтверждено, но факт устойчивый.
+    #
+    # Из-за этого self-heal прав куки-файла (chmod 0600 в cookiesFileUsable())
+    # не работает под bind-mount с хоста (файл принадлежит UID хоста, не
+    # www-data) - это касается и dev (весь config/ смонтирован), и prod
+    # (см. ниже, смонтирован только youtube_cookies.txt). Реальный фикс -
+    # права выставить ПРАВИЛЬНО СРАЗУ НА ХОСТЕ, до монтирования: chmod 600
+    # на youtube_cookies.txt на хосте. Тогда cookiesFileUsable() увидит уже
+    # верные 0600 и chmod() внутри вообще не понадобится.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env
     ports:
       - 8000:80
+    volumes:
+      # Именованные volumes, не bind-mount на хост - иначе права www-data
+      # внутри контейнера расходятся с правами пользователя на хосте (та же
+      # причина, по которой dev-compose не монтирует tmp/download на хост).
+      # Без этого блока download/tmp/лог живут только в writable-слое
+      # контейнера и теряются при docker rm/пересоздании.
+      - yt_download:/var/www/YT/download
+      - yt_tmp:/var/www/YT/tmp
+
+volumes:
+  yt_download:
+  yt_tmp:

@@ -58,37 +58,6 @@ function showCsrfErrorPage() {
                 margin-bottom: 20px;
             }
 
-            .info-box {
-                background: #fafafa;
-                border-left: 3px solid #d32f2f;
-                padding: 12px 15px;
-                margin-bottom: 30px;
-                font-size: 14px;
-                color: #555;
-                line-height: 1.6;
-            }
-
-            .steps {
-                list-style: none;
-                margin-bottom: 30px;
-            }
-
-            .steps li {
-                padding: 12px 0;
-                font-size: 15px;
-                color: #333;
-                line-height: 1.5;
-            }
-
-            .code {
-                background: #f0f0f0;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-family: monospace;
-                font-size: 13px;
-                color: #444;
-            }
-
             .button-group {
                 display: flex;
                 flex-direction: column;
@@ -137,32 +106,21 @@ function showCsrfErrorPage() {
     </head>
     <body>
         <div class="container">
-            <div class="error-code">Ошибка 403</div>
-            <h1>CSRF token validation failed</h1>
+            <div class="error-code">Сессия обновилась</div>
+            <h1>Секунду...</h1>
 
             <p class="description">
-                Токен безопасности истёк или больше не действителен. Это происходит для защиты от несанкционированных действий.
+                Сервер недавно перезапускался, и страница у вас в браузере успела устареть. Сейчас обновим её автоматически - просто повторите действие ещё раз.
             </p>
 
-            <div class="info-box">
-                <strong>Что это означает:</strong><br>
-                При отправке формы ваш браузер проверяет специальный токен безопасности. Если сессия закончилась или браузер кэшировал старые данные, токен становится невалидным.
-            </div>
-
-            <ol class="steps">
-                <li>Нажмите <span class="code">Ctrl+Shift+R</span> (на Mac: <span class="code">Cmd+Shift+R</span>)</li>
-                <li>Или очистите куки браузера для этого сайта</li>
-                <li>Повторите действие</li>
-            </ol>
-
             <div class="button-group">
-                <button class="btn-primary" id="csrf-reload">Обновить страницу</button>
-                <button class="btn-secondary" id="csrf-back">Вернуться назад</button>
+                <button class="btn-primary" id="csrf-reload">Вернуться на сайт</button>
             </div>
         </div>
         <script nonce="<?= htmlspecialchars($GLOBALS['cspNonce'] ?? '', ENT_QUOTES) ?>">
-            document.getElementById('csrf-reload').addEventListener('click', function () { location.reload(); });
-            document.getElementById('csrf-back').addEventListener('click', function () { history.back(); });
+            function goHome() { window.location.href = '/'; }
+            document.getElementById('csrf-reload').addEventListener('click', goHome);
+            setTimeout(goHome, 1500);
         </script>
     </body>
     </html>

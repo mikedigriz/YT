@@ -36,8 +36,8 @@ GET /index.php?jobs
 | `jobs` | array | Активные (ещё идущие) загрузки - результат `Downloader::get_current_background_jobs()`. |
 | `queue` | array | Загрузки, ожидающие своей очереди. Пустой массив, если `disableQueue` включён в конфиге. Каждый элемент - `pid`, `url`, `dl_format` (человекочитаемое название формата, например "Топ", "4K", "Булшит"), `type` (`video` или `audio`). |
 | `finished` | array | Завершённые загрузки (успешные и с ошибкой) - результат `Downloader::get_finished_background_jobs()`, с кешированием разбора логов. |
-| `videos` | array | Список файлов из папки видео (`FileHandler::listVideos()`), с полями строки файла (см. ниже). |
-| `music` | array | Список файлов из папки музыки (`FileHandler::listMusics()`), той же формы. |
+| `videos` | array | Список видеофайлов из папки загрузок (`FileHandler::listMedia()`), с полями строки файла (см. ниже). |
+| `music` | array | Список аудиофайлов оттуда же, той же формы. |
 | `logURL` | string | Относительный путь к логам, если `logURL` в конфиге не пустой. Иначе пустая строка. |
 | `proxy` | object | Статус живости SOCKS5-прокси - результат `ProxyStatus::payload()` (окна 1/5/15 минут). |
 

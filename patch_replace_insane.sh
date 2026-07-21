@@ -2,13 +2,7 @@
 set -e
 
 # Скрипт для применения patch к функции replace_insane() в yt-dlp
-# для образа из удалённого репозитория https://github.com/mikedigriz/YT
-#
-# Актуальный Dockerfile этого репозитория уже сам накатывает патч при сборке
-# (apt install patch + COPY app/patches + patch -p0 --fuzz=0), поэтому скрипт
-# нужен только когда yt-dlp обновляют ВНУТРИ уже собранного контейнера
-# и патч нужно переналожить вручную, либо когда правят файлы ../YT на хосте.
-#
+
 # Режимы:
 #   patch_replace_insane_remote.sh container [имя_контейнера]
 #       обновить yt-dlp и переналожить патч внутри запущенного контейнера,
@@ -42,14 +36,15 @@ case "$MODE" in
         echo "🐳 Обновляем yt-dlp и переналагаем патч в контейнере ${CONTAINER}..."
 
         # patch и pip уже есть в образе - apt install patch выполнен ещё при
-        # сборке, USER www-data действует только для CMD, поэтому root доступен через exec
+        # сборке, USER www-data действует только для CMD, поэтому root доступен через exec.
+        # [default] обязателен - без него не обновится yt-dlp-ejs (JS-решатель),
+        # тем самым расходясь с Dockerfile/update-ytdlp.sh, которые везде
+        # используют именно "yt-dlp[default]".
         echo "📦 Обновляем yt-dlp в контейнере..."
-        docker exec -u root "$CONTAINER" bash -c "pip install --upgrade pip && pip install --upgrade yt-dlp"
+        docker exec -u root "$CONTAINER" bash -c "pip install --upgrade pip && pip install --upgrade 'yt-dlp[default]'"
 
-        # Скопировать патч в контейнер
         docker cp "$PATCH_FILE" "$CONTAINER":/tmp/replace_insane.patch
 
-        # Применить патч в контейнере
         echo "📝 Применяем патч в контейнере..."
         docker exec -u root "$CONTAINER" bash -c "cd $TARGET_PATH && patch -p0 --fuzz=0 < /tmp/replace_insane.patch && echo '✅ Патч применён успешно'"
 
@@ -72,14 +67,12 @@ case "$MODE" in
             exit 1
         fi
 
-        # Создать backup
         BACKUP_FILE="$TARGET_FILE.backup"
         if [ ! -f "$BACKUP_FILE" ]; then
             cp "$TARGET_FILE" "$BACKUP_FILE"
             echo "💾 Backup создан: $BACKUP_FILE"
         fi
 
-        # Применить патч
         echo "📝 Применяем патч к $LOCAL_TARGET..."
         cd "$LOCAL_TARGET" && patch -p0 --fuzz=0 < "$PATCH_FILE" && echo "✅ Патч применён успешно"
         ;;

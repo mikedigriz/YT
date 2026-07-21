@@ -38,52 +38,65 @@ let audioSuccess = null;
 let audioError = null;
 let soundsLoading = null;
 
-// === Защита от CSRF ===
 function getCsrfToken() {
     const meta = document.querySelector('meta[name="csrf-token"]');
     return meta ? meta.getAttribute('content') : '';
 }
 
+// Общий fetch-сабмит для деструктивных/тумблерных действий - без full-reload формы, только диффовая перерисовка через loadList()/renderTable().
+function submitActionFetch(fields) {
+    return fetch('index.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-CSRF-Token': getCsrfToken()
+        },
+        body: new URLSearchParams(fields)
+    })
+        .then(resp => {
+            // Сервер перезапустился - сессия и CSRF-токен на странице устарели.
+            // Без этой проверки resp.json() падал в catch(() => null), и кнопка
+            // молча ничего не делала - пользователь не понимал, что случилось.
+            if (resp.status === 403) {
+                alert('Страница устарела после перезапуска сервера. Сейчас обновим её - повторите действие.');
+                window.location.reload();
+                return null;
+            }
+            return resp.json().catch(() => null);
+        })
+        .then(data => {
+            if (data && data.errors && data.errors.length) {
+                alert(data.errors.join('\n'));
+            }
+            return loadList();
+        })
+        .catch(() => {});
+}
+
 function confirmAction(action, value, extraFields = {}) {
     const messages = {
-        'kill': value === 'all' 
-            ? 'Остановить ВСЕ загрузки?' 
+        'kill': value === 'all'
+            ? 'Остановить ВСЕ загрузки?'
             : 'Остановить загрузку?',
         'delete': 'Удалить файл безвозвратно?',
-        'clear': value === 'recent' 
-            ? 'Очистить историю загрузок?' 
+        'clear': value === 'recent'
+            ? 'Очистить историю загрузок?'
             : (value === 'queue' ? 'Очистить очередь?' : 'Удалить из истории?'),
         'restart': 'Перезапустить загрузку?',
-        'removeQueued': 'Удалить из очереди?'
+        'removeQueued': 'Удалить из очереди?',
+        'clearDownloads': 'Удалить все скачанные файлы безвозвратно?'
     };
 
     if (!confirm(messages[action] || 'Выполнить действие?')) {
         return;
     }
 
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = 'index.php';
-    form.style.display = 'none';
+    submitActionFetch({ [action]: value, ...extraFields });
+}
 
-    const addField = (name, val) => {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = name;
-        input.value = val;
-        form.appendChild(input);
-    };
-
-    addField('csrf_token', getCsrfToken());
-    addField(action, value);
-
-    for (const [key, val] of Object.entries(extraFields)) {
-        addField(key, val);
-    }
-
-    document.body.appendChild(form);
-    form.submit();
-    form.remove();
+// Закреп/откреп файла - без confirm(): действие обратимое, один клик туда-обратно.
+function togglePin(name, type, pinned) {
+    submitActionFetch({ pin: name, type: type, pinned: pinned ? '1' : '0' });
 }
 
 function updateFileBadges(data) {
@@ -230,7 +243,9 @@ function initSoundToggle() {
     const btn = document.createElement('div');
     btn.id = 'sound-toggle';
     btn.className = 'sound-toggle';
-    
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
+
     soundToggleBtn = btn;
     updateSoundButtonVisuals(btn);
     updateButtonVisibility();
@@ -244,6 +259,15 @@ function initSoundToggle() {
             preloadNotificationSounds();
         } else {
             unloadNotificationSounds();
+        }
+    });
+
+    // Кастомный div, не нативная <button> - без этого клавиатурный фокус
+    // не может активировать переключатель.
+    btn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            btn.click();
         }
     });
 
@@ -289,10 +313,70 @@ function playNotificationSound(isSuccess) {
     });
 }
 
+// Канвас-салют при завершении (только видимая вкладка). Уважает prefers-reduced-motion, убирает себя из DOM сам.
+function fireConfetti() {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    const canvas = document.createElement('canvas');
+    canvas.className = 'confetti-canvas';
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    const colors = ['#e04b4b', '#e0a83f', '#4bb87a', '#4b8fe0', '#a05fe0'];
+    // Произвольная точка старта - не жёсткий центр-верх, а разброс по всему
+    // экрану (с отступом от самых краёв, чтобы залп не срезало сразу).
+    const originX = canvas.width * (0.15 + Math.random() * 0.7);
+    const originY = canvas.height * (0.15 + Math.random() * 0.55);
+    const particles = [];
+    for (let i = 0; i < 60; i++) {
+        particles.push({
+            x: originX + (Math.random() - 0.5) * 60,
+            y: originY,
+            vx: (Math.random() - 0.5) * 8,
+            vy: -Math.random() * 8 - 4,
+            size: 4 + Math.random() * 4,
+            color: colors[Math.floor(Math.random() * colors.length)],
+            rotation: Math.random() * Math.PI * 2,
+            vr: (Math.random() - 0.5) * 0.3,
+            life: 0
+        });
+    }
+
+    const gravity = 0.25;
+    const maxLife = 90;
+
+    function frame() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        let alive = false;
+        for (const p of particles) {
+            if (p.life > maxLife) continue;
+            alive = true;
+            p.vy += gravity;
+            p.x += p.vx;
+            p.y += p.vy;
+            p.rotation += p.vr;
+            p.life++;
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, 1 - p.life / maxLife);
+            ctx.translate(p.x, p.y);
+            ctx.rotate(p.rotation);
+            ctx.fillStyle = p.color;
+            ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
+            ctx.restore();
+        }
+        if (alive) {
+            requestAnimationFrame(frame);
+        } else {
+            canvas.remove();
+        }
+    }
+    requestAnimationFrame(frame);
+}
+
 // === Уведомления о готовности + прогресс в заголовке вкладки ===
-// Плашкой ОС зовём ТОЛЬКО когда вкладка скрыта (document.hidden): если человек
-// смотрит на страницу, ему хватает звука и таблицы, лишний раз не дёргаем.
-// Плашка - точный сигнал "вернись, готово", а не фоновый шум.
+// Плашкой ОС зовём только при document.hidden - на видимой вкладке хватает звука и таблицы.
 function showCompletionNotification(successItems, failureItems) {
     if (!notifyEnabled || !notificationsSupported || Notification.permission !== 'granted') return;
 
@@ -315,7 +399,7 @@ function showCompletionNotification(successItems, failureItems) {
     try {
         const note = new Notification(title, {
             body: body,
-            icon: 'img/snej.webp',
+            icon: (typeof MASCOT_IMG !== 'undefined' ? MASCOT_IMG : 'img/snej.webp'),
             tag: 'yt-download',   // одна плашка на сайт, стек не копим
             silent: true          // свой звук уже играет, системный не дублируем
         });
@@ -376,6 +460,8 @@ function initNotifyToggle() {
     const btn = document.createElement('div');
     btn.id = 'notify-toggle';
     btn.className = 'notify-toggle';
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
     notifyToggleBtn = btn;
     updateNotifyButtonVisuals(btn);
     updateNotifyButtonVisibility();
@@ -398,7 +484,16 @@ function initNotifyToggle() {
                 notifyEnabled = perm === 'granted';
                 try { localStorage.setItem(NOTIFY_KEY, notifyEnabled); } catch (e) {}
                 updateNotifyButtonVisuals(btn);
-            });
+            }).catch(() => {});
+        }
+    });
+
+    // Кастомный div, не нативная <button> - без этого клавиатурный фокус
+    // не может активировать переключатель.
+    btn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            btn.click();
         }
     });
 
@@ -436,6 +531,7 @@ function renderUrls(urlString, includeIcon = false, iconType = null, leadingBrea
             return `${prefix}<a href="${safeUrlAttr(url)}">${iconHtml}${escapeHtml(url)}</a>`;
         }).join("");
 
+    if (urlsCache.size > 500) urlsCache.clear();
     urlsCache.set(key, result);
     return result;
 }
@@ -446,7 +542,7 @@ function computeDataHash(items) {
     for (const item of items) {
         for (const key in item) {
             if (item.hasOwnProperty(key)) {
-                hash += item[key];
+                hash += item[key] + '|';
             }
         }
         hash += '|';
@@ -455,6 +551,9 @@ function computeDataHash(items) {
 }
 
 function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerHtml = "") {
+    // #dlqueue отсутствует в DOM при disableQueue=true - без этой проверки TypeError тут обрывал бы весь остаток loadList().
+    if (!container) return;
+
     const hash = computeDataHash(items) + ':' + footerHtml;
 
     if (container.dataset.lastHash === hash) {
@@ -485,16 +584,22 @@ function renderJobRow(job) {
     </tr>`;
 }
 
-function renderQueueRow(item) {
-    const iconClass = getIconClass(item.type);
+// idx/arr приходят от map() автоматически - нужны, чтобы прятать "▲"/"▼" на первой/последней строке.
+function renderQueueRow(item, idx, arr) {
     const urlsHtml = renderUrls(item.url, true, item.type, false);
+    const isFirst = idx === 0;
+    const isLast = !arr || idx === arr.length - 1;
+    const pid = safePid(item.pid);
+    const upBtn = `<button type="button" style="width: 30px" data-reorder-pid="${pid}" data-reorder-dir="up" class="btn btn-default btn-xs reorder-btn"${isFirst ? ' disabled' : ''} title="Поднять в очереди">▲</button>`;
+    const downBtn = `<button type="button" style="width: 30px" data-reorder-pid="${pid}" data-reorder-dir="down" class="btn btn-default btn-xs reorder-btn"${isLast ? ' disabled' : ''} title="Опустить в очереди">▼</button>`;
     return `
     <tr>
         <td style="vertical-align: middle;">${urlsHtml}</td>
         <td style="vertical-align: middle;">${escapeHtml(item.dl_format)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
-                <button type="button" style="width: 160px" data-action="removeQueued" data-value="${safePid(item.pid)}" class="btn btn-danger btn-xs">Удалить</button>
+                ${upBtn}${downBtn}
+                <button type="button" style="width: 160px" data-action="removeQueued" data-value="${pid}" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
     </tr>`;
@@ -508,7 +613,7 @@ function renderFinishedRow(item, logURL) {
 
     if (logURL && logURL !== "") {
         actionBtnWidth = "60px";
-        logButton = `<a href="${safeUrlAttr(logURL)}/${safePid(item.pid)}" style="width: 40px;" target="_blank" class="btn btn-default btn-xs">Лог</a>`;
+        logButton = `<a href="${safeUrlAttr(logURL)}/${safePid(item.pid)}" style="width: 40px;" target="_blank" rel="noopener noreferrer" class="btn btn-default btn-xs">Лог</a>`;
     }
 
     return `
@@ -536,8 +641,15 @@ function buildFileActions(file) {
     const qrButton = file.downloadurl
         ? `<button type="button" class="btn btn-default btn-xs qr-btn" title="Забрать на телефон - покажу QR" data-qr-url="${escapeHtml(file.downloadurl)}">${qrIcon}</button>`
         : '';
-    if (!playButton && !qrButton && !file.deleteurl) return '';
-    return `<div class="btn-group btn-group-file">${playButton}${qrButton}${file.deleteurl}</div>`;
+
+    const pinIcon = `<svg class="pin-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M16 3l5 5-1.9 1.9-2.5-.6-3.6 3.6.9 3.7-1.9 1.9-3.5-3.5-4.8 4.8-1.4-1.4 4.8-4.8-3.5-3.5 1.9-1.9 3.7.9 3.6-3.6-.6-2.5z"/></svg>`;
+    const pinned = !!file.pinned;
+    const pinButton = file.name
+        ? `<button type="button" class="btn btn-default btn-xs pin-btn${pinned ? ' pin-btn-active' : ''}" title="${pinned ? 'Открепить' : 'Закрепить - не удалится по времени и при «Очистить всё»'}" data-pin-name="${file.name}" data-pin-type="${file.kind === 'audio' ? 'm' : 'v'}" data-pin-pinned="${pinned ? '1' : '0'}">${pinIcon}</button>`
+        : '';
+
+    if (!playButton && !qrButton && !pinButton && !file.deleteurl) return '';
+    return `<div class="btn-group btn-group-file">${playButton}${qrButton}${pinButton}${file.deleteurl}</div>`;
 }
 
 // Ключ файла для отслеживания "новых" строк между опросами - downloadurl
@@ -551,33 +663,40 @@ function renderFileRow(file, isNew) {
     const enterClass = isNew ? ' row-enter-cell' : '';
 
     if (typeof showFileLifetime !== 'undefined' && !showFileLifetime) {
-        return `<tr><td><span class="file-name-plain${enterClass}">${file.file}</span></td><td>${file.size}</td><td>${actions}</td></tr>`;
+        return `<tr><td><span class="file-name-plain${enterClass}">${file.file}</span></td><td>${escapeHtml(file.size)}</td><td>${actions}</td></tr>`;
     }
 
-    const age = (typeof file.age_minutes === 'number' && !isNaN(file.age_minutes)) ? file.age_minutes : 0;
-    const percent = (typeof file.lifetime_percent === 'number' && !isNaN(file.lifetime_percent)) ? file.lifetime_percent : 100;
-    let timeText = '';
-    let colorClass = 'bg-safe';
-    const retention = (typeof retentionMinutes !== 'undefined' && retentionMinutes > 0) ? retentionMinutes : 120;
-    const remainingMinutes = Math.max(0, retention - age);
+    const pinned = !!file.pinned;
+    let timeText, colorClass, percent;
 
-    if (percent > 60) colorClass = 'bg-safe';
-    else if (percent > 30) colorClass = 'bg-warn';
-    else if (percent > 0) colorClass = 'bg-danger';
-    else colorClass = 'bg-dead';
-
-    if (remainingMinutes > 60) {
-        const hours = Math.floor(remainingMinutes / 60);
-        timeText = `${hours}ч ${remainingMinutes % 60}м`;
-    } else if (remainingMinutes > 0) {
-        timeText = `${remainingMinutes}м`;
+    if (pinned) {
+        timeText = '📌 закреплён';
+        colorClass = 'bg-safe';
+        percent = 100;
     } else {
-        timeText = 'скоро';
+        const age = (typeof file.age_minutes === 'number' && !isNaN(file.age_minutes)) ? file.age_minutes : 0;
+        percent = (typeof file.lifetime_percent === 'number' && !isNaN(file.lifetime_percent)) ? file.lifetime_percent : 100;
+        const retention = (typeof retentionMinutes !== 'undefined' && retentionMinutes > 0) ? retentionMinutes : 120;
+        const remainingMinutes = Math.max(0, retention - age);
+
+        if (percent > 60) colorClass = 'bg-safe';
+        else if (percent > 30) colorClass = 'bg-warn';
+        else if (percent > 0) colorClass = 'bg-danger';
+        else colorClass = 'bg-dead';
+
+        if (remainingMinutes > 60) {
+            const hours = Math.floor(remainingMinutes / 60);
+            timeText = `${hours}ч ${remainingMinutes % 60}м`;
+        } else if (remainingMinutes > 0) {
+            timeText = `${remainingMinutes}м`;
+        } else {
+            timeText = 'скоро';
+        }
     }
 
     const badge = `
         <div class="lifetime-badge">
-            <div class="lifetime-badge-text">⏱ ${timeText}</div>
+            <div class="lifetime-badge-text">${pinned ? '' : '⏱ '}${timeText}</div>
             <div class="progress">
                 <div class="progress-bar progress-lifetime ${colorClass}" style="width: ${percent}%;"></div>
             </div>
@@ -591,15 +710,13 @@ function renderFileRow(file, isNew) {
                     <span class="file-name">${file.file}</span>
                 </div>
             </td>
-            <td>${file.size}</td>
+            <td>${escapeHtml(file.size)}</td>
             <td>${actions}</td>
         </tr>`;
 }
 
 // === QR-код на готовый файл ===
-// Превращаем относительную ссылку файла в абсолютную по текущему адресу страницы:
-// в QR попадает тот же хост, по которому открыта качалка, поэтому телефон в той же
-// сети заберёт файл без проброса маршрутов и прочей возни.
+// Абсолютная ссылка на текущий хост - телефон в той же сети заберёт файл без проброса маршрутов.
 function buildAbsoluteFileUrl(relativeUrl) {
     try {
         return new URL(relativeUrl, window.location.href).href;
@@ -611,9 +728,7 @@ function buildAbsoluteFileUrl(relativeUrl) {
 let qrModalEl = null;
 let qrLibPromise = null;
 
-// Библиотека QR (~56 КБ) нужна только при клике на кнопку, поэтому не висит в
-// критическом пути загрузки страницы, а подтягивается лениво при первом открытии
-// модалки. Промис кэшируется - повторные клики не перезапрашивают скрипт.
+// Ленивая загрузка QR-либы (~56КБ) при первом клике, вне критического пути. Промис кэшируется.
 function ensureQrLib() {
     if (typeof qrcode !== 'undefined') return Promise.resolve();
     if (qrLibPromise) return qrLibPromise;
@@ -644,7 +759,7 @@ function ensureQrModal() {
             <div class="qr-modal-subtitle">Наведи камеру - и файл уже у тебя</div>
             <div class="qr-modal-canvas-wrap">
                 <canvas class="qr-modal-canvas" width="320" height="320"></canvas>
-                <div class="qr-modal-bird"><img class="qr-modal-bird-img" src="img/snej.webp" alt="" draggable="false"></div>
+                <div class="qr-modal-bird"><img class="qr-modal-bird-img" src="${typeof MASCOT_IMG !== 'undefined' ? MASCOT_IMG : 'img/snej.webp'}" alt="" draggable="false"></div>
             </div>
             <div class="qr-modal-filename"></div>
             <div class="qr-modal-hint">Снегирь покараулит ссылку, не торопись</div>
@@ -728,10 +843,7 @@ document.addEventListener('click', function (e) {
 });
 
 // === Плеер прямо на странице ===
-// Модалка живёт вне таблиц Видео/Музыка намеренно: те перерисовываются целиком
-// на каждом фоновом опросе ?jobs (см. renderTable), и живой <video>/<audio>
-// внутри строки обрывался бы на середине воспроизведения при первом же
-// обновлении. Модалка от опроса не зависит - открыл, слушай/смотри спокойно.
+// Модалка живёт вне таблиц Видео/Музыка: те перерисовываются целиком на каждом опросе ?jobs, живой <video>/<audio> внутри строки обрывался бы.
 let playerModalEl = null;
 
 function ensurePlayerModal() {
@@ -748,6 +860,7 @@ function ensurePlayerModal() {
             </div>
             <div class="player-modal-audio-wrap is-hidden">
                 <audio class="player-modal-audio" controls preload="metadata"></audio>
+                <canvas class="player-modal-viz is-hidden" width="440" height="48"></canvas>
             </div>
             <div class="qr-modal-filename player-modal-filename"></div>
         </div>`;
@@ -763,12 +876,105 @@ function ensurePlayerModal() {
         if (e.key === 'Escape' && overlay.classList.contains('is-visible')) hidePlayerModal();
     });
 
+    // AudioContext создаётся лениво в 'play' (клик по нативным controls обходит autoplay-политику).
+    // createMediaElementSource() можно вызвать на элементе только раз за всю жизнь страницы - ensurePlayerAudioViz() поэтому no-op при повторе.
+    const audio = overlay.querySelector('.player-modal-audio');
+    const vizCanvas = overlay.querySelector('.player-modal-viz');
+    audio.addEventListener('play', () => {
+        ensurePlayerAudioViz(audio);
+        const startViz = () => {
+            if (playerAnalyser) {
+                playerVizRunning = true;
+                drawPlayerViz(vizCanvas, playerAnalyser);
+            }
+        };
+        // resume() асинхронный - пока suspended, анализатор отдаёт нули, ждём завершения.
+        if (playerAudioCtx && playerAudioCtx.state === 'suspended') {
+            playerAudioCtx.resume().then(startViz).catch(startViz);
+        } else {
+            startViz();
+        }
+    });
+    audio.addEventListener('pause', () => {
+        playerVizRunning = false;
+        vizCanvas.classList.add('is-hidden');
+    });
+    audio.addEventListener('ended', () => {
+        playerVizRunning = false;
+        vizCanvas.classList.add('is-hidden');
+    });
+
     return overlay;
 }
 
-// preload="metadata" - браузер заранее тянет только длительность/заголовок
-// файла, не всё содержимое; сам поток пойдёт кусками через Range-запросы
-// только после нажатия play, ровно как при перемотке.
+let playerAudioCtx = null;
+let playerAnalyser = null;
+let playerAudioSource = null;
+let playerVizRunning = false;
+
+function ensurePlayerAudioViz(audio) {
+    if (playerAudioSource) return;
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        playerAudioCtx = new AudioCtx();
+        playerAudioSource = playerAudioCtx.createMediaElementSource(audio);
+        playerAnalyser = playerAudioCtx.createAnalyser();
+        playerAnalyser.fftSize = 128;
+        // Аналайзер обязателен в цепочке до destination, иначе звук пропадает.
+        playerAudioSource.connect(playerAnalyser);
+        playerAnalyser.connect(playerAudioCtx.destination);
+    } catch (e) {
+        console.warn('Аудио-визуализация недоступна:', e);
+        playerAudioSource = null;
+    }
+}
+
+// Кадров тишины (~1.5с при 60fps) до скрытия блока - короткие паузы не должны мигать пустой рамкой.
+const VIZ_SILENCE_FRAMES = 90;
+
+function drawPlayerViz(canvas, analyser) {
+    const ctx = canvas.getContext('2d');
+    const bufferLength = analyser.frequencyBinCount;
+    const data = new Uint8Array(bufferLength);
+    let silentFrames = VIZ_SILENCE_FRAMES;
+
+    function frame() {
+        if (!playerVizRunning) return;
+        try {
+            analyser.getByteFrequencyData(data);
+            let hasSignal = false;
+            for (let i = 0; i < bufferLength; i++) {
+                if (data[i] > 2) { hasSignal = true; break; }
+            }
+
+            // Нет сигнала (тишина или обнулено антифингерпринт-защитой) - прячем блок целиком.
+            if (hasSignal) {
+                silentFrames = 0;
+            } else {
+                silentFrames++;
+            }
+            canvas.classList.toggle('is-hidden', silentFrames >= VIZ_SILENCE_FRAMES);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            const barWidth = canvas.width / bufferLength;
+            for (let i = 0; i < bufferLength; i++) {
+                const barHeight = (data[i] / 255) * canvas.height;
+                ctx.fillStyle = '#b8960b';
+                ctx.fillRect(i * barWidth, canvas.height - barHeight, barWidth - 1, barHeight);
+            }
+        } catch (e) {
+            // Напр. SecurityError на кросс-доменном источнике без CORS.
+            console.warn('Аудио-визуализация остановлена:', e);
+            playerVizRunning = false;
+            return;
+        }
+        requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+}
+
+// preload="metadata" - тянет только длительность/заголовок; поток пойдёт Range-запросами после play.
 function showPlayerModal(relativeUrl, kind) {
     const abs = buildAbsoluteFileUrl(relativeUrl);
     if (!abs) return;
@@ -788,9 +994,9 @@ function showPlayerModal(relativeUrl, kind) {
 
     videoWrap.classList.toggle('is-hidden', isAudio);
     audioWrap.classList.toggle('is-hidden', !isAudio);
+    overlay.querySelector('.player-modal-viz').classList.add('is-hidden');
 
-    // Не переигрываем чужой src, а полностью останавливаем неиспользуемый плеер -
-    // иначе он мог бы тихо продолжать тянуть предыдущий файл в фоне.
+    // Останавливаем неиспользуемый плеер целиком - иначе тихо тянет предыдущий файл в фоне.
     if (isAudio) {
         video.pause();
         video.removeAttribute('src');
@@ -803,8 +1009,7 @@ function showPlayerModal(relativeUrl, kind) {
         video.src = abs;
     }
 
-    // Автоплей нарочно не включаем - открыл превью сам, сам и жми play, без
-    // внезапного звука на весь звук системы.
+    // Автоплей нарочно не включён - без внезапного звука на всю систему.
     overlay.classList.add('is-visible');
 }
 
@@ -812,8 +1017,7 @@ function hidePlayerModal() {
     if (!playerModalEl) return;
     playerModalEl.classList.remove('is-visible');
 
-    // Останавливаем оба плеера и снимаем src сразу при закрытии - иначе браузер
-    // может продолжать тянуть файл в фоне, даже когда модалка уже спрятана.
+    // Останавливаем оба плеера и снимаем src при закрытии - иначе браузер тянет файл в фоне.
     const video = playerModalEl.querySelector('.player-modal-video');
     const audio = playerModalEl.querySelector('.player-modal-audio');
     video.pause();
@@ -833,8 +1037,27 @@ document.addEventListener('click', function (e) {
     if (url) showPlayerModal(url, kind);
 });
 
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('.pin-btn');
+    if (!btn) return;
+    e.preventDefault();
+    const name = btn.getAttribute('data-pin-name');
+    const type = btn.getAttribute('data-pin-type');
+    const currentlyPinned = btn.getAttribute('data-pin-pinned') === '1';
+    if (name) togglePin(name, type, !currentlyPinned);
+});
+
+document.addEventListener('click', function (e) {
+    const btn = e.target.closest('.reorder-btn');
+    if (!btn || btn.disabled) return;
+    e.preventDefault();
+    submitActionFetch({
+        reorderQueue: btn.getAttribute('data-reorder-pid'),
+        direction: btn.getAttribute('data-reorder-dir')
+    });
+});
+
 // Делегированные обработчики вместо inline on* (CSP без unsafe-inline).
-// Ловим клики на динамически отрисованных строках и статичных кнопках.
 document.addEventListener('click', function (e) {
     // Деструктивные действия: kill/delete/clear/restart/removeQueued
     const act = e.target.closest('[data-action]');
@@ -861,6 +1084,34 @@ document.addEventListener('click', function (e) {
     }
 });
 
+// Клавиатурная активация панели помощи (кастомный div с tabindex, не нативная
+// <button> - без этого Enter/Space на фокусе ничего не делают).
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    if (e.target.closest('[data-ui="help"]')) {
+        e.preventDefault();
+        helpPanel();
+    }
+});
+
+// "/" (как на GitHub) или Ctrl/Cmd+K - фокус на поле ссылки. Ctrl+K обычно зарезервирован браузером под адресную строку, "/" - основной способ.
+// Не перехватываем при фокусе в input/textarea/contenteditable, чтобы "/" вводился как обычный символ.
+document.addEventListener('keydown', function (e) {
+    const isSlash = e.key === '/' && !e.ctrlKey && !e.metaKey && !e.altKey;
+    const isCtrlK = (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k';
+    if (!isSlash && !isCtrlK) return;
+
+    const active = document.activeElement;
+    const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+    if (isTyping) return;
+
+    const urlInput = document.getElementById('url');
+    if (!urlInput) return;
+    e.preventDefault();
+    urlInput.focus();
+    urlInput.select();
+});
+
 // Тумблеры аудио/качество и подрежимы: раньше были onchange="syncLogic()" /
 // onchange="syncSubToggles(this)"
 document.addEventListener('change', function (e) {
@@ -873,10 +1124,52 @@ document.addEventListener('change', function (e) {
     }
 });
 
+// Нормализованные ссылки из истории/активных/очереди - для "уже качали" на сабмите, без отдельного запроса.
+let knownDownloadedUrls = new Set();
+
+function collectKnownUrls(data) {
+    const set = new Set();
+    for (const bucket of [data.finished, data.jobs, data.queue]) {
+        for (const item of bucket || []) {
+            (item.url || '').split(',').forEach(u => {
+                const t = u.trim().toLowerCase();
+                if (t) set.add(t);
+            });
+        }
+    }
+    return set;
+}
+
+let pollErrorBadgeEl = null;
+
+// Неблокирующая плашка на неудачный опрос ?jobs - раньше ошибка уходила молча в console.error.
+function ensurePollErrorBadge() {
+    if (pollErrorBadgeEl) return pollErrorBadgeEl;
+    pollErrorBadgeEl = document.createElement('div');
+    pollErrorBadgeEl.className = 'alert alert-warning poll-error-badge';
+    pollErrorBadgeEl.style.display = 'none';
+    pollErrorBadgeEl.textContent = 'Не удалось обновить данные, повторяю...';
+    const container = document.querySelector('.container');
+    (container || document.body).insertBefore(pollErrorBadgeEl, (container || document.body).firstChild);
+    return pollErrorBadgeEl;
+}
+
+function showPollErrorBadge() {
+    ensurePollErrorBadge().style.display = '';
+}
+
+function hidePollErrorBadge() {
+    if (pollErrorBadgeEl) {
+        pollErrorBadgeEl.style.display = 'none';
+    }
+}
+
 function loadList() {
     fetch("index.php?jobs")
         .then(resp => resp.json())
         .then(function (data) {
+        hidePollErrorBadge();
+        knownDownloadedUrls = collectKnownUrls(data);
         const currentFinishedPids = new Set();
         for (const item of data.finished) {
             currentFinishedPids.add(String(item.pid));
@@ -893,10 +1186,15 @@ function loadList() {
                 }
             }
 
+            // Вибрация не требует диалога разрешений (в отличие от Notification) -
+            // просто дублирует звук на мобильном, если вкладка беззвучна/в фоне.
             if (newFailure.length) {
                 playNotificationSound(false);
+                if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
             } else if (newSuccess.length) {
                 playNotificationSound(true);
+                if (navigator.vibrate) navigator.vibrate(120);
+                if (!document.hidden) fireConfetti();
             }
 
             // Плашкой зовём только при скрытой вкладке - иначе звука и таблицы хватает.
@@ -919,11 +1217,7 @@ function loadList() {
             <td></td><td></td><td></td>
             <td><div class="btn-group"><button type="button" id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="recent">Удалить Все</button></div></td>`);
 
-        // Плавное появление строк только для реально новых файлов - если пометить
-        // так весь список при любом обновлении (например, у бейджа "времени жизни"
-        // сменился процент), анимация будет переигрываться на каждый опрос и
-        // раздражать. Первый опрос за сессию - это база, а не "новые" файлы,
-        // иначе весь список анимировался бы разом при обычном открытии страницы.
+        // Анимация только для реально новых файлов, не при каждом обновлении (напр. смена % "времени жизни"). Первый опрос за сессию - база, не "новые".
         const currentVideoKeys = new Set((data.videos || []).map(getFileKey));
         const newVideoKeys = previousVideoKeys === null ? new Set()
             : new Set([...currentVideoKeys].filter(k => !previousVideoKeys.has(k)));
@@ -934,11 +1228,25 @@ function loadList() {
             : new Set([...currentMusicKeys].filter(k => !previousMusicKeys.has(k)));
         previousMusicKeys = currentMusicKeys;
 
-        renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", item => renderFileRow(item, newVideoKeys.has(getFileKey(item))));
-        renderTable(nativeUI.music, data.music, 3, "Музыки нет.", item => renderFileRow(item, newMusicKeys.has(getFileKey(item))));
+        const clearVideosFooter = (typeof allowFileDelete !== 'undefined' && allowFileDelete)
+            ? `<td></td><td></td>
+            <td><button type="button" style="width: 120px;" class="btn btn-danger btn-xs" data-action="clearDownloads" data-value="all" data-type="v">Очистить всё</button></td>` : "";
+        const clearMusicFooter = (typeof allowFileDelete !== 'undefined' && allowFileDelete)
+            ? `<td></td><td></td>
+            <td><button type="button" style="width: 120px;" class="btn btn-danger btn-xs" data-action="clearDownloads" data-value="all" data-type="m">Очистить всё</button></td>` : "";
+
+        renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", item => renderFileRow(item, newVideoKeys.has(getFileKey(item))), clearVideosFooter);
+        renderTable(nativeUI.music, data.music, 3, "Музыки нет.", item => renderFileRow(item, newMusicKeys.has(getFileKey(item))), clearMusicFooter);
         updateFileBadges(data);
         updateProxyStatus(data.proxy);
         updateTabTitleProgress(data.jobs);
+
+        // Лёгкий пульс маскота, пока есть хотя бы одна реально качающаяся задача
+        // (не просто стоящая в очереди) - живой отклик без лишнего UI-шума.
+        const snejEl = document.getElementById('snej');
+        if (snejEl) {
+            snejEl.classList.toggle('snej-is-downloading', !!(data.jobs && data.jobs.length > 0));
+        }
 
         const isActive = (data.jobs && data.jobs.length > 0) || (data.queue && data.queue.length > 0);
         lastActiveState = isActive;
@@ -954,6 +1262,7 @@ function loadList() {
 
     }).catch(function () {
         console.error("Не удалось загрузить данные");
+        showPollErrorBadge();
         scheduleNextRefresh(CONFIG.slowInterval);
     });
 }
@@ -1138,6 +1447,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         tempImg.onload = function () {
             if (!urlInput.value.trim() || isClearing) return;
+            if (faviconCache.size > 500) faviconCache.clear();
             faviconCache.set(serviceDomain, { url, ok: true });
             const currentService = getBaseService((() => {
                 try {
@@ -1152,6 +1462,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         tempImg.onerror = function () {
             if (!urlInput.value.trim() || isClearing) return;
+            if (faviconCache.size > 500) faviconCache.clear();
             faviconCache.set(serviceDomain, { url: FALLBACK_ICON, ok: false });
             resetUI();
         };
@@ -1216,7 +1527,51 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    urlInput.addEventListener('paste', () => setTimeout(checkUrl, 10));
+    // Разбор многострочного текста (paste/drag-and-drop): дедуп, склейка через "||" - разделитель, понятный Downloader::addOneDownload().
+    function mergeUrlLines(text) {
+        const existing = urlInput.value.trim();
+        const incoming = text.split(/\r\n|\r|\n/).map(s => s.trim()).filter(Boolean);
+        const combined = existing ? existing.split('||').map(s => s.trim()).filter(Boolean).concat(incoming) : incoming;
+        const seen = new Set();
+        return combined.filter(u => {
+            const key = u.toLowerCase();
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).join('||');
+    }
+
+    // Обычный paste в <input> молча схлопывает \n - ловим сырой текст буфера сами.
+    urlInput.addEventListener('paste', (e) => {
+        const clipboard = e.clipboardData || window.clipboardData;
+        const text = clipboard ? clipboard.getData('text') : '';
+        if (text && /[\r\n]/.test(text)) {
+            e.preventDefault();
+            urlInput.value = mergeUrlLines(text);
+        }
+        setTimeout(checkUrl, 10);
+    });
+
+    // Drag-and-drop: text/uri-list (может нести несколько строк) или text/plain, тот же mergeUrlLines.
+    ['dragover', 'dragenter'].forEach(evt => {
+        wrapper.addEventListener(evt, (e) => {
+            e.preventDefault();
+            wrapper.classList.add('url-drop-active');
+        });
+    });
+    ['dragleave', 'dragend'].forEach(evt => {
+        wrapper.addEventListener(evt, () => wrapper.classList.remove('url-drop-active'));
+    });
+    wrapper.addEventListener('drop', (e) => {
+        e.preventDefault();
+        wrapper.classList.remove('url-drop-active');
+        const dt = e.dataTransfer;
+        const text = dt ? (dt.getData('text/uri-list') || dt.getData('text/plain')) : '';
+        if (!text) return;
+        urlInput.value = mergeUrlLines(text);
+        urlInput.focus();
+        checkUrl();
+    });
     urlInput.addEventListener('input', () => {
         clearTimeout(inputTimer);
         inputTimer = setTimeout(checkUrl, INPUT_DELAY);
@@ -1239,16 +1594,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (urlInput.value.trim()) setTimeout(checkUrl, 50);
 
-    // Магия буфера обмена: при возврате на вкладку подставляем ссылку из буфера,
-    // только если домен есть в KNOWN_SERVICES - не лезем в чужой текст и не путаем
-    // пользователя ссылками на неизвестные сайты.
-    //
-    // Браузер сам спросит разрешение на чтение буфера, если вызвать readText()
-    // без жеста пользователя - это пугающий и неожиданный диалог "сайт хочет видеть
-    // скопированный текст" в произвольный момент. Поэтому readText() автоматически
-    // (на visibilitychange/focus) вызывается ТОЛЬКО если пользователь сам явно
-    // включил фичу кнопкой - то есть разрешение запрашивается через осознанный клик,
-    // а не само по себе.
+    // Магия буфера: подставляем ссылку из буфера при возврате на вкладку, только если домен есть в KNOWN_SERVICES.
+    // readText() без жеста пользователя триггерит пугающий диалог разрешения - поэтому auto-вызов (visibilitychange/focus) идёт только если фича включена явным кликом по кнопке.
     const CLIPBOARD_MAGIC_KEY = 'clipboardMagicEnabled';
     const CLIPBOARD_MAGIC_DISMISSED_KEY = 'clipboardMagicDismissed';
     let lastClipboardText = null;
@@ -1334,9 +1681,7 @@ document.addEventListener('DOMContentLoaded', function () {
         magicPrompt.classList.remove('is-hidden');
 
         magicYesBtn.addEventListener('click', () => {
-            // Запрос идёт прямо из клика - это и есть осознанный жест пользователя,
-            // нативный диалог разрешения (если браузер его покажет) появится
-            // в понятном контексте, сразу после нажатия "Включить".
+            // Запрос идёт прямо из клика "Включить" - осознанный жест, диалог разрешения появится в понятном контексте.
             navigator.clipboard.readText().then(() => {
                 try { localStorage.setItem(CLIPBOARD_MAGIC_KEY, '1'); } catch (e) {}
                 magicPrompt.classList.add('is-hidden');
@@ -1529,6 +1874,93 @@ document.addEventListener('DOMContentLoaded', function () {
 
     initSnejEasterEgg();
     initLongPressQualitySelector();
+    initWinterSnow();
+    checkStaticVersionBanner();
+});
+
+// Баннер "Обновили сайт" - сравниваем STATIC_VERSION (хэш статики, part.header.php) с localStorage. Первый визит - просто запоминаем, без баннера.
+function checkStaticVersionBanner() {
+    if (!STATIC_VERSION) return;
+    const KEY = 'yt_static_version';
+    let stored;
+    try {
+        stored = localStorage.getItem(KEY);
+    } catch (e) {
+        return;
+    }
+
+    if (stored !== null && stored === STATIC_VERSION) return;
+
+    try { localStorage.setItem(KEY, STATIC_VERSION); } catch (e) {}
+    if (stored === null) return; // первый визит - не с чем сравнивать
+
+    const banner = document.createElement('div');
+    banner.className = 'alert alert-info site-update-banner';
+    banner.innerHTML = `
+        <span>Сайт обновили с прошлого визита ✨</span>
+        <button type="button" class="site-update-banner-close" aria-label="Закрыть">&times;</button>`;
+    document.body.insertBefore(banner, document.body.firstChild);
+    banner.querySelector('.site-update-banner-close').addEventListener('click', () => banner.remove());
+}
+
+// Снег у маскота только в зимнем режиме (.winter, $isWinterMascot). Иней на поле ввода - чистый CSS, JS не нужен.
+// Якорь - .snej-eye-wrap, не #snej: у #snej на мобильном своя узкая фикс. ширина, не совпадающая с картинкой птицы; eye-wrap облегает картинку плотно.
+function initWinterSnow() {
+    if (!document.body.classList.contains('winter')) return;
+    const eyeWrap = document.querySelector('.snej-eye-wrap');
+    if (!eyeWrap) return;
+
+    const container = document.createElement('div');
+    container.className = 'winter-snow';
+    // Видимая птица (альфа-канал snej.webp) занимает ~29-71% ширины .snej-eye-wrap, не всю коробку - иначе снег падал бы мимо маскота.
+    for (let i = 0; i < 14; i++) {
+        const flake = document.createElement('span');
+        flake.className = 'winter-snowflake';
+        flake.textContent = '❄';
+        flake.style.left = (15 + Math.random() * 70) + '%';
+        flake.style.fontSize = (7 + Math.random() * 6) + 'px';
+        // Три независимые анимации на снежинку (см. CSS): падение, базовое покачивание
+        // (или его запасной вариант) и отдельный, более редкий цикл порыва ветра -
+        // у каждой снежинки свои длительность/задержка на все три, поэтому ничего не
+        // синхронизировано ни между снежинками, ни между падением и ветром одной снежинки.
+        const fallDuration = 10 + Math.random() * 6;
+        const swayDuration = 3 + Math.random() * 3;
+        const gustDuration = 7 + Math.random() * 9;
+        flake.style.animationDuration = fallDuration + 's, ' + swayDuration + 's, ' + gustDuration + 's';
+        flake.style.animationDelay = (Math.random() * -14) + 's, ' + (Math.random() * -swayDuration) + 's, ' + (Math.random() * -gustDuration) + 's';
+        // Амплитуда базового покачивания и силы/направления порыва - тоже случайные и
+        // свои у каждой снежинки: часть почти не реагирует на ветер, часть иногда заметно
+        // и плавно сносит в сторону с доворотом (см. @supports (sin()) в CSS).
+        flake.style.setProperty('--sway-amp', (3 + Math.random() * 4).toFixed(1) + 'px');
+        flake.style.setProperty('--sway-rot', (6 + Math.random() * 8).toFixed(1) + 'deg');
+        flake.style.setProperty('--gust-amp', (14 + Math.random() * 30).toFixed(1) + 'px');
+        flake.style.setProperty('--gust-rot', (25 + Math.random() * 60).toFixed(1) + 'deg');
+        flake.style.setProperty('--gust-dir', Math.random() < 0.5 ? '-1' : '1');
+        container.appendChild(flake);
+    }
+    eyeWrap.appendChild(container);
+}
+
+// Предупреждения до сабмита (чисто клиентские, не блокируют бэкенд): 1) "это плейлист" - list= в query; 2) "уже качали" - ссылка в knownDownloadedUrls.
+document.addEventListener('DOMContentLoaded', function () {
+    const downloadForm = document.getElementById('download-form');
+    const urlField = document.getElementById('url');
+    if (!downloadForm || !urlField) return;
+
+    downloadForm.addEventListener('submit', function (e) {
+        const urls = urlField.value.split('||').map(u => u.trim()).filter(Boolean);
+
+        const hasPlaylist = urls.some(u => /[?&]list=/i.test(u));
+        if (hasPlaylist && !confirm('Ссылка похожа на плейлист - скачаются все видео из него. Продолжить?')) {
+            e.preventDefault();
+            return;
+        }
+
+        const isDuplicate = urls.some(u => knownDownloadedUrls.has(u.toLowerCase()));
+        if (isDuplicate && !confirm('Эта ссылка уже скачивалась (или качается сейчас). Скачать ещё раз?')) {
+            e.preventDefault();
+        }
+    });
 });
 
 const SNEJ_CLICKS_TO_FIRE = 30;
@@ -1546,14 +1978,23 @@ const SNEJ_RARE_VARIANTS = [
     'snej-laser-rare-white'
 ];
 
+// Зимний "редкий" вариант - добавляется в пул вариантов лазера, только когда активен
+// зимний режим (.winter на body). Вне зимы SNEJ_RARE_VARIANTS и вероятности не трогаются -
+// чистое дополнение, а не замена (см. fireSnejLaser()).
+const SNEJ_WINTER_RARE_VARIANT = 'snej-laser-rare-snow';
+const SNEJ_SNOW_BURST_COUNT = 10;
+
 function initSnejEasterEgg() {
     let clickCount = 0;
     let resetTimer = null;
     const snejDiv = document.querySelector('#snej');
+    const snejClick = document.querySelector('#snej-click');
     const snejInput = snejDiv ? snejDiv.querySelector('input[type="image"]') : null;
     const snejWrap = snejDiv ? snejDiv.querySelector('.snej-eye-wrap') : null;
     const snejGlow = snejDiv ? snejDiv.querySelector('.snej-eye-glow') : null;
-    const snejHitArea = snejDiv ? snejDiv.querySelector('.snej-hit-area') : null;
+    // Кликабельная зона - в отдельном невидимом #snej-click (стоит выше поля ввода),
+    // а не в видимом #snej (стоит позади него) - см. комментарий в part.main.php.
+    const snejHitArea = snejClick ? snejClick.querySelector('.snej-hit-area') : null;
 
     if (!snejInput || !snejWrap || !snejGlow || !snejHitArea) return;
 
@@ -1587,6 +2028,14 @@ function initSnejEasterEgg() {
             clickCount = 0;
             resetSnejShake(snejWrap);
         }, getSnejResetDelay(clickCount));
+    });
+
+    // span с tabindex, не <button> - Space скроллит страницу по умолчанию, preventDefault гасит. Focus-outline снят в CSS.
+    snejHitArea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            snejHitArea.click();
+        }
     });
 }
 
@@ -1628,15 +2077,48 @@ function resetSnejEyeFlash(snejGlow) {
 
 function fireSnejLaser(snejDiv) {
     const isRare = Math.random() < SNEJ_RARE_CHANCE;
+    const isWinter = document.body.classList.contains('winter');
+    const variantPool = isWinter ? SNEJ_RARE_VARIANTS.concat(SNEJ_WINTER_RARE_VARIANT) : SNEJ_RARE_VARIANTS;
     const variant = isRare
-        ? SNEJ_RARE_VARIANTS[Math.floor(Math.random() * SNEJ_RARE_VARIANTS.length)]
+        ? variantPool[Math.floor(Math.random() * variantPool.length)]
         : null;
 
     if (variant) snejDiv.classList.add(variant);
     snejDiv.classList.add('snej-laser-active');
 
+    // Зимний вариант - вместо луча снежинки/конфетти-взрыв из глаза.
+    const snowBurst = variant === SNEJ_WINTER_RARE_VARIANT ? spawnSnejSnowBurst(snejDiv) : null;
+
     setTimeout(() => {
         snejDiv.classList.remove('snej-laser-active');
         if (variant) snejDiv.classList.remove(variant);
+        if (snowBurst) snowBurst.remove();
     }, 950);
+}
+
+// Взрыв снежинками вместо луча - зимний редкий вариант (SNEJ_WINTER_RARE_VARIANT). Та же
+// техника, что и в initWinterSnow(): JS создаёт span'ы с ❄ и раздаёт им случайные CSS-переменные
+// направления/дистанции/вращения, разлёт/затухание считает общий @keyframes
+// (snej-snow-burst-fly в baskerstyle.min.css). Контейнер живёт ровно один "выстрел" -
+// создаётся тут, удаляется в fireSnejLaser() теми же 950мс, что и .snej-laser-active.
+function spawnSnejSnowBurst(snejDiv) {
+    const eyeWrap = snejDiv.querySelector('.snej-eye-wrap');
+    if (!eyeWrap) return null;
+
+    const container = document.createElement('div');
+    container.className = 'snej-snow-burst';
+    for (let i = 0; i < SNEJ_SNOW_BURST_COUNT; i++) {
+        const flake = document.createElement('span');
+        flake.className = 'snej-snow-particle';
+        flake.textContent = '❄';
+        const angle = (360 / SNEJ_SNOW_BURST_COUNT) * i + (Math.random() * 20 - 10);
+        flake.style.setProperty('--angle', angle + 'deg');
+        flake.style.setProperty('--dist', (34 + Math.random() * 22) + 'px');
+        flake.style.setProperty('--rot', (Math.random() * 360) + 'deg');
+        flake.style.fontSize = (8 + Math.random() * 5) + 'px';
+        flake.style.animationDelay = (Math.random() * 60) + 'ms';
+        container.appendChild(flake);
+    }
+    eyeWrap.appendChild(container);
+    return container;
 }

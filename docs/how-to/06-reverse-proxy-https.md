@@ -10,7 +10,7 @@
 ## Шаг 1. Три файла конфигурации
 
 - `/etc/nginx/nginx.conf` - общие настройки: лимиты, gzip, зоны ограничения запросов, upstream.
-- `/etc/nginx/sites-enabled/YT_prod` - конкретный сайт: TLS, кеш, проксирование в контейнер.
+- `/etc/nginx/sites-enabled/kachalka` - конкретный сайт: TLS, кеш, проксирование в контейнер.
 - `/etc/nginx/snippets/security-headers.conf` - общий набор заголовков безопасности, подключается через `include`.
 
 ### /etc/nginx/nginx.conf
@@ -76,18 +76,11 @@ http {
                      levels=1:2;
 
     limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;
-    limit_req_zone $binary_remote_addr zone=dev:10m rate=30r/s;
     limit_conn_zone $binary_remote_addr zone=conn_limit:10m;
-    limit_conn_zone $binary_remote_addr zone=dev_conn_limit:10m;
 
     upstream app {
         server 127.0.0.1:8000;
         keepalive 32;
-    }
-
-    upstream dev {
-        server 127.0.0.1:8001;
-        keepalive 16;
     }
 
     server {
@@ -105,7 +98,7 @@ http {
 }
 ```
 
-### /etc/nginx/sites-enabled/YT_prod
+### /etc/nginx/sites-enabled/kachalka
 
 ```nginx
 server {
@@ -176,27 +169,6 @@ server {
         include /etc/nginx/snippets/security-headers.conf;
     }
 
-    location /dev/ {
-        allow 192.168.0.0/16;
-        allow 10.0.0.0/8;
-        deny all;
-
-        limit_req zone=dev burst=30 nodelay;
-        limit_conn dev_conn_limit 50;
-
-        proxy_pass http://dev;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_cache off;
-        add_header X-Robots-Tag "noindex, nofollow" always;
-        include /etc/nginx/snippets/security-headers.conf;
-    }
-
     location = /404.html {
         add_header Cache-Control "public, max-age=300" always;
         include /etc/nginx/snippets/security-headers.conf;
@@ -225,11 +197,11 @@ add_header Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyro
 add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'self';" always;
 ```
 
-**Важно про CSP.** Само приложение уже отдаёт свой заголовок `Content-Security-Policy` с одноразовым nonce для инлайн-скриптов. Если внешний nginx добавит второй такой заголовок без nonce (как в примере выше), браузер применит пересечение обоих политик, и инлайн-скрипты приложения окажутся заблокированы - интерфейс сломается. Поэтому либо убери `script-src` из этого сниппета, либо не добавляй `Content-Security-Policy` на внешнем nginx вовсе - приложение выставляет его само. Остальные заголовки дублировать безопасно.
+**Важно про CSP.** Приложение уже отдаёт свой `Content-Security-Policy` с одноразовым nonce для инлайн-скриптов. Если внешний nginx добавит второй CSP без nonce, браузер применит пересечение обеих политик - и интерфейс сломается. Поэтому строку `Content-Security-Policy` из сниппета убери, приложение выставит её само. Остальные заголовки дублировать безопасно.
 
 ## Шаг 2. Подставь свои значения
 
-Замени `example.com`, пути до сертификатов и `<APP_PORT>`/доверенные подсети под свою инфраструктуру, затем перезагрузи nginx:
+Замени `example.com` и пути до сертификатов на свои, затем перезагрузи nginx:
 
 ```bash
 nginx -t && systemctl reload nginx
@@ -237,13 +209,9 @@ nginx -t && systemctl reload nginx
 
 ## Почему конфиг устроен именно так
 
-- **`return 444` для не-браузеров** - подозрительным клиентам (сканерам, ботам) не достаётся даже текста ошибки, что экономит ресурсы сервера.
-- **`map` для определения не-браузера** - user-agent проверяется один раз на запрос, а не в каждом `location`.
-- **HTTP/3 (QUIC) вместе с HTTP/2** - если браузер поддерживает более новый и быстрый протокол, он им воспользуется; если нет - ничего не ломается.
+- **`return 444` для не-браузеров** - сканерам и ботам не достаётся даже текста ошибки. `map` с user-agent'ами вычисляется один раз на запрос, а не в каждом `location`.
+- **HTTP/3 (QUIC) вместе с HTTP/2** - браузер сам выберет протокол поновее и побыстрее; если не умеет - ничего не ломается.
 - **`ssl_session_tickets off`** - тикеты сложнее безопасно ротировать, чем общий кеш сессий на сервере.
-- **Таймауты `10s`** - защита от медленных атак (slowloris), когда клиент специально тянет с отправкой данных, чтобы занять соединение.
-- **`limit_req`/`limit_conn`** - ограничение частоты запросов и числа соединений с одного IP, защита от перегрузки одним агрессивным клиентом.
-- **`proxy_cache_use_stale`** - если приложение временно недоступно, nginx отдаст пользователю старую закешированную версию вместо ошибки.
-- **`proxy_cache_lock`** - если несколько человек одновременно запросили ещё не закешированную страницу, в приложение уйдёт только один запрос.
-- **`/dev/` закрыт по IP** - тестовое окружение недоступно никому, кроме перечисленных доверенных адресов, и не индексируется поисковиками.
-- **`keepalive 32` в upstream** - nginx переиспользует уже открытые соединения с приложением вместо того, чтобы каждый раз открывать новое.
+- **Таймауты `10s`** - защита от slowloris-атак, когда клиент специально тянет с отправкой данных, чтобы занять соединение.
+- **`limit_req`/`limit_conn`** - один агрессивный клиент не положит сервер частыми запросами или сотней открытых соединений.
+- **`proxy_cache_use_stale` + `proxy_cache_lock`** - при недоступности приложения nginx отдаст старую закешированную версию вместо ошибки, а за свежей страницей сходит только один запрос, даже если её ждёт толпа.

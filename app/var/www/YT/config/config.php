@@ -19,6 +19,15 @@ return array(
   'siteTheme' => 'lumen',
 
   /**
+   * Зимний режим маскота (новогодний снегирь + класс winter на body).
+   * 'auto' - по календарю (ноябрь - март), 'on'/'off' - принудительно.
+   * Удобно для ручной проверки зимнего вида без перевода часов.
+   *
+   * 'winterMascot' => 'auto'
+   */
+  'winterMascot' => 'auto',
+
+  /**
    * yt-dlp умеет конвертировать скачанное видео в аудио.
    * Для этого нужен установленный ffmpeg или avconv.
    * Если этих инструментов нет, или хочешь отключить функцию
@@ -202,6 +211,22 @@ return array(
    *
    * 'youtubeCookiesFile' => '/var/www/YT/config/youtube_cookies.txt'
    */
-  'youtubeCookiesFile' => ''
+  'youtubeCookiesFile' => '/var/www/YT/config/youtube_cookies.txt',
+
+  /**
+   * Путь к файлу с куками Instagram в формате Netscape (cookies.txt).
+   * В отличие от YouTube куки подключаются сразу на первой попытке
+   * загрузки, а не только при ретрае - Instagram часто не отдаёт
+   * контент вообще без логина (приватные аккаунты, stories). Опционально -
+   * если пусто или файла нет, загрузка идёт без кук как обычно (доступно
+   * только публичным постам).
+   *
+   * Заводи куки с ОТДЕЛЬНОГО одноразового аккаунта Instagram, не личного.
+   * Файл должен лежать вне веб-доступных путей, права 600, владелец
+   * www-data. Подробности и как получить куки - docs/how-to/05-obhod-bot-cheka.md.
+   *
+   * 'instagramCookiesFile' => '/var/www/YT/config/instagram_cookies.txt'
+   */
+  'instagramCookiesFile' => '/var/www/YT/config/instagram_cookies.txt'
   );
 ?>

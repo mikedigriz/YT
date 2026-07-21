@@ -4,15 +4,9 @@
 
 ## Запустить готовый образ
 
-Собирать ничего не нужно - готовый образ лежит на [Docker Hub](https://hub.docker.com/r/mikedigriz/yt):
+Самый короткий путь - `docker run` с готовым образом, он разобран в [туториале](../tutorials/01-pervyy-zapusk.md). Здесь - способы посерьёзнее.
 
-```bash
-docker run -it -p 8000:80 mikedigriz/yt
-```
-
-Сайт откроется на `http://localhost:8000`.
-
-Хочешь через `docker-compose` (удобнее, если сервис будет жить долго) - создай рядом `docker-compose.yml`:
+Через `docker-compose` (удобнее, если сервис будет жить долго) - создай `docker-compose.yml`:
 
 ```yaml
 services:
@@ -99,7 +93,7 @@ crontab -e
 
 ```cron
 # Обновление yt-dlp каждый день в 03:00
-3 0 * * * docker exec -u root yt /etc/Scripts/update-ytdlp.sh >> /var/log/yt/ytdlp-update.log 2>&1
+0 3 * * * docker exec -u root yt /etc/Scripts/update-ytdlp.sh >> /var/log/yt/ytdlp-update.log 2>&1
 
 # Чистка файлов старше 120 минут, каждые 15 минут
 */15 * * * * docker exec yt /etc/Scripts/2hourcleanup.sh >> /var/log/yt/cleanup.log 2>&1

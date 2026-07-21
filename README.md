@@ -40,17 +40,9 @@
 docker run -it -p 8000:80 mikedigriz/yt
 ```
 
-Если хочешь собрать образ из исходников сам (например, чтобы внести правки):
-
-```bash
-git clone https://github.com/mikedigriz/YT.git && cd YT
-docker build -t yt .
-docker run -it -p 8000:80 yt
-```
-
 Открой `http://localhost:8000`, вставь ссылку на видео и нажми **Скачать**.
 
-Подробный туториал с настройкой `.env`, прокси и cron - в [docs/tutorials/01-pervyy-zapusk.md](docs/tutorials/01-pervyy-zapusk.md).
+Пошаговый туториал - в [docs/tutorials/01-pervyy-zapusk.md](docs/tutorials/01-pervyy-zapusk.md), сборка из исходников и установка через docker-compose - в [docs/how-to/01-ustanovka-docker.md](docs/how-to/01-ustanovka-docker.md).
 
 ## Дальше
 

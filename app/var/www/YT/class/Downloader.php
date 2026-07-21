@@ -7,12 +7,12 @@ class Downloader
     private $download_path = "";
     private $config = [];
 
-    /*
-     * Список российских доменов для прямого доступа (без прокси).
-     * Основан на экстракторах yt-dlp. Прямое подключение предпочтительнее,
-     * так как иностранные прокси часто блокируются этими сервисами или работают нестабильно.
-     * будет расширяться если будет точно известно что загрузка с сайта успешна.
-     */
+    // Логи короче порога читаются целиком; длиннее - только голова (site/playlist) и хвост (текущий статус).
+    private const LOG_HEAD_TAIL_THRESHOLD = 65536;
+    private const LOG_HEAD_BYTES = 4096;
+    private const LOG_TAIL_BYTES = 65536;
+
+    // Домены с прямым доступом (без прокси) - иностранные прокси их часто блокируют или тормозят.
     private const DIRECT_ACCESS_DOMAINS = [
         // Социальные сети и видеохостинги
         'vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'vkclips.ru',
@@ -67,7 +67,6 @@ class Downloader
 
     public function __construct($dl_list)
     {
-        // Проверка инициализации глобальной конфигурации
         if (!isset($GLOBALS['config'])) {
             $this->errors[] = "Конфигурация не загружена";
             $_SESSION['errors'] = $this->errors;
@@ -84,13 +83,19 @@ class Downloader
 
         if (!empty($dl_list)) {
             foreach ($dl_list as $onedownload) {
-                // Обработка множественных ссылок через ||
                 $urls = explode('||', $onedownload['url']);
+                $hasNonEmptyUrl = false;
                 foreach ($urls as $url) {
                     $url = trim($url);
-                    if (!empty($url) && !$this->is_valid_url($url)) {
+                    if (empty($url)) continue;
+                    $hasNonEmptyUrl = true;
+                    if (!$this->is_valid_url($url)) {
                         $this->errors[] = "«" . $url . "» ты в порядке? Поправь ссыль, ну че ты!";
                     }
+                }
+                // Ввод вида "||" проходит !empty() в index.php, но после trim() все сегменты пустые.
+                if (!$hasNonEmptyUrl) {
+                    $this->errors[] = "Пустая ссылка - нечего качать";
                 }
             }
 
@@ -100,15 +105,42 @@ class Downloader
             }
 
             $this->do_download();
+
+            // dispatchGroup() может добавить ошибку (max_dl исчерпан, битый конфиг) - флашим, иначе не дойдёт до юзера.
+            if (!empty($this->errors)) {
+                $_SESSION['errors'] = $this->errors;
+            }
         }
     }
 
-    // Кэш числа фоновых задач в рамках одного запроса. background_jobs() зовётся
-    // многократно (do_download в цикле, process_queue), а glob+чтение /proc дорогие.
-    // Инкрементируется при запуске нового процесса, сбрасывается при kill.
+    // Кэш числа фоновых задач на запрос - background_jobs() зовётся многократно, glob+/proc дорогие.
     private static $bg_jobs_cache = null;
 
-    public static function background_jobs()
+    // Один проход по logPath вместо трёх отдельных сканов. Без static-кэша - PHP-FPM воркер живёт много запросов, кэш отдавал бы устаревший список. index.php строит $fileList раз за запрос и передаёт всем трём методам.
+    public static function scanLogPath(): ?array
+    {
+        if (!isset($GLOBALS['config']['logPath']) || !is_dir($GLOBALS['config']['logPath'])) {
+            return null;
+        }
+
+        $fileList = ['pid' => [], 'ytdl' => []];
+        $dir = new DirectoryIterator($GLOBALS['config']['logPath']);
+        foreach ($dir as $fileinfo) {
+            if ($fileinfo->isDot() || !$fileinfo->isFile()) continue;
+            $name = $fileinfo->getFilename();
+            if (strpos($name, 'pid_') === 0) {
+                $fileList['pid'][] = $fileinfo->getPathname();
+            } elseif (strpos($name, 'ytdl_') === 0) {
+                $fileList['ytdl'][] = $fileinfo->getPathname();
+            }
+        }
+
+        return $fileList;
+    }
+
+    // $fileList - опционально, ['pid' => [...путей]] из scanLogPath(). null -
+    // сканирует /pid_* сам (вызовы вне ?jobs, где единого скана на запрос нет).
+    public static function background_jobs(?array $fileList = null)
     {
         if (self::$bg_jobs_cache !== null) {
             return self::$bg_jobs_cache;
@@ -118,32 +150,35 @@ class Downloader
             return 0;
         }
 
-        // Считаем только процессы, у которых есть валидные pid-файлы
         $count = 0;
-        $logPath = $GLOBALS['config']['logPath'];
+        $youtubedlExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
+        $pidFiles = $fileList['pid'] ?? glob($GLOBALS['config']['logPath'] . '/pid_*');
 
-        foreach (glob($logPath . '/pid_*') as $pidFile) {
+        foreach ($pidFiles as $pidFile) {
             $content = @file_get_contents($pidFile);
             if ($content === false) continue;
 
             $jpid = trim(explode("\n", $content)[0] ?? '');
 
-            // Проверяем, что процесс реально существует - без удаления файла!
-            if (!empty($jpid) && file_exists("/proc/$jpid")) {
-                $count++;
+            if (empty($jpid) || !file_exists("/proc/$jpid")) {
+                continue;
             }
+
+            // PID-reuse guard: ОС могла отдать номер другому процессу до уборки в get_current_background_jobs(). Файл не трогаем - тут только подсчёт.
+            $pidcmd = @file_get_contents('/proc/' . $jpid . '/cmdline');
+            if ($pidcmd !== false && strpos($pidcmd, $youtubedlExe) === false) {
+                continue;
+            }
+
+            $count++;
         }
 
         self::$bg_jobs_cache = $count;
         return $count;
     }
 
-    public function max_background_jobs()
-    {
-        return $this->config['max_dl'] ?? 3;
-    }
-
-    public static function get_current_background_jobs()
+    // $fileList по ссылке: если задача завершается прямо тут, finalize_job_log() переименовывает job_*->ytdl_*, а старый скан этого не видел. Без обновления по ссылке get_finished_background_jobs() в этом же запросе использовал бы устаревший список - задача пропала бы и из активных, и из finished до следующего запроса.
+    public static function get_current_background_jobs(?array &$fileList = null)
     {
         if (!isset($GLOBALS['config']['logPath']) || !is_dir($GLOBALS['config']['logPath'])) {
             return [];
@@ -152,13 +187,22 @@ class Downloader
         $bjs = [];
         $logPath = $GLOBALS['config']['logPath'];
         $youtubedlExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
-        $dir = new DirectoryIterator($logPath);
 
-        foreach ($dir as $fileinfo) {
-            if (!$fileinfo->isDot() && $fileinfo->isFile() && strpos($fileinfo->getFilename(), "pid_") === 0) {
-                $pidFile = $fileinfo->getPathname();
-                $outfile = $logPath . "/" . str_replace("pid_", "job_", $fileinfo->getFilename());
-                $completefile = $logPath . "/" . str_replace("pid_", "ytdl_", $fileinfo->getFilename());
+        $pidFiles = $fileList['pid'] ?? null;
+        if ($pidFiles === null) {
+            $pidFiles = [];
+            foreach (new DirectoryIterator($logPath) as $fileinfo) {
+                if (!$fileinfo->isDot() && $fileinfo->isFile() && strpos($fileinfo->getFilename(), "pid_") === 0) {
+                    $pidFiles[] = $fileinfo->getPathname();
+                }
+            }
+        }
+
+        foreach ($pidFiles as $pidFile) {
+            {
+                $pidBasename = basename($pidFile);
+                $outfile = $logPath . "/" . str_replace("pid_", "job_", $pidBasename);
+                $completefile = $logPath . "/" . str_replace("pid_", "ytdl_", $pidBasename);
 
                 if (!file_exists($outfile)) {
                     @unlink($pidFile);
@@ -176,15 +220,14 @@ class Downloader
                 $urltext = $jpid_parts[2] ?? '';
                 $clientip = trim($jpid_parts[3] ?? '');
 
-                // Проверка: процесс существует?
                 if (!empty($jpid) && !file_exists("/proc/" . $jpid)) {
                     @unlink($pidFile);
-                    // pid умершей задачи снят - сбрасываем кэш счётчика, чтобы
-                    // canSpawnRetry() в авторетрее увидел честное число живых задач,
-                    // а не устаревшее (с этой уже мёртвой), иначе ретрей мог бы
-                    // ошибочно упереться в max_dl из-за самого себя.
+                    // Сбрасываем кэш счётчика - иначе canSpawnRetry() увидит устаревшее число и ретрей упрётся в max_dl из-за уже мёртвой задачи.
                     self::$bg_jobs_cache = null;
                     self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip);
+                    if ($fileList !== null) {
+                        $fileList['ytdl'][] = $completefile;
+                    }
                     // Авторетрей через прокси при гео-блоке/403 для прямых доменов
                     $retryPid = self::autoRetryIfNeeded($completefile);
                     $retryStatus = "Первая попытка не прошла, пробую через прокси";
@@ -194,14 +237,7 @@ class Downloader
                         $retryStatus = "Обычный способ заблокирован, пробую с куками аккаунта";
                     }
 
-                    // Ретрей запускается тут же, но его pid_-файл пишется асинхронно
-                    // (echo $! в фоне) и в ЭТОТ ответ ?jobs ещё не попадает: каталог
-                    // уже проитерирован DirectoryIterator. Без подсказки фронтенд
-                    // увидел бы "активных нет", ушёл в медленный опрос (12с) и загрузка
-                    // на эти секунды "провалилась" бы, пока юзер не нажмёт F5. Поэтому
-                    // сразу отдаём синтетическую активную строку с РЕАЛЬНЫМ pid ретрея -
-                    // на следующем быстром опросе настоящая задача с тем же pid просто
-                    // заменит её бесшовно.
+                    // Pid-файл ретрея пишется асинхронно и в этот ответ ?jobs не попадает (каталог уже проитерирован). Отдаём синтетическую строку с реальным pid ретрея, чтобы фронтенд не ушёл в медленный опрос - следующий тик заменит её настоящей задачей бесшовно.
                     if ($retryPid !== null) {
                         $isaudioRetry = (strpos($retryPid, "_a") !== false);
                         $bjs[] = array(
@@ -216,12 +252,14 @@ class Downloader
                     continue;
                 }
 
-                // Проверка: это действительно процесс yt-dlp?
                 if (!empty($jpid)) {
                     $pidcmd = @file_get_contents('/proc/' . $jpid . '/cmdline');
                     if ($pidcmd !== false && strpos($pidcmd, $youtubedlExe) === false) {
                         @unlink($pidFile);
                         self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip);
+                        if ($fileList !== null) {
+                            $fileList['ytdl'][] = $completefile;
+                        }
                         continue;
                     }
                 }
@@ -236,55 +274,39 @@ class Downloader
                 $filename = "Ща..";
                 $site = "Погоди...";
                 $siteset = false;
-                $isaudio = (strpos($fileinfo->getFilename(), "_a") !== false);
+                $isaudio = (strpos($pidBasename, "_a") !== false);
                 $listpos = "";
                 $playlist = "";
-                // Фазы задачи с переводом озвучки (Яндекс-VOT). Маркеры встречаются
-                // только у translate-задач, поэтому обычные загрузки их не покажут.
+                // Маркеры перевода (VOT) встречаются только у translate-задач.
                 $votPhase = false;
                 $muxPhase = false;
 
-                while (($line = fgets($handle)) !== false) {
-                    // yt-dlp печатает по-английски: "[download] Downloading item N of M"
-                    if (preg_match('/\[download\] Downloading item (.+)/', $line, $lm)) {
-                        $listpos = "(" . trim($lm[1]) . ")";
-                    }
-
-                    // yt-dlp записал путь файла (--print-to-file) - значит скачивание
-                    // кончилось. В параллельном режиме vot-cli работает и во время
-                    // скачивания, поэтому фазу "перевожу" включаем именно по этому
-                    // маркеру, а не по раннему баннеру vot-cli, - пока идёт закачка,
-                    // пользователь видит её проценты, а не преждевременное "перевожу".
-                    if (strpos($line, "Writing '%(filepath)s'") !== false) {
-                        $votPhase = true;
-                    }
-                    // mux_translated.sh печатает "[vot] ...", а сырой ffmpeg-микс - "frame="
-                    if (strpos($line, '[vot]') !== false || strpos($line, 'frame=') !== false) {
-                        $muxPhase = true;
-                    }
-
-                    // "[extractor] Playlist TITLE: Downloading N items"
-                    if (preg_match('/\] Playlist (.+): Downloading \d+ items?\s*$/', $line, $pm)) {
-                        $playlist = trim($pm[1]) . "<br />";
-                    }
-
-                    if (trim($line) != "") {
-                        $lastline = $line;
-                    }
-
-                    $verylastline = $line;
-
-                    if (!$siteset) {
-                        $detected = self::detectSite($line);
-                        if ($detected !== null) {
-                            $siteset = true;
-                            $site = $detected;
+                // Большие логи читаем частично: голова для site/playlist (печатаются раз в начале), хвост для текущего статуса. Цена тика O(головы+хвоста), не растёт с логом.
+                $outSize = @filesize($outfile);
+                if ($outSize !== false && $outSize > self::LOG_HEAD_TAIL_THRESHOLD) {
+                    $head = fread($handle, self::LOG_HEAD_BYTES);
+                    if ($head !== false && $head !== '') {
+                        foreach (explode("\n", $head) as $headLine) {
+                            self::scanForSiteAndPlaylist($headLine . "\n", $siteset, $site, $playlist);
                         }
                     }
 
-                    if (strpos($line, 'Destination') !== false) {
-                        $pos = strrpos($line, '/');
-                        $filename = $pos === false ? $line : substr($line, $pos + 1);
+                    $tailStart = max(0, $outSize - self::LOG_TAIL_BYTES);
+                    fseek($handle, $tailStart);
+                    $tail = stream_get_contents($handle);
+                    $tailLines = ($tail === false) ? [] : explode("\n", $tail);
+                    if ($tailStart > 0 && count($tailLines) > 0) {
+                        // Первая строка хвоста обрублена fseek не по границе - выбрасываем.
+                        array_shift($tailLines);
+                    }
+
+                    foreach ($tailLines as $tailLine) {
+                        self::scanForCurrentStatus($tailLine . "\n", $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename);
+                    }
+                } else {
+                    while (($line = fgets($handle)) !== false) {
+                        self::scanForSiteAndPlaylist($line, $siteset, $site, $playlist);
+                        self::scanForCurrentStatus($line, $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename);
                     }
                 }
 
@@ -319,16 +341,12 @@ class Downloader
                     $lastline = $sleepStatus;
                 }
 
-                // Фаза перевода перекрывает всё: скачивание уже позади, а vot/ffmpeg
-                // не пишут проценты - без этого юзер видел бы вечное "В Процессе".
+                // Фаза перевода перекрывает всё - vot/ffmpeg не пишут проценты, иначе висело бы вечное "В Процессе".
                 if ($muxPhase) {
                     $lastline = "Вклеиваю русскую дорожку в видео, почти готово";
                 } elseif ($votPhase) {
-                    // Живой таймер: сколько уже идёт перевод. Считаем от старта задачи
-                    // (mtime pid-файла) - в параллельном режиме vot-cli стартует вместе
-                    // со скачиванием, так что это и есть длительность перевода. Фронт
-                    // опрашивает ?jobs каждые секунды и перерисовывает - счётчик растёт.
-                    $elapsed = max(0, time() - $fileinfo->getMTime());
+                    // Таймер от старта задачи (mtime pid-файла) - vot-cli стартует вместе со скачиванием.
+                    $elapsed = max(0, time() - (int) @filemtime($pidFile));
                     $mins = intdiv($elapsed, 60);
                     $secs = $elapsed % 60;
                     $human = $mins > 0 ? ($mins . " мин " . $secs . " сек") : ($secs . " сек");
@@ -340,7 +358,7 @@ class Downloader
                     'site' => $site,
                     'status' => str_replace("\n", "", $lastline),
                     'type' => $isaudio ? "audio" : "video",
-                    'pid' => $fileinfo->getFilename(),
+                    'pid' => $pidBasename,
                     'url' => $urltext
                 );
             }
@@ -350,42 +368,28 @@ class Downloader
     }
 
     // Проверка, переиспользуемая ли ошибка (сетевая временная ошибка vs постоянная проблема контента)
+    private const RETRYABLE_KEYWORDS = [
+        'Тайм-аут', 'ETIMEDOUT', 'Connection timed out', 'Connection refused',
+        'Соединение оборвалось', 'Сеть недоступна', 'Network unreachable',
+        'HTTP Error 429', 'Too Many Requests', 'HTTP Error 503', 'Service Unavailable',
+        'Service temporarily unavailable', 'DNS не резолвил', "couldn't resolve host",
+        'Failed to resolve', 'DNS error', 'Name or service not known', 'Temporary failure',
+    ];
+
+    private static ?string $retryablePattern = null;
+
     private static function isRetryableError($status)
     {
-        // Переиспользуемые сетевые ошибки
-        $retryable_keywords = [
-            'Тайм-аут',
-            'ETIMEDOUT',
-            'Connection timed out',
-            'Connection refused',
-            'Соединение оборвалось',
-            'Сеть недоступна',
-            'Network unreachable',
-            'HTTP Error 429',
-            'Too Many Requests',
-            'HTTP Error 503',
-            'Service Unavailable',
-            'Service temporarily unavailable',
-            'DNS не резолвил',
-            "couldn't resolve host",
-            'Failed to resolve',
-            'DNS error',
-            'Name or service not known',
-            'Temporary failure',
-        ];
-
-        foreach ($retryable_keywords as $keyword) {
-            if (stripos($status, $keyword) !== false) {
-                return true;
-            }
+        if (self::$retryablePattern === null) {
+            self::$retryablePattern = '/(' . implode('|', array_map(
+                fn($k) => preg_quote($k, '/'),
+                self::RETRYABLE_KEYWORDS
+            )) . ')/i';
         }
-
-        return false;
+        return (bool) preg_match(self::$retryablePattern, $status);
     }
 
-    // Автоматический ретрей через прокси при гео-блоке/403 для прямых доменов.
-    // Возвращает имя нового pid_-файла ретрея (для синтетической активной строки
-    // в ?jobs), либо null, если ретрей не запускался.
+    // Авторетрей через прокси при гео-блоке/403 для прямых доменов. Возвращает имя нового pid_-файла или null.
     private static function autoRetryIfNeeded($completefile)
     {
         if (!file_exists($completefile)) {
@@ -397,74 +401,74 @@ class Downloader
             return null;
         }
 
-        // Проверка: уже был ретрей?
         if (strpos($log_content, '[RETRY_ATTEMPTED:') !== false) {
             return null;
         }
 
-        // Парсим ошибку
         $jobstatus = self::parseYtDlpError($log_content);
 
-        // Проверяем: переиспользуемая ли ошибка?
         if (!self::isRetryableError($jobstatus)) {
             return null;
         }
 
-        // Лимит одновременных загрузок добит другими задачами - не пробиваем его
-        // ретреем. Маркер НЕ пишем: задача остаётся неудачной без пометки, юзер
-        // видит ошибку и может перезапустить руками.
+        // Лимит max_dl добит другими задачами - маркер не пишем, задача остаётся неудачной для ручного рестарта.
         if (!self::canSpawnRetry()) {
             return null;
         }
 
-        // Добавляем маркер, чтобы не ретрейтить снова
         $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей через прокси\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
 
-        // Ретрей ищет лог по имени готового файла (ytdl_*), а не по уже удалённому
-        // pid_* - иначе restart_download не находит файл и молча падает в ошибку,
-        // а маркер [RETRY_ATTEMPTED] уже записан, так что второй попытки не будет
+        // Ищет лог по имени готового файла (ytdl_*), не по уже удалённому pid_*.
         $newpid = self::restart_download(basename($completefile), true);
         return $newpid ?: null;
     }
 
-    // Ошибки, для которых имеет смысл точечно повторить попытку с куками
-    // (приватность/возраст/подписка) - в отличие от isRetryableError() выше,
-    // это не временные сетевые сбои, а признак закрытого контента.
-    //
-    // Бот-чек тоже в списке: если bgutil не смог получить PO-токен (сбой
-    // сервиса, обновление YouTube и т.п.), настоящие куки авторизованного
-    // аккаунта - рабочий обходной путь независимо от здоровья bgutil.
-    // Без этого пункта сбой bgutil ронял бы вообще все YouTube-загрузки,
-    // хотя куки, если настроены, реально могли бы их спасти.
+    // В отличие от isRetryableError() - признак закрытого контента, не временный сбой сети.
+    // Бот-чек тоже в списке: настоящие куки обходят сбой bgutil (не смог получить PO-токен) независимо от его здоровья.
+    private const COOKIES_RETRY_KEYWORDS = [
+        'Приватное видео', '18+ контент', 'Нужна авторизация', 'Members-only', 'принял нас за бота',
+    ];
+
+    private static ?string $cookiesRetryPattern = null;
+
     private static function needsCookiesRetry($status)
     {
-        $keywords = [
-            'Приватное видео',
-            '18+ контент',
-            'Нужна авторизация',
-            'Members-only',
-            'принял нас за бота',
-        ];
-
-        foreach ($keywords as $keyword) {
-            if (stripos($status, $keyword) !== false) {
-                return true;
-            }
+        if (self::$cookiesRetryPattern === null) {
+            self::$cookiesRetryPattern = '/(' . implode('|', array_map(
+                fn($k) => preg_quote($k, '/'),
+                self::COOKIES_RETRY_KEYWORDS
+            )) . ')/i';
         }
-
-        return false;
+        return (bool) preg_match(self::$cookiesRetryPattern, $status);
     }
 
-    // Куки - это полный доступ к Google-аккаунту, поэтому файл должен быть закрыт
-    // (права 600/400, владелец www-data). Проверяем, что он существует, читаем и
-    // НЕ доступен группе/остальным: файл с 644/640 на мультиюзерном хосте - прямая
-    // утечка сессии. Если права слишком открыты, СНАЧАЛА пытаемся закрыть файл сами
-    // (владелец www-data = наш процесс, chmod разрешён) - чтобы юзеру не приходилось
-    // руками chmod 600 после каждой замены кук. Отказываемся, только если закрыть не
-    // удалось (не владелец / ФС без unix-прав, напр. bind-mount с Windows). Значение
-    // пути берётся из config.php (не из HTTP), поэтому проверяем безопасность
-    // хранения, а не источник строки.
+    // Определяет "сайт кук" по URL - используется и для выбора файла кук, и для выбора сценария подключения (retry vs сразу). null - сайт без своих кук, куки не трогаем вообще.
+    private static function detectCookiesSite($url)
+    {
+        if (preg_match('/(youtube\.com|youtu\.be)/i', $url)) {
+            return 'youtube';
+        }
+        if (preg_match('/instagram\.com/i', $url)) {
+            return 'instagram';
+        }
+        return null;
+    }
+
+    // Путь к файлу кук для сайта из detectCookiesSite() - пусто, если сайт неизвестен или ключ не задан в конфиге.
+    private static function cookiesFileForSite($site)
+    {
+        switch ($site) {
+            case 'youtube':
+                return $GLOBALS['config']['youtubeCookiesFile'] ?? '';
+            case 'instagram':
+                return $GLOBALS['config']['instagramCookiesFile'] ?? '';
+            default:
+                return '';
+        }
+    }
+
+    // Куки = полный доступ к аккаунту, файл должен быть 600/400. Если права открыты, пытаемся chmod 600 сами (владелец www-data), отказываем только если не удалось (не владелец / ФС без unix-прав, напр. Windows bind-mount).
     private static function cookiesFileUsable($cookiesFile)
     {
         if (empty($cookiesFile) || !is_readable($cookiesFile)) {
@@ -474,9 +478,9 @@ class Downloader
         if ($perms === false) {
             return false;
         }
-        // 0o077 - биты доступа для группы и остальных. У файла кук их быть не должно.
+        // 0o077 - биты группы/остальных, у файла кук их быть не должно.
         if (($perms & 0077) !== 0) {
-            // Пробуем закрыть сами, затем перепроверяем (clearstatcache - fileperms кэширует)
+            // clearstatcache - fileperms кэширует
             @chmod($cookiesFile, 0600);
             clearstatcache(true, $cookiesFile);
             $perms = @fileperms($cookiesFile);
@@ -490,20 +494,14 @@ class Downloader
         return true;
     }
 
-    // Куки прописаны в конфиге, но использовать их нельзя (нет файла / не читаем /
-    // небезопасные права, которые не удалось починить). Нужно, чтобы показать юзеру
-    // причину в статусе задачи, а не молчать при бот-чеке с настроенными куками.
-    private static function cookiesConfiguredButUnusable()
+    // Показать юзеру причину в статусе задачи, а не молчать при бот-чеке с настроенными куками. $site - detectCookiesSite() по URL задачи, по умолчанию 'youtube' (исторический вызов без явного сайта).
+    private static function cookiesConfiguredButUnusable($site = 'youtube')
     {
-        $f = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
+        $f = self::cookiesFileForSite($site);
         return !empty($f) && !self::cookiesFileUsable($f);
     }
 
-    // Уважает лимит одновременных загрузок (max_dl) при авторетрее. Смерть задачи
-    // уже освободила слот (её pid_ снят до вызова авторетрея), поэтому в норме
-    // ретрей законно занимает освободившийся слот. Отказываем, только если лимит
-    // уже добит другими задачами - иначе ретрей + поднятая из очереди задача дали
-    // бы два параллельных процесса на один IP, подтачивая защиту от бана.
+    // Смерть задачи уже освободила слот (pid_ снят до вызова), ретрей его законно занимает. Отказываем, только если лимит добит другими - иначе ретрей + поднятая из очереди задача дали бы два процесса на один IP.
     private static function canSpawnRetry()
     {
         $max = $GLOBALS['config']['max_dl'] ?? 3;
@@ -513,18 +511,9 @@ class Downloader
         return self::background_jobs() < $max;
     }
 
-    // Точечный авторетрей с куками: первая попытка всегда идёт БЕЗ куки (см.
-    // комментарий в executeDownload про Data Sync ID), куки подключаются только
-    // если реально понадобились - обычный/публичный контент их вообще не видит.
-    // Возвращает имя нового pid_-файла ретрея (для синтетической активной строки
-    // в ?jobs), либо null, если ретрей не запускался.
+    // Первая попытка всегда без кук для YouTube (см. Data Sync ID в executeDownload), куки подключаются только если реально понадобились. needsCookiesRetry() матчит и по общим фразам yt-dlp ("login required"), которые вылетают и у не-YouTube экстракторов (напр. Instagram) - поэтому файл кук выбираем по URL из лога, а не хардкодом на YouTube, иначе чужому сайту подставился бы youtube_cookies.txt.
     private static function autoRetryWithCookiesIfNeeded($completefile)
     {
-        $cookiesFile = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
-        if (!self::cookiesFileUsable($cookiesFile)) {
-            return null;
-        }
-
         if (!file_exists($completefile)) {
             return null;
         }
@@ -534,39 +523,40 @@ class Downloader
             return null;
         }
 
+        $jobUrl = '';
+        if (preg_match('/^\[yturl\]\s*(.+)$/m', $log_content, $urlMatch)) {
+            $jobUrl = trim(explode(',', $urlMatch[1])[0]);
+        }
+        $site = self::detectCookiesSite($jobUrl);
+        $cookiesFile = self::cookiesFileForSite($site);
+        if (!self::cookiesFileUsable($cookiesFile)) {
+            return null;
+        }
+
         // Общий маркер с проксийным ретреем - не более одной авто-попытки на задачу
         if (strpos($log_content, '[RETRY_ATTEMPTED:') !== false) {
             return null;
         }
 
-        // Куки уже были в команде (например, при ручном restart) - повтор не поможет.
-        // Проверяем ТОЛЬКО строку [ytcmd] (реальную команду), а не весь лог: yt-dlp
-        // в тексте ошибки бот-чека сам советует "...or --cookies for the auth", и
-        // проверка по всему логу ложно срабатывала на этой прозе, глуша ретрей.
+        // Проверяем только строку [ytcmd], не весь лог - текст ошибки бот-чека сам советует "--cookies", ложно срабатывало бы.
         if (preg_match('/^\[ytcmd\].*--cookies\s/m', $log_content)) {
             return null;
         }
 
-        $jobstatus = self::parseYtDlpError($log_content);
+        $jobstatus = self::parseYtDlpError($log_content, $site);
         if (!self::needsCookiesRetry($jobstatus)) {
             return null;
         }
 
-        // Не пробиваем лимит одновременных загрузок ретреем (см. canSpawnRetry).
-        // Маркер не пишем - задача остаётся неудачной, доступна для ручного рестарта.
+        // Маркер не пишем - задача остаётся доступной для ручного рестарта.
         if (!self::canSpawnRetry()) {
             return null;
         }
 
-        $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей с куками YouTube\n";
+        $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей с куками (" . ($site ?? '?') . ")\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
 
-        // restart_download читает completefile синхронно ДО запуска нового процесса,
-        // поэтому его безопасно удалить сразу после успешного старта. Убираем лог
-        // снятой (первой, без кук) попытки, чтобы в "Последних" не висели две строки
-        // на одну ссылку - остаётся только итог ретрея. Удаляем ТОЛЬКО при успехе:
-        // если старт не удался (например, не прошла security-проверка команды),
-        // первый лог остаётся на месте, задача не исчезает бесследно.
+        // Удаляем старый лог только при успехе рестарта - иначе задача осталась бы без следа при провале старта.
         $newpid = self::restart_download(basename($completefile), false, true);
         if ($newpid) {
             @unlink($completefile);
@@ -575,7 +565,6 @@ class Downloader
         return null;
     }
 
-    // Вспомогательный метод для завершения лога (DRY)
     private static function finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip = '')
     {
         if (!file_exists($outfile)) return;
@@ -586,22 +575,17 @@ class Downloader
         }
 
         rename($outfile, $completefile);
-        // Убираем маркер [USES_PROXY] из записанной команды, чтобы файл был чистым
+        // Убираем маркер [USES_PROXY], чтобы файл был чистым
         $ytcmd = preg_replace('/^\[USES_PROXY\]\s+/', '', $ytcmd);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
         file_put_contents($completefile, "[yturl] " . $urltext . "\n", FILE_APPEND);
-        // IP отправителя (уже провалидирован FILTER_VALIDATE_IP, инъекция невозможна).
-        // Нужен, чтобы restart_download восстановил его и logger записал реальный IP,
-        // а не потерянный/чужой (putenv живёт в FPM-воркере между запросами).
+        // IP уже провалидирован FILTER_VALIDATE_IP. Нужен restart_download'у - putenv живёт в FPM-воркере между запросами, реальный IP иначе теряется.
         if ($clientip !== '') {
             file_put_contents($completefile, "[ytip] " . $clientip . "\n", FILE_APPEND);
         }
     }
 
-    // Служебные теги yt-dlp и наши маркеры, которые НЕ являются именем сайта.
-    // В translate-задачах vot-cli пишет в тот же лог параллельно с yt-dlp,
-    // поэтому имя сайта берём только со строки-анонса экстрактора ("[youtube] ..."),
-    // пропуская и не-скобочный вывод vot-cli, и эти служебные теги.
+    // Служебные теги, не являющиеся именем сайта - vot-cli пишет в тот же лог параллельно с yt-dlp.
     private const NON_EXTRACTOR_TAGS = [
         'download', 'info', 'debug', 'vot', 'ffmpeg', 'merger', 'metadata',
         'extractaudio', 'embedthumbnail', 'videoconvertor', 'sponsorblock',
@@ -621,112 +605,153 @@ class Downloader
         return ucfirst($m[1]);
     }
 
-    public static function get_queued_jobs()
+    // Site и заголовок плейлиста печатаются раз в начале лога - для больших логов ищутся только в голове, не в хвосте.
+    private static function scanForSiteAndPlaylist(string $line, bool &$siteset, string &$site, string &$playlist): void
     {
-        if (!isset($GLOBALS['config']['logPath'])) return [];
-
-        $qjs = [];
-        $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
-
-        if (!file_exists($queue_file)) {
-            return $qjs;
+        if (!$siteset) {
+            $detected = self::detectSite($line);
+            if ($detected !== null) {
+                $siteset = true;
+                $site = $detected;
+            }
         }
 
-        $handle = fopen($queue_file, "r");
-        if (!$handle) return [];
+        // "[extractor] Playlist TITLE: Downloading N items"
+        if (preg_match('/\] Playlist (.+): Downloading \d+ items?\s*$/', $line, $pm)) {
+            $playlist = trim($pm[1]) . "<br />";
+        }
+    }
 
-        // Блокировка чтения
-        flock($handle, LOCK_SH);
+    // Текущее состояние задачи. Поля либо "последний победил" (filename/lastline/verylastline/listpos), либо флаг, повторяющийся и в хвосте большого лога (votPhase/muxPhase) - поэтому ищется только в хвосте, не в голове.
+    private static function scanForCurrentStatus(string $line, string &$listpos, bool &$votPhase, bool &$muxPhase, string &$lastline, string &$verylastline, string &$filename): void
+    {
+        // yt-dlp печатает по-английски: "[download] Downloading item N of M"
+        if (preg_match('/\[download\] Downloading item (.+)/', $line, $lm)) {
+            $listpos = "(" . trim($lm[1]) . ")";
+        }
 
-        $corrupt_queue = false;
-        while (($line = fgets($handle)) !== false) {
-            if (trim($line) === "") continue;
+        // Скачивание кончилось (--print-to-file). Фазу "перевожу" включаем по этому маркеру, не по раннему баннеру vot-cli - иначе юзер видел бы её раньше времени вместо процентов закачки.
+        if (strpos($line, "Writing '%(filepath)s'") !== false) {
+            $votPhase = true;
+        }
+        // mux_translated.sh печатает "[vot] ...", а сырой ffmpeg-микс - "frame="
+        if (strpos($line, '[vot]') !== false || strpos($line, 'frame=') !== false) {
+            $muxPhase = true;
+        }
 
-            if (substr($line, 0, 7) !== "queueid") {
-                $corrupt_queue = true;
-                break;
+        if (trim($line) != "") {
+            $lastline = $line;
+        }
+
+        $verylastline = $line;
+
+        if (strpos($line, 'Destination') !== false) {
+            $pos = strrpos($line, '/');
+            $filename = $pos === false ? $line : substr($line, $pos + 1);
+        }
+    }
+
+    // Разбирает строку dl_queue после "queueid...=" - общая логика для process_queue()/remove_queued_job().
+    // Возвращает null, если нет "=" - вызывающий код пропускает такую строку.
+    private static function parseQueueLine(string $line): ?array
+    {
+        $parts = explode("=", $line, 2);
+        if (count($parts) < 2) {
+            return null;
+        }
+
+        $urlParts = explode(">", $parts[1]);
+
+        return [
+            'qid'          => $parts[0],
+            'urlData'      => $parts[1],
+            'url'          => urldecode(trim($urlParts[0] ?? '')),
+            'dl_format'    => urldecode($urlParts[1] ?? ''),
+            'audio_only'   => $urlParts[2] ?? '',
+            'audio_format' => $urlParts[3] ?? '',
+            'client_ip'    => trim($urlParts[4] ?? 'unknown'),
+            'translate'    => trim($urlParts[5] ?? ''),
+        ];
+    }
+
+    // $fileList - опционально, ['ytdl' => [...путей]] из scanLogPath(). null -
+    // сканирует /ytdl_* сам (вызовы вне ?jobs).
+    public static function get_finished_background_jobs(?array $fileList = null)
+    {
+        if (!isset($GLOBALS['config']['logPath']) || !is_dir($GLOBALS['config']['logPath'])) return [];
+        $logPath = $GLOBALS['config']['logPath'];
+
+        $entries = $fileList['ytdl'] ?? null;
+        if ($entries === null) {
+            $entries = [];
+            foreach (new DirectoryIterator($logPath) as $fileinfo) {
+                if ($fileinfo->isDot() || !$fileinfo->isFile()) continue;
+                if (strpos($fileinfo->getFilename(), "ytdl_") !== 0) continue;
+                $entries[] = $fileinfo->getPathname();
+            }
+        }
+
+        // Per-file кэш (filename => sig+job) вместо одной сигнатуры на весь набор - иначе
+        // завершение любой одной новой задачи инвалидировало кэш целиком и build_finished_jobs()
+        // перечитывало построчно вообще все ytdl_*-файлы, а не только новый.
+        $cacheFile = $logPath . '/.finished_cache';
+        $cached = @file_get_contents($cacheFile);
+        $cacheMap = [];
+        if ($cached !== false) {
+            $data = json_decode($cached, true);
+            if (is_array($data) && ($data['v'] ?? null) === 2 && isset($data['files']) && is_array($data['files'])) {
+                $cacheMap = $data['files'];
+            }
+        }
+
+        $newCacheMap = [];
+        $jobsWithMtime = [];
+        $dirty = false;
+
+        foreach ($entries as $entryPath) {
+            $name = basename($entryPath);
+            $mtime = (int) @filemtime($entryPath);
+            $size = (int) @filesize($entryPath);
+            $sig = $mtime . ':' . $size;
+
+            if (isset($cacheMap[$name]) && ($cacheMap[$name]['sig'] ?? null) === $sig) {
+                $job = $cacheMap[$name]['job'];
+            } else {
+                $parsed = self::build_finished_jobs([$entryPath]);
+                $job = $parsed[0] ?? null;
+                if ($job === null) continue;
+                $dirty = true;
             }
 
-            $parts = explode("=", $line, 2);
-            if (count($parts) < 2) continue;
+            $newCacheMap[$name] = ['sig' => $sig, 'job' => $job];
+            $jobsWithMtime[] = ['mtime' => $mtime, 'job' => $job];
+        }
 
-            $pid = $parts[0];
-            $urlData = $parts[1];
-            $urlParts = explode(">", $urlData);
+        if (!$dirty && count($newCacheMap) !== count($cacheMap)) {
+            $dirty = true; // файл(ы) удалили - сжимаем кэш до актуального набора
+        }
 
-            $audio_only = !empty(trim($urlParts[2] ?? ''));
-
-            $qjs[] = array(
-                'pid' => $pid,
-                'url' => urldecode(trim($urlParts[0] ?? '')),
-                'dl_format' => $urlParts[1] ?? '',
-                'audio_only' => $audio_only,
-                'audio_format' => $urlParts[3] ?? ''
+        if ($dirty) {
+            @file_put_contents(
+                $cacheFile,
+                json_encode(['v' => 2, 'files' => $newCacheMap], JSON_UNESCAPED_UNICODE),
+                LOCK_EX
             );
         }
 
-        flock($handle, LOCK_UN);
-        fclose($handle);
-
-        if ($corrupt_queue) {
-            @unlink($queue_file);
-            return [];
-        }
-
-        return $qjs;
+        // Свежие сверху - DirectoryIterator/кэш не гарантируют хронологический порядок.
+        usort($jobsWithMtime, fn($a, $b) => $b['mtime'] <=> $a['mtime']);
+        return array_column($jobsWithMtime, 'job');
     }
 
-    public static function get_finished_background_jobs()
-    {
-        if (!isset($GLOBALS['config']['logPath'])) return [];
-        $logPath = $GLOBALS['config']['logPath'];
-
-        // Сигнатура завершённых логов (имя+mtime+размер каждого ytdl_). Меняется
-        // при появлении/переименовании/дозаписи лога - тогда и пересобираем.
-        // Поллинг без изменений делает только stat, без открытия и разбора
-        // каждого файла - основная стоимость метода снималась именно на разборе.
-        $sig = self::finished_signature($logPath);
-        $cacheFile = $logPath . '/.finished_cache';
-
-        $cached = @file_get_contents($cacheFile);
-        if ($cached !== false) {
-            $data = json_decode($cached, true);
-            if (is_array($data) && ($data['sig'] ?? null) === $sig
-                && isset($data['jobs']) && is_array($data['jobs'])) {
-                return $data['jobs'];
-            }
-        }
-
-        $jobs = self::build_finished_jobs($logPath);
-        @file_put_contents(
-            $cacheFile,
-            json_encode(['sig' => $sig, 'jobs' => $jobs], JSON_UNESCAPED_UNICODE),
-            LOCK_EX
-        );
-        return $jobs;
-    }
-
-    private static function finished_signature($logPath)
-    {
-        $parts = [];
-        $dir = new DirectoryIterator($logPath);
-        foreach ($dir as $fileinfo) {
-            if (!$fileinfo->isDot() && $fileinfo->isFile() && strpos($fileinfo->getFilename(), "ytdl_") === 0) {
-                $parts[] = $fileinfo->getFilename() . ':' . $fileinfo->getMTime() . ':' . $fileinfo->getSize();
-            }
-        }
-        sort($parts);
-        return md5(implode('|', $parts));
-    }
-
-    private static function build_finished_jobs($logPath)
+    // $entries уже собран за один проход в get_finished_background_jobs() - каталог сам не сканирует.
+    private static function build_finished_jobs(array $entries)
     {
         $bjs = [];
-        $dir = new DirectoryIterator($logPath);
 
-        foreach ($dir as $fileinfo) {
-            if (!$fileinfo->isDot() && $fileinfo->isFile() && strpos($fileinfo->getFilename(), "ytdl_") === 0) {
-                $filepath = $fileinfo->getPathname();
+        foreach ($entries as $filepath) {
+            $filenameOnly = basename($filepath);
+            {
                 $handle = @fopen($filepath, "r");
                 if (!$handle) continue;
 
@@ -735,7 +760,7 @@ class Downloader
                 $filename = "Дундук :)";
                 $site = "N/A";
                 $siteset = false;
-                $isaudio = (strpos($fileinfo->getFilename(), "_a") !== false);
+                $isaudio = (strpos($filenameOnly, "_a") !== false);
                 $listpos = "";
                 $playlist = "";
                 $urltext = "";
@@ -767,9 +792,7 @@ class Downloader
                         $urltext = trim(substr($line, 8));
                     }
 
-                    // [ytcmd] пишется finalize_job_log() одной строкой с полной командой -
-                    // если в ней есть --cookies, значит это была точечная попытка после
-                    // блокировки обычного способа (см. autoRetryWithCookiesIfNeeded())
+                    // [ytcmd] с --cookies - точечная попытка после блокировки обычного способа (autoRetryWithCookiesIfNeeded)
                     if (strpos($line, '[ytcmd]') !== false && stripos($line, '--cookies') !== false) {
                         $usedCookies = true;
                     }
@@ -796,7 +819,7 @@ class Downloader
 
                 fclose($handle);
 
-                if (strpos($fileinfo->getFilename(), "_cancelled") !== false) {
+                if (strpos($filenameOnly, "_cancelled") !== false) {
                     $jobstatus = "Отменено";
                 }
 
@@ -814,12 +837,10 @@ class Downloader
                             || strpos($log_content, 'webpage_url!~=') !== false) {
                             $jobstatus = "Порнографию я вам не дам 🔞";
                         } else {
-                            $jobstatus = self::parseYtDlpError($log_content);
-                            // Ошибка из тех, что лечатся куками, куки в конфиге есть,
-                            // но использовать их нельзя (обычно небезопасные права,
-                            // которые не удалось починить). Молчать нельзя - иначе юзер
-                            // видит только бот-чек и не понимает, почему куки не помогли.
-                            if (self::needsCookiesRetry($jobstatus) && self::cookiesConfiguredButUnusable()) {
+                            $urlSite = self::detectCookiesSite($urltext);
+                            $jobstatus = self::parseYtDlpError($log_content, $urlSite);
+                            // Куки в конфиге есть, но непригодны (обычно права) - молчать нельзя, юзер не поймёт почему бот-чек не обошёлся.
+                            if (self::needsCookiesRetry($jobstatus) && self::cookiesConfiguredButUnusable($urlSite)) {
                                 $jobstatus .= "\nКуки настроены, но файл непригоден (права/доступ) - нужен chmod 600";
                             }
                         }
@@ -840,7 +861,7 @@ class Downloader
                     'site' => $site,
                     'status' => $jobstatus,
                     'type' => $type,
-                    'pid' => $fileinfo->getFilename(),
+                    'pid' => $filenameOnly,
                     'url' => $urltext
                 );
             }
@@ -879,21 +900,12 @@ class Downloader
         return $log;
     }
 
-    /**
-     * Парсит лог yt-dlp и возвращает человекочитаемое сообщение об ошибке.
-     * Перед анализом лог санитизируется  - прокси/IP/токены не попадут в вывод.
-     */
-    // Правила «регексп -> сообщение», по порядку приоритета. Первое совпадение
-    // выигрывает, поэтому порядок значим (сетевые -> доступность -> форматы ->
-    // постобработка -> системные). Добавлять новую ошибку - вставить строку.
-    private const ERROR_RULES = [
-        // === Протухшие куки YouTube (выше бот-детекта: отдельный признак от
-        // yt-dlp - "cookies are no longer valid" - не путать с обычным
-        // бот-чеком, чинится по-разному: см. youtubeCookiesFile в config.php) ===
-        ['/cookies are no longer valid|cookies have expired|cookies are not valid|Failed to load cookies/i', "Куки YouTube протухли 🍪\nНадо зайти под тем же аккаунтом и обновить cookies.txt на сервере"],
+    // Регексп протухших кук - вынесен из ERROR_RULES отдельной константой, т.к. текст сообщения зависит от сайта ($site в parseYtDlpError), а не фиксирован как остальные правила.
+    private const EXPIRED_COOKIES_PATTERN = '/cookies are no longer valid|cookies have expired|cookies are not valid|Failed to load cookies/i';
 
-        // === Бот-детект YouTube (выше всех: часто идёт в паре с 429, но
-        // истинная причина - именно бот-чек, а не перегрузка сайта) ===
+    // Правила «регексп -> сообщение», по приоритету: первое совпадение выигрывает (сетевые -> доступность -> форматы -> постобработка -> системные).
+    private const ERROR_RULES = [
+        // === Бот-детект (выше всех - часто идёт с 429, но причина именно бот-чек) ===
         ['/not a bot|Sign in to confirm you.re not a bot/i', "YouTube принял нас за бота 🤖\nIP PROXY засвечен - лучше подождать"],
 
         // === Сетевые ошибки ===
@@ -941,10 +953,15 @@ class Downloader
         ['/No space left on device|ENOSPC/i', "Диск переполнен 💾\nАхтунг!"],
     ];
 
-    private static function parseYtDlpError(string $log): string
+    // $site - результат detectCookiesSite() по URL задачи, null если неизвестен/не передан. Влияет только на текст сообщения о протухших куках.
+    private static function parseYtDlpError(string $log, $site = null): string
     {
-        // СНАЧАЛА чистим, ПОТОМ матчим
         $log = self::sanitizeLog($log);
+
+        if (preg_match(self::EXPIRED_COOKIES_PATTERN, $log)) {
+            $siteLabel = $site === 'instagram' ? 'Instagram' : 'YouTube';
+            return "Куки $siteLabel протухли 🍪\nНадо зайти под тем же аккаунтом и обновить cookies.txt на сервере";
+        }
 
         foreach (self::ERROR_RULES as [$pattern, $message]) {
             if (preg_match($pattern, $log)) {
@@ -952,8 +969,7 @@ class Downloader
             }
         }
 
-        // Фоллбэк: вытащим сам текст ошибки yt-dlp, если ничего не подошло.
-        // Лог уже санитизирован  - прокси/IP/токены вырезаны.
+        // Фоллбэк: сам текст ошибки yt-dlp, лог уже санитизирован.
         if (preg_match('/ERROR:\s*(.{10,120})/i', $log, $m)) {
             return "⚠️ " . trim($m[1]);
         }
@@ -961,12 +977,52 @@ class Downloader
         return "🤔 ХЗ, что случилось \nСмотри лог";
     }
 
+    // basename()+realpath() guard, как в FileHandler::delete(). realpath - защита от симлинка внутри logPath, ведущего наружу; не требует существования файла. Возвращает basename или null, если путь ведёт наружу.
+    private static function safeLogPathBasename(string $filename): ?string
+    {
+        if (!isset($GLOBALS['config']['logPath'])) {
+            return null;
+        }
+
+        $name = basename($filename);
+        $realLogPath = realpath(rtrim($GLOBALS['config']['logPath'], '/'));
+        if ($realLogPath === false) {
+            return null;
+        }
+
+        $realFile = realpath($realLogPath . '/' . $name);
+        if ($realFile !== false && strpos($realFile, $realLogPath . '/') !== 0) {
+            return null;
+        }
+
+        return $name;
+    }
+
+    // Убивает всю группу процессов ($jpid - лидер группы, см. setsid в executeDownload), не только сам $jpid.
+    // Для обычной закачки эквивалентно "kill $jpid", но для VOT-задач (bash -c "yt-dlp & vot-cli & wait")
+    // одиночный kill убивал бы только bash, дети продолжали бы работать осиротевшими (дописывали *_ru.mp4 после "Стоп").
+    // cmdline сверяется с youtubedlExe - PID-reuse guard. $sleepAfterKill только для одиночного "Стоп" (даёт время среагировать до finalize_job_log); "Стоп ВСЕ" не ждёт на каждый процесс, есть отдельный pgrep-fallback ниже.
+    private static function killProcessGroupIfAlive(string $jpid, bool $sleepAfterKill): void
+    {
+        if (empty($jpid) || !file_exists('/proc/' . $jpid)) {
+            return;
+        }
+        $pidcmd = @file_get_contents('/proc/' . $jpid . '/cmdline');
+        if ($pidcmd === false || strpos($pidcmd, $GLOBALS['config']['youtubedlExe']) === false) {
+            return;
+        }
+        shell_exec("kill -- -" . escapeshellarg($jpid));
+        if ($sleepAfterKill) {
+            usleep(500000);
+        }
+    }
+
     public static function kill_one_of_them($fpid)
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
 
-        // Защита от выхода за пределы директории
-        $fpid = basename($fpid);
+        $fpid = self::safeLogPathBasename($fpid);
+        if ($fpid === null) return;
         $file = $GLOBALS['config']['logPath'] . '/' . $fpid;
 
         if (!file_exists($file)) return;
@@ -983,15 +1039,7 @@ class Downloader
         $jpid = $jid_parts[0] ?? '';
         $clientip = trim($jid_parts[3] ?? '');
 
-        // Убиваем только конкретный процесс, а не весь ffmpeg на сервере
-        if (!empty($jpid) && file_exists('/proc/'.$jpid)) {
-            $pidcmd = @file_get_contents('/proc/'.$jpid.'/cmdline');
-            if ($pidcmd !== false && strpos($pidcmd, $GLOBALS['config']['youtubedlExe']) !== false) {
-                shell_exec("kill " . escapeshellarg($jpid));
-                // Даем время на очистку дочерних процессов
-                usleep(500000);
-            }
-        }
+        self::killProcessGroupIfAlive($jpid, true);
 
         self::finalize_job_log($outfile, $completed, $ytcmd, $urltext, $clientip);
         @unlink($file);
@@ -1013,14 +1061,19 @@ class Downloader
             $content = @file_get_contents($file);
             if ($content !== false) {
                 $jid_parts = explode("\n", trim($content));
+                $jpid = $jid_parts[0] ?? '';
                 $ytcmd = $jid_parts[1] ?? '';
                 $urltext = $jid_parts[2] ?? '';
                 $clientip = trim($jid_parts[3] ?? '');
+
+                self::killProcessGroupIfAlive($jpid, false);
+
                 self::finalize_job_log($jobfile, $completed, $ytcmd, $urltext, $clientip);
             }
             @unlink($file);
         }
 
+        // Fallback для процессов без pid-файла (tmp/ потерян). VOT-сирот не находит - их argv не содержит "yt-dlp".
         exec("pgrep -f 'yt-dlp'", $output);
         if (!empty($output)) {
             foreach ($output as $p) {
@@ -1038,22 +1091,18 @@ class Downloader
         self::$bg_jobs_cache = null;
     }
 
-    // Возвращает имя нового pid_-файла запущенной задачи (строку), либо false,
-    // если старт не удался. Вызывающему авторетрею это нужно, чтобы: (1) удалить
-    // лог снятой попытки только при успешном старте, (2) сразу показать ретрей
-    // активной строкой в ?jobs (реальный pid новой задачи, без асинхронного окна).
+    // Возвращает имя нового pid_-файла или false. Авторетрею нужно, чтобы удалить старый лог только при успехе и сразу показать ретрей активной строкой в ?jobs.
     public static function restart_download($fpid, $forceUseProxy = false, $forceUseCookies = false)
     {
         if (!isset($GLOBALS['config']['logPath'])) return false;
 
         $logPath = $GLOBALS['config']['logPath'];
 
-        // Санитизация имени файла
-        $fpid = basename($fpid);
+        $fpid = self::safeLogPathBasename($fpid);
+        if ($fpid === null) return false;
         $file = $logPath . '/' . $fpid;
 
         if (!file_exists($file)) {
-            // Попытка найти отмененный файл
             if (strpos($fpid, 'pid_') === 0) {
                 $cancelled = $logPath . '/' . str_replace('pid_', 'ytdl_', $fpid) . '_cancelled';
                 if (file_exists($cancelled)) $file = $cancelled;
@@ -1105,21 +1154,23 @@ class Downloader
             return false;
         }
 
-        // БЕЗОПАСНОСТЬ: Проверка, что команда содержит ожидаемый бинарник
-        // (убираем префикс с env-переменными, если есть: "env VAR=value ... /path/to/yt-dlp").
-        // Переменных может быть несколько (all_proxy + no_proxy/NO_PROXY) - снимаем все.
+        // БЕЗОПАСНОСТЬ: проверка, что команда содержит ожидаемый бинарник, убираем префикс env-переменных (может быть несколько).
         $expectedExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
         $cmdToCheck = preg_replace('/^env\s+(?:[\w]+=\S+\s+)+/', '', $ytcmd);
-        if (strpos($cmdToCheck, $expectedExe) !== 0) {
+
+        // VOT-задачи сохранены как "bash -c '...'" - youtubedlExe внутри строки, не в начале. Для такой формы проверяем вхождение где угодно, иначе рестарт VOT всегда бы отклонялся. Обычные команды - строгая проверка позиции 0.
+        $isBashWrapped = (strpos($cmdToCheck, 'bash -c ') === 0);
+        $commandLooksValid = $isBashWrapped
+            ? (strpos($ytcmd, $expectedExe) !== false)
+            : (strpos($cmdToCheck, $expectedExe) === 0);
+
+        if (!$commandLooksValid) {
             $_SESSION['errors'] = ["Подозрительная команда в логе. Рестарт отменен"];
             error_log("[YTDL] Security: Command mismatch on restart.");
             return false;
         }
 
-        // В сохранённой команде из лога ещё стоит замаскированный плейсхолдер
-        // "env all_proxy=[SOCKS5_PROXY]" - убираем его перед (повторной) вставкой
-        // настоящего прокси, иначе получим два вложенных вызова "env", и yt-dlp
-        // получит в качестве прокси буквальную строку-плейсхолдер.
+        // Убираем замаскированный плейсхолдер "env all_proxy=[SOCKS5_PROXY]" перед вставкой настоящего прокси, иначе yt-dlp получит буквальную строку-плейсхолдер.
         $ytcmd = preg_replace('/^env\s+all_proxy=\S+\s+/', '', $ytcmd);
 
         // Если исходная задача использовала прокси ИЛИ нас просят принудительно добавить его
@@ -1129,13 +1180,11 @@ class Downloader
             $usesProxy = true; // Отмечаем, что теперь используется прокси
         }
 
-        // Точечное добавление куки при ретрее из-за приватности/возраста/подписки.
-        // Вставляем флаг сразу после бинарника yt-dlp (а не в конец команды, после
-        // уже подставленных URL) - так он гарантированно читается как опция, а не
-        // как позиционный аргумент. stripos-проверка на случай повторного ретрея
-        // с уже вставленными куками (форс не задваивает флаг).
-        $cookiesFile = $GLOBALS['config']['youtubeCookiesFile'] ?? '';
-        if ($forceUseCookies && self::cookiesFileUsable($cookiesFile) && stripos($ytcmd, '--cookies ') === false) {
+        // Вставляем --cookies сразу после бинарника yt-dlp, не в конец - гарантированно читается как опция. stripos-проверка против задвоения флага на повторном ретрее.
+        // VOT-задачи пропускаем: youtubedlExe внутри уже заэкранированной "bash -c '...'" - сырая вставка сломала бы кавычение. Мягкая деградация - VOT остаётся доступна для ручного рестарта.
+        // Файл кук выбираем по URL исходной задачи - иначе не-YouTube задача, дошедшая сюда через общие фразы needsCookiesRetry(), получила бы чужой (YouTube) файл кук.
+        $cookiesFile = self::cookiesFileForSite(self::detectCookiesSite($urltext));
+        if ($forceUseCookies && !$isBashWrapped && self::cookiesFileUsable($cookiesFile) && stripos($ytcmd, '--cookies ') === false) {
             $exePos = strpos($ytcmd, $expectedExe);
             if ($exePos !== false) {
                 $insertPos = $exePos + strlen($expectedExe);
@@ -1154,17 +1203,13 @@ class Downloader
         $ytcmd = preg_replace('/\s{2,}/', ' ', $ytcmd);
         $ytcmd = rtrim($ytcmd);
 
-        // Восстанавливаем IP отправителя из [ytip] лога и передаём logger'у через
-        // окружение. Ре-валидируем FILTER_VALIDATE_IP: значение приходит из файла,
-        // и хотя каталог tmp закрыт nginx, доверять содержимому на слово не стоит.
-        // ОБЯЗАТЕЛЬНО putenv даже при пустом IP - иначе в CLIENT_IP останется чужое
-        // значение от прошлой загрузки на этом же FPM-воркере и logger запишет не тот IP.
+        // Восстанавливаем IP из [ytip], ре-валидируем FILTER_VALIDATE_IP - файлу не доверяем на слово. putenv обязателен даже при пустом IP - иначе останется чужое значение от прошлой загрузки на этом FPM-воркере.
         $clientip = filter_var($clientip, FILTER_VALIDATE_IP) ?: 'unknown';
         putenv("CLIENT_IP=" . $clientip);
 
-        // Используем exec вместо passthru, чтобы не выводить мусор в браузер
+        // exec вместо passthru - не выводить мусор в браузер. setsid обязателен: restart_download всегда оборачивает в "bash -c", без него group-kill не нашёл бы группу перезапущенной задачи.
         $cmd = sprintf(
-            'bash -c %s > %s/%s 2>&1 & echo $! > %s/%s',
+            'setsid bash -c %s > %s/%s 2>&1 & echo $! > %s/%s',
             escapeshellarg($ytcmd),
             $logPath,
             $fno,
@@ -1178,16 +1223,15 @@ class Downloader
             self::$bg_jobs_cache++;
         }
 
-        // Маскируем реальные учётные данные прокси перед сохранением команды на диск -
-        // $ytcmd (использован выше для exec()) всё ещё содержит настоящее значение,
-        // маскируется только сохраняемая копия - так же, как делает executeDownload().
+        // Маскируем прокси только в сохраняемой копии, $ytcmd для exec() уже использован с настоящим значением. Одна атомарная запись, не три FILE_APPEND - узкое окно гонки для конкурентного читателя.
         $ytcmd_masked = preg_replace('/env\s+all_proxy=\S+/', 'env all_proxy=[SOCKS5_PROXY]', $ytcmd);
         $proxyMarker = $usesProxy ? "[USES_PROXY] " : "";
-        file_put_contents("$logPath/$fnp", $proxyMarker . $ytcmd_masked . "\n", FILE_APPEND);
-        file_put_contents("$logPath/$fnp", $urltext . "\n", FILE_APPEND);
-        // Строка 4 - IP отправителя, чтобы он пережил и последующую финализацию/рестарт
-        // этой перезапущенной задачи (как в executeDownload).
-        file_put_contents("$logPath/$fnp", $clientip . "\n", FILE_APPEND);
+        // Строка 4 - IP отправителя, переживает финализацию/рестарт этой задачи.
+        file_put_contents(
+            "$logPath/$fnp",
+            $proxyMarker . $ytcmd_masked . "\n" . $urltext . "\n" . $clientip . "\n",
+            FILE_APPEND
+        );
 
         return $fnp;
     }
@@ -1196,7 +1240,8 @@ class Downloader
     {
         if (!isset($GLOBALS['config']['logPath'])) return;
 
-        $fpid = basename($fpid);
+        $fpid = self::safeLogPathBasename($fpid);
+        if ($fpid === null) return;
         @unlink($GLOBALS['config']['logPath'] . '/' . $fpid);
     }
 
@@ -1304,22 +1349,14 @@ class Downloader
 
     private function do_download()
     {
+        // Проверка "max_dl сломан в конфиге" - одна на весь список. Сам гейт лимита - в dispatchGroup(), на уровне группы-хоста.
+        if ($this->config["max_dl"] != -1 && $this->config["max_dl"] <= 0) {
+            $this->errors[] = "Значение max_dl value в config.php указано неверно";
+            return;
+        }
+
         foreach ($this->dl_list as $onedownload) {
-            if ($this->config["max_dl"] == -1) {
-                $this->addOneDownload($onedownload);
-            } elseif ($this->config["max_dl"] > 0) {
-                if (self::background_jobs() < $this->config["max_dl"]) {
-                    $this->addOneDownload($onedownload);
-                } else {
-                    if ($this->config["disableQueue"]) {
-                        $this->errors[] = "Достигнут лимит одновременных загрузок. " . $onedownload['url'] . " не был загружен";
-                    } else {
-                        $this->addToQueue($onedownload);
-                    }
-                }
-            } else {
-                $this->errors[] = "Значение max_dl value в config.php указано неверно";
-            }
+            $this->addOneDownload($onedownload);
         }
     }
 
@@ -1327,11 +1364,7 @@ class Downloader
     {
         $urls = array_filter(array_map('trim', explode('||', $onedownload['url'])));
 
-        // Группируем ссылки по хосту. Один сайт - один процесс yt-dlp
-        // (последовательно): иначе параллельные запросы к одному хосту через
-        // общий прокси/IP ловят 429 (rate-limit, "Сайт оверлоуд"). Разные хосты
-        // идут отдельными процессами - падение одного не роняет другой и качается
-        // параллельно.
+        // Группируем по хосту - один сайт, один процесс (иначе параллельные запросы через общий прокси ловят 429). Разные хосты качаются параллельно.
         $groups = [];
         foreach ($urls as $url) {
             $groups[$this->getHost($url)][] = $url;
@@ -1341,16 +1374,39 @@ class Downloader
             $useProxy = !$this->isDirectAccessDomain($groupUrls[0]);
 
             if (count($groupUrls) === 1) {
-                $this->executeDownload($onedownload, $groupUrls, $useProxy, false);
+                $this->dispatchGroup($onedownload, $groupUrls, $useProxy, false);
             } else {
-                // Первую ссылку качаем сразу, без паузы - старт загрузки не ждёт.
-                // Остальные того же хоста идут вторым процессом с паузой между
-                // запросами, иначе хост отдаёт 429 на частые запросы с одного IP.
+                // Первую ссылку качаем сразу без паузы; остальные того же хоста - вторым процессом с паузой между запросами (иначе 429).
                 $first = array_shift($groupUrls);
-                $this->executeDownload($onedownload, [$first], $useProxy, false);
-                $this->executeDownload($onedownload, $groupUrls, $useProxy, true);
+                $this->dispatchGroup($onedownload, [$first], $useProxy, false);
+                $this->dispatchGroup($onedownload, $groupUrls, $useProxy, true);
             }
         }
+    }
+
+    // Гейт max_dl на уровне группы-хоста, а не всего сабмита - раньше проверка была одна на весь $onedownload, и сабмит с несколькими хостами реально обходил max_dl.
+    private function dispatchGroup($onedownload, $groupUrls, $useProxy, $paceRequests)
+    {
+        if ($this->config["max_dl"] == -1) {
+            $this->executeDownload($onedownload, $groupUrls, $useProxy, $paceRequests);
+            return;
+        }
+
+        // background_jobs() кэширован на запрос, но инкрементируется сразу после exec() - видит процессы, запущенные более ранними группами этого же запроса.
+        if (self::background_jobs() < $this->config["max_dl"]) {
+            $this->executeDownload($onedownload, $groupUrls, $useProxy, $paceRequests);
+            return;
+        }
+
+        if ($this->config["disableQueue"]) {
+            $this->errors[] = "Достигнут лимит одновременных загрузок. " . implode(', ', $groupUrls) . " не был загружен";
+            return;
+        }
+
+        // В очередь уходит только эта группа, не весь многохостовый $onedownload - иначе process_queue() снова запустил бы все хосты разом в обход лимита.
+        $groupDownload = $onedownload;
+        $groupDownload['url'] = implode('||', $groupUrls);
+        $this->addToQueue($groupDownload);
     }
 
     private function executeDownload($onedownload, $urls, $useProxy, $paceRequests = false)
@@ -1358,12 +1414,7 @@ class Downloader
         $suffix = "";
         $cmd = $this->config['youtubedlExe'];
         $cmd .= " --js-runtimes node";
-        // Логгер скачиваний (LogPluginPP -> /var/log/yt_dlp.log) подключаем явно,
-        // не полагаясь на автопоиск config/плагинов yt-dlp. --plugin-dirs указывает
-        // на каталог, содержащий yt_dlp_plugins/ (плагин запечён в образ из logger.sh).
-        // "default" обязателен: без него --plugin-dirs ЗАМЕНЯЕТ дефолтные пути, и
-        // pip-плагины из site-packages (bgutil PO-token провайдер) не грузятся -
-        // YouTube тогда режет бот-чеком. С "default" ищутся оба набора.
+        // Логгер (LogPluginPP) подключаем явно, не полагаясь на автопоиск. "default" обязателен - без него --plugin-dirs заменяет дефолтные пути, и bgutil PO-token провайдер не грузится, YouTube режет бот-чеком.
         $cmd .= " --plugin-dirs default";
         $cmd .= " --plugin-dirs " . escapeshellarg("/etc/yt-dlp/plugins/log_plugin");
         $cmd .= " --use-postprocessor LogPluginPP";
@@ -1374,8 +1425,7 @@ class Downloader
         if ($sanitizedFormat === 'worst') {
             $cmd .= " -f worst";
         } else {
-            // 'top' (по умолчанию): лучшее видео+аудио до maxVideoRes (config.php)
-            // явный выбор качества (долгое нажатие на "Скачать") переопределяет потолок
+            // 'top': лучшее видео+аудио до maxVideoRes; явный выбор качества переопределяет потолок
             $explicitRes = ['4K' => 2160, '1440p' => 1440, '1080p' => 1080];
             if (isset($explicitRes[$sanitizedFormat])) {
                 $maxRes = $explicitRes[$sanitizedFormat];
@@ -1388,17 +1438,10 @@ class Downloader
             $cmd .= " -S " . escapeshellarg("res:{$maxRes}") . " -f " . escapeshellarg('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b');
         }
 
+        // Параллельные фрагменты (--concurrent-fragments 4 --http-chunk-size 5M) убраны: Google начал помечать трафик как подозрительный - несколько одновременных Range-соединений к CDN с одного IP выглядят как бот. Стандартное одно соединение на файл.
+
         if ($useProxy && !empty($this->config['socks5'])) {
-            // googlevideo и подобные CDN часто отдают поток как один URL
-            // с поддержкой Range, а не как фрагментированный манифест -
-            // --http-chunk-size режет его на чанки через Range-запросы,
-            // --concurrent-fragments качает их параллельно (без HLS/DASH-фрагментации).
-            // 4 (не 8): скорость упирается в прокси, а не в число соединений,
-            // а меньше параллельных Range-запросов с одного IP к CDN - меньше
-            // шанс поймать 403 на чанк и вести себя заметно.
-            $cmd .= " --concurrent-fragments 4 --http-chunk-size 5M";
-            // no_proxy для localhost: запрос yt-dlp к серверу PO-токенов (bgutil на
-            // 127.0.0.1:4416) не должен уходить в SOCKS5, иначе токен не получить.
+            // no_proxy для localhost - запрос к серверу PO-токенов (bgutil, 127.0.0.1:4416) не должен уходить в SOCKS5.
             $cmd = "env all_proxy=" . escapeshellarg($this->config['socks5'])
                 . " no_proxy=127.0.0.1,localhost NO_PROXY=127.0.0.1,localhost " . $cmd;
         }
@@ -1422,9 +1465,7 @@ class Downloader
         foreach ($urls as $url) {
             if (preg_match('/(youtube\.com|youtu\.be)/i', $url)) {
                 $isYoutube = true;
-                // Плейлист/канал/хэндл разворачивается в десятки роликов внутри
-                // одного процесса yt-dlp - тогда нужен сон и между самими
-                // загрузками, а не только между HTTP-запросами.
+                // Плейлист/канал разворачивается в десятки роликов - нужен сон и между загрузками, не только между HTTP-запросами.
                 if (preg_match('#[?&]list=|/playlist|/channel/|/@|/c/|/user/#i', $url)) {
                     $isYoutubeMulti = true;
                 }
@@ -1432,30 +1473,41 @@ class Downloader
         }
         if ($isYoutube) {
             $cmd .= " --sponsorblock-remove sponsor";
+            // mweb - официально рекомендованный yt-dlp клиент для связки с PO-токен провайдером (у нас bgutil,
+            // см. app/start.sh) - https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide. web/web_safari туда же
+            // требуют GVS PO-токен, но именно на них ловили бот-чек - исключены. android_vr токен для GVS не
+            // требует вовсе, аварийный fallback: с марта 2026 клиент нестабилен (иногда только 360p,
+            // https://github.com/yt-dlp/yt-dlp/issues/16150), поэтому не первым. tv токен тоже не требует, но без
+            // подключённых кук (на первую попытку куки не даём, см. ниже) у него все форматы DRM - бесполезен здесь.
+            $cmd .= " --extractor-args " . escapeshellarg("youtube:player_client=mweb,android_vr");
         }
 
-        // Куки НЕ подключаются к обычной загрузке: аккаунт-based PO-токен запросы
-        // (tv_downgraded/web_safari) требуют Data Sync ID, которого без реальной
-        // необходимости в куках взяться неоткуда - только лишние WARNING в логе
-        // и лишняя аккаунт-привязанная активность на пустом месте. Куки
-        // подключаются точечно, только повторной попыткой, если первая упёрлась
-        // именно в приватность/возраст/подписку - см. autoRetryWithCookiesIfNeeded().
+        // YouTube: куки не подключаются к обычной загрузке - аккаунт-based PO-токен запросы требуют Data Sync ID, который без реальной нужды в куках взяться неоткуда, только лишние WARNING. Точечно, только повторной попыткой - см. autoRetryWithCookiesIfNeeded().
+        // Instagram: наоборот, публичный доступ у yt-dlp часто отсутствует вовсе (приватные аккаунты, stories) - ждать первой неудачной попытки бессмысленно, куки подключаем сразу, если настроены и пригодны.
+        $isInstagram = false;
+        foreach ($urls as $url) {
+            if (self::detectCookiesSite($url) === 'instagram') {
+                $isInstagram = true;
+                break;
+            }
+        }
+        if ($isInstagram) {
+            $instagramCookiesFile = self::cookiesFileForSite('instagram');
+            if (self::cookiesFileUsable($instagramCookiesFile)) {
+                $cmd .= " --cookies " . escapeshellarg($instagramCookiesFile);
+            }
+        }
 
-        // Пауза между запросами - защита от 429/бот-чека YouTube (частые
-        // обращения к player API с одного прокси-IP). Сон виден юзеру как статус
-        // "Пауза N сек" (см. разбор "Sleeping ... seconds" выше), поэтому вешаем
-        // его только там, где запросов реально много:
-        // - Плейлист/канал YouTube приходит одним URL (ветка count===1 в
-        //   addOneDownload, paceRequests=false), но yt-dlp разворачивает его в
-        //   десятки роликов подряд - без пауз это залп extraction-запросов с
-        //   одного IP, прямой путь к 429. Пейсим и запросы, и сами загрузки.
-        // - "Хвост" мультизагрузки одного хоста ($paceRequests) - тот же случай.
-        // Одиночный ролик делает пару запросов, риск бана мизерный - сон не
-        // навешиваем, иначе юзер видит частокол "Пауза N сек" на пустом месте.
+        // Пауза - защита от 429/бот-чека. Плейлист/канал YouTube разворачивается в десятки роликов (залп extraction-запросов) -
+        // нужна пауза и между загрузками, не только между HTTP-запросами. Одиночный YouTube-ролик тоже получает лёгкую
+        // sleep-requests: 429 на самом первом webpage-запросе (см. android_vr/tv приоритет выше) бьёт по прогретости прокси
+        // независимо от того, один ролик грузится или пачка - риск невелик, а пауза короткая.
         if ($isYoutubeMulti) {
             $cmd .= " --sleep-requests 1.5 --sleep-interval 3 --max-sleep-interval 8";
         } elseif ($paceRequests) {
             $cmd .= " --sleep-interval 3 --max-sleep-interval 8 --sleep-requests 1";
+        } elseif ($isYoutube) {
+            $cmd .= " --sleep-requests 0.5";
         }
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
@@ -1470,11 +1522,7 @@ class Downloader
 
         $cmd .= " --ignore-errors";
 
-        // Перевод озвучки через Яндекс-VOT. Только для видео (не для -x аудио).
-        // yt-dlp качает ролик как обычно (прокси/директ уже в $cmd), затем vot-cli
-        // тянет переведённую дорожку по URL, mux_translated.sh вклеивает её.
-        // Обёртка bash -c: yt-dlp остаётся в cmdline процесса, liveness-проверка
-        // в get_current_background_jobs() продолжает видеть задачу как yt-dlp.
+        // Перевод озвучки через Яндекс-VOT, только для видео. yt-dlp качает как обычно, vot-cli тянет переведённую дорожку, mux_translated.sh вклеивает. Обёртка bash -c: yt-dlp остаётся в cmdline, liveness-проверка продолжает видеть задачу.
         if (!empty($onedownload['translate']) && empty($onedownload['audio_only'])) {
             $votTmp = $this->config['logPath'] . "/vot_" . uniqid();
             $pathFile = $votTmp . "/vpath";
@@ -1497,11 +1545,7 @@ class Downloader
             $muxPart = "bash /mux_translated.sh \"\$(cat " . escapeshellarg($pathFile) . ")\" "
                 . escapeshellarg($votTmp) . " " . escapeshellarg($this->download_path);
 
-            // Параллельно: Яндекс переводит ролик у себя на серверах и не ждёт наш
-            // файл, поэтому vot-cli стартует ОДНОВРЕМЕННО с yt-dlp - долгая обработка
-            // Яндекса идёт во время скачивания, а не плюсом к нему. Ждём оба процесса,
-            // mux запускаем только если оба успешны; иначе остаётся скачанное видео
-            // без перевода (мягкая деградация, как было с &&).
+            // vot-cli стартует одновременно с yt-dlp - перевод Яндекса идёт во время скачивания, не плюсом к нему. Mux только если оба успешны, иначе остаётся видео без перевода.
             $inner = "mkdir -p " . escapeshellarg($votTmp)
                 . ' ; ' . $ytPart . ' & ytpid=$!'
                 . ' ; ' . $votPart . ' & votpid=$!'
@@ -1514,91 +1558,112 @@ class Downloader
         }
 
         $logcmd = $cmd;
+
+        // Одна из двух разрешённых точек backgrounding'а (вторая - restart_download). setsid делает процесс лидером группы - без этого group-kill не достаёт детей translate-ветки (vot-cli/ffmpeg). Новая точка запуска ОБЯЗАНА пройти через setsid, иначе group-kill для неё тихо сломается. $logcmd (без "setsid") пишется в pid-файл и сверяется в restart_download - остаётся чистым.
+        $cmd = "setsid " . $cmd;
         $cmd .= " > " . escapeshellarg($this->config['logPath'] . "/" . $fno) . " 2>&1 & echo $! > " . escapeshellarg($this->config['logPath'] . "/" . $fnp);
 
-        // putenv не меняет саму команду/строку лога - просто передаёт IP плагину
-        // LogPluginPP через окружение дочернего процесса, не задевая restart-парсинг
+        // putenv не меняет команду/лог - передаёт IP плагину LogPluginPP через окружение, не задевая restart-парсинг
         putenv("CLIENT_IP=" . ($onedownload['client_ip'] ?? 'unknown'));
         exec($cmd);
 
-        // Запущен новый процесс - учитываем в кэше (pid-файл пишется асинхронно,
-        // ре-glob мог бы его не увидеть); держим счётчик в согласии с реальностью
+        // Учитываем в кэше сразу - pid-файл пишется асинхронно, ре-glob мог бы не увидеть
         if (self::$bg_jobs_cache !== null) {
             self::$bg_jobs_cache++;
         }
 
-        // Сохраняем команду с замаскированным прокси: учётные данные заменяются
-        // плейсхолдером, чтобы в логах было видно, что прокси использовался, но без пароля
+        // Прокси маскируем плейсхолдером - видно, что использовался, без пароля. Одна атомарная запись - конкурентный читатель (kill/restart/?jobs) не увидит наполовину дописанное.
         $logcmd_masked = preg_replace('/env\s+all_proxy=[^\s]+/', 'env all_proxy=[SOCKS5_PROXY]', $logcmd);
         $proxyMarker = ($useProxy && !empty($this->config['socks5'])) ? "[USES_PROXY] " : "";
-        file_put_contents($this->config['logPath'] . "/" . $fnp, $proxyMarker . $logcmd_masked . "\n", FILE_APPEND);
-        file_put_contents($this->config['logPath'] . "/" . $fnp, $urltext . "\n", FILE_APPEND);
-        // Строка 4 pid-файла - IP отправителя. Позиционный парсинг pid читает только
-        // [0..2] (pid/cmd/url), так что это не мешает; нужен, чтобы при рестарте
-        // (ретрей/ручной) восстановить исходный IP для logger'а.
-        file_put_contents($this->config['logPath'] . "/" . $fnp, ($onedownload['client_ip'] ?? 'unknown') . "\n", FILE_APPEND);
+        // Строка 4 - IP отправителя, для восстановления при рестарте.
+        file_put_contents(
+            $this->config['logPath'] . "/" . $fnp,
+            $proxyMarker . $logcmd_masked . "\n" . $urltext . "\n" . ($onedownload['client_ip'] ?? 'unknown') . "\n",
+            FILE_APPEND
+        );
     }
 
-    public function process_queue()
+    // Общий шаг чтения dl_queue для process_queue()/remove_queued_job()/reorder_queued_job():
+    // построчно, пропуская пустые, до первой строки без префикса "queueid" (после неё - corrupt).
+    private static function readQueueLines($handle): array
+    {
+        $lines = [];
+        $corrupt = false;
+        while (($line = fgets($handle)) !== false) {
+            if (trim($line) === "") continue;
+            if (substr($line, 0, 7) !== "queueid") {
+                $corrupt = true;
+                break;
+            }
+            $lines[] = $line;
+        }
+        return ['lines' => $lines, 'corrupt' => $corrupt];
+    }
+
+    private static function writeQueueLines($handle, array $lines): void
+    {
+        ftruncate($handle, 0);
+        rewind($handle);
+        foreach ($lines as $oneline) {
+            fwrite($handle, $oneline);
+        }
+    }
+
+    // Возвращает распарсенный остаток очереди - index.php переиспользует для вкладки "Очередь", не читая dl_queue повторно. $fileList - опционально, из scanLogPath(), избегает повторного скана logPath.
+    public function process_queue(?array $fileList = null): array
     {
         $queue_file = $this->config['logPath'] . "/dl_queue";
-        if (!file_exists($queue_file)) return;
+        if (!file_exists($queue_file)) return [];
 
-        // Блокировка файла очереди для атомарности
         $handle = fopen($queue_file, "c+");
-        if (!$handle) return;
+        if (!$handle) return [];
 
         if (!flock($handle, LOCK_EX)) {
             fclose($handle);
-            return;
+            return [];
         }
 
-        $currently_running = self::background_jobs();
+        $read = self::readQueueLines($handle);
+        $corrupt_queue = $read['corrupt'];
+
+        $currently_running = self::background_jobs($fileList);
         $remaining_urls = [];
-        $corrupt_queue = false;
+        $remainingParsed = [];
         $newDownloads = [];
 
-        while (($line = fgets($handle)) !== false) {
-            if (trim($line) === "") continue;
+        foreach ($read['lines'] as $line) {
+            $parsed = self::parseQueueLine($line);
+            if ($parsed === null) continue;
 
-            if (substr($line, 0, 7) !== "queueid") {
-                $corrupt_queue = true;
-                break;
-            }
-
-            $parts = explode("=", $line, 2);
-            if (count($parts) < 2) continue;
-
-            $urlData = $parts[1];
-            $urlParts = explode(">", $urlData);
-
-            $rawUrl = urldecode(trim($urlParts[0] ?? ''));
-            if (!$this->is_valid_url($rawUrl)) {
-                $this->errors[] = $urlData . " не верный URL, удаляю из списка очереди";
+            if (!$this->is_valid_url($parsed['url'])) {
+                $this->errors[] = $parsed['urlData'] . " не верный URL, удаляю из списка очереди";
                 continue;
             }
 
-            if ($currently_running < $this->config["max_dl"]) {
+            // max_dl == -1 нужен отдельным условием - "$currently_running < -1" всегда false, задачи в очереди никогда бы не продвинулись, если лимит сменили на -1 постфактум.
+            if ($this->config["max_dl"] == -1 || $currently_running < $this->config["max_dl"]) {
                 $newDownloads[] = array(
-                    'url' => $rawUrl,
-                    'dl_format' => $urlParts[1] ?? '',
-                    'audio_only' => $urlParts[2] ?? '',
-                    'audio_format' => $urlParts[3] ?? '',
-                    'client_ip' => trim($urlParts[4] ?? 'unknown'),
-                    'translate' => trim($urlParts[5] ?? '')
+                    'url' => $parsed['url'],
+                    'dl_format' => $parsed['dl_format'],
+                    'audio_only' => $parsed['audio_only'],
+                    'audio_format' => $parsed['audio_format'],
+                    'client_ip' => $parsed['client_ip'],
+                    'translate' => $parsed['translate']
                 );
                 $currently_running++;
             } else {
                 $remaining_urls[] = $line;
+                $remainingParsed[] = array(
+                    'pid' => $parsed['qid'],
+                    'url' => $parsed['url'],
+                    'dl_format' => $parsed['dl_format'],
+                    'audio_only' => !empty(trim($parsed['audio_only'])),
+                    'audio_format' => $parsed['audio_format']
+                );
             }
         }
 
-        ftruncate($handle, 0);
-        rewind($handle);
-
-        foreach ($remaining_urls as $oneline) {
-            fwrite($handle, $oneline);
-        }
+        self::writeQueueLines($handle, $remaining_urls);
 
         flock($handle, LOCK_UN);
         fclose($handle);
@@ -1606,9 +1671,9 @@ class Downloader
         if ($corrupt_queue) {
             @unlink($queue_file);
             $this->errors[] = "Файл повредился либо был удален";
+            $remainingParsed = [];
         }
 
-        // Запуск новых загрузок из очереди
         if (!empty($newDownloads)) {
             $this->dl_list = $newDownloads;
             $this->do_download();
@@ -1617,6 +1682,8 @@ class Downloader
         if (!empty($this->errors)) {
             $_SESSION['errors'] = $this->errors;
         }
+
+        return $remainingParsed;
     }
 
     public function addToQueue($onedownload)
@@ -1624,9 +1691,9 @@ class Downloader
         $queue_file = $this->config['logPath'] . "/dl_queue";
         $clientIp = $onedownload['client_ip'] ?? 'unknown';
         $translate = !empty($onedownload['translate']) ? '1' : '';
-        $fcontent = "queueid" . uniqid() . "=" . urlencode($onedownload['url']) . ">" . $onedownload['dl_format'] . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . ">" . $clientIp . ">" . $translate . "\n";
+        // dl_format тоже через urlencode - не даёт ">"/"\n" попасть в файл очереди, даже если addToQueue() вызовут в обход whitelist-проверки в index.php.
+        $fcontent = "queueid" . uniqid() . "=" . urlencode($onedownload['url']) . ">" . urlencode($onedownload['dl_format']) . ">" . $onedownload['audio_only'] . ">" . $onedownload['audio_format'] . ">" . $clientIp . ">" . $translate . "\n";
 
-        // LOCK_EX важен здесь
         file_put_contents($queue_file, $fcontent, FILE_APPEND | LOCK_EX);
     }
 
@@ -1645,30 +1712,20 @@ class Downloader
             return;
         }
 
+        $read = self::readQueueLines($handle);
+        $corrupt_queue = $read['corrupt'];
         $remaining_urls = [];
-        $corrupt_queue = false;
 
-        while (($line = fgets($handle)) !== false) {
-            if (trim($line) === "") continue;
+        foreach ($read['lines'] as $line) {
+            $parsed = self::parseQueueLine($line);
+            if ($parsed === null) continue;
 
-            if (substr($line, 0, 7) !== "queueid") {
-                $corrupt_queue = true;
-                break;
-            }
-
-            $pid = substr($line, 0, strpos($line, "="));
-
-            if ($pid !== $qid) {
+            if ($parsed['qid'] !== $qid) {
                 $remaining_urls[] = $line;
             }
         }
 
-        ftruncate($handle, 0);
-        rewind($handle);
-
-        foreach ($remaining_urls as $oneline) {
-            fwrite($handle, $oneline);
-        }
+        self::writeQueueLines($handle, $remaining_urls);
 
         flock($handle, LOCK_UN);
         fclose($handle);
@@ -1681,6 +1738,56 @@ class Downloader
 
         if (count($remaining_urls) === 0) {
             @unlink($queue_file);
+        }
+    }
+
+    // Переставляет задачу на одну позицию - соседние строки dl_queue меняются местами. За краем очереди молча ничего не делает.
+    public static function reorder_queued_job($qid, string $direction): void
+    {
+        if (!isset($GLOBALS['config']['logPath'])) return;
+        if ($direction !== 'up' && $direction !== 'down') return;
+
+        $queue_file = $GLOBALS['config']['logPath'] . "/dl_queue";
+        if (!file_exists($queue_file)) return;
+
+        $handle = fopen($queue_file, "c+");
+        if (!$handle) return;
+
+        if (!flock($handle, LOCK_EX)) {
+            fclose($handle);
+            return;
+        }
+
+        $read = self::readQueueLines($handle);
+        $corrupt_queue = $read['corrupt'];
+        $lines = $read['lines'];
+
+        if (!$corrupt_queue) {
+            $index = null;
+            foreach ($lines as $i => $oneline) {
+                $parsed = self::parseQueueLine($oneline);
+                if ($parsed !== null && $parsed['qid'] === $qid) {
+                    $index = $i;
+                    break;
+                }
+            }
+
+            if ($index !== null) {
+                $swapWith = ($direction === 'up') ? $index - 1 : $index + 1;
+                if ($swapWith >= 0 && $swapWith < count($lines)) {
+                    [$lines[$index], $lines[$swapWith]] = [$lines[$swapWith], $lines[$index]];
+                }
+            }
+
+            self::writeQueueLines($handle, $lines);
+        }
+
+        flock($handle, LOCK_UN);
+        fclose($handle);
+
+        if ($corrupt_queue) {
+            @unlink($queue_file);
+            $_SESSION['errors'] = ["Файл очереди повредился либо был удален."];
         }
     }
 

@@ -10,7 +10,6 @@ server {
     tcp_nodelay on;
     server_tokens off;
     
-    # Кэш метаданных файлов — ускоряет отдачу статики
     open_file_cache max=10000 inactive=30s;
     open_file_cache_valid 60s;
     open_file_cache_min_uses 2;
@@ -29,7 +28,7 @@ server {
         internal;
     }
 
-    location ~* ^/(tmp|class|config|\.yt_env)/ {
+    location ~* ^/(tmp|class|config)/ {
         deny all;
     }
 
@@ -39,17 +38,16 @@ server {
         deny all;
     }
 
-    # Картинки и шрифты — редко меняются, кэшируем надолго
-    location ~* \.(jpg|jpeg|png|gif|ico|woff|woff2|ttf|svg|eot)$ {
+    location ~* \.(jpg|jpeg|png|gif|ico|woff|woff2|ttf|svg|eot|webp|mp3)$ {
         expires 1w;
         add_header Cache-Control "public, stale-while-revalidate=604800";
         access_log off;
     }
 
-    # CSS и JS — меняются чаще, кэш короче
+    # CSS/JS отдаются с ?v=<хэш сборки> - staleness невозможна, кэш вечный
     location ~* \.(css|js)$ {
-        expires 1d;
-        add_header Cache-Control "public, must-revalidate, stale-while-revalidate=3600";
+        expires 1y;
+        add_header Cache-Control "public, immutable";
         access_log off;
     }
 
@@ -74,5 +72,11 @@ server {
         fastcgi_buffer_size 32k;
         fastcgi_buffers 16 32k;
         fastcgi_busy_buffers_size 64k;
+
+        # Динамический контент (CSRF-токен) не кэшируется браузером, чтобы
+        # после пересборки контейнера новый токен попал в HTML без Ctrl+Shift+R
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        add_header Pragma "no-cache" always;
+        add_header Expires "0" always;
     }
 }

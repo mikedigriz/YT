@@ -1,0 +1,25 @@
+{
+    "name": "Качалка",
+    "short_name": "Качалка",
+    "start_url": "index.php",
+    "display": "standalone",
+    "background_color": "#ffffff",
+    "theme_color": "#DAA520",
+    "icons": [
+        {
+            "src": "img/favicon.png",
+            "sizes": "32x32",
+            "type": "image/png"
+        }
+    ],
+    "share_target": {
+        "action": "index.php",
+        "method": "GET",
+        "enctype": "application/x-www-form-urlencoded",
+        "params": {
+            "title": "shared_title",
+            "text": "shared_text",
+            "url": "shared_url"
+        }
+    }
+}

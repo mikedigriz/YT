@@ -21,7 +21,7 @@ $proxyDotClass = function ($v) {
 <footer class="footer">
   <div class="footer-wrapper">
     <div class="panel panel-info">
-      <div data-ui="help" style="cursor: pointer;" class="panel-heading">
+      <div data-ui="help" style="cursor: pointer;" class="panel-heading" tabindex="0" role="button" aria-expanded="false">
         <h3 id="helplink" class="panel-title">Жмак</h3>
       </div>
       <div id="helppanel" class="panel-body panel-collapsed">
@@ -47,14 +47,6 @@ $proxyDotClass = function ($v) {
 <?php endif; ?>
             </td>
           </tr>
-          <!--<tr>
-            <td><b>Свободно места на сервере:</b></td>
-            <td><?= htmlspecialchars($file->free_space(), ENT_QUOTES, 'UTF-8') ?></td>
-          </tr>
-          <tr>
-            <td><b>Папка Загрузки:</b></td>
-            <td><?= htmlspecialchars($file->get_downloads_folder(), ENT_QUOTES, 'UTF-8') ?></td>
-          </tr>-->
           <tr>
             <td><b>Как это работает?</b></td>
             <td>

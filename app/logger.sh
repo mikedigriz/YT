@@ -27,8 +27,8 @@ class LogPluginPP(PostProcessor):
 
     def run(self, information):
         try:
-            tz_moscow = datetime.timezone(datetime.timedelta(hours=3))
-            timestamp = datetime.datetime.now(tz_moscow).strftime('%Y-%m-%d %H:%M:%S')
+            # локальное время контейнера (TZ=Europe/Moscow задан в Dockerfile)
+            timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             filename = information.get('filename', information.get('title', 'Unknown'))
             url = information.get('webpage_url', 'No URL')
