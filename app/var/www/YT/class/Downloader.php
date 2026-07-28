@@ -277,9 +277,13 @@ class Downloader
                 $isaudio = (strpos($pidBasename, "_a") !== false);
                 $listpos = "";
                 $playlist = "";
-                // Маркеры перевода (VOT) встречаются только у translate-задач.
+                // Маркеры перевода (VOT) ищем только у translate-задач: их признак - vot-cli в сохранённой команде.
+                // Без этой привязки "frame=" от обычного ffmpeg (Twitch и любой другой HLS/live идёт через него)
+                // ложно включал фазу микса, и юзер видел "Вклеиваю русскую дорожку" на закачке без всякого перевода.
+                $isTranslateJob = strpos($ytcmd, 'vot-cli') !== false;
                 $votPhase = false;
                 $muxPhase = false;
+                $ffmpegProgress = null;
 
                 // Большие логи читаем частично: голова для site/playlist (печатаются раз в начале), хвост для текущего статуса. Цена тика O(головы+хвоста), не растёт с логом.
                 $outSize = @filesize($outfile);
@@ -301,12 +305,12 @@ class Downloader
                     }
 
                     foreach ($tailLines as $tailLine) {
-                        self::scanForCurrentStatus($tailLine . "\n", $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename);
+                        self::scanForCurrentStatus($tailLine . "\n", $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename, $ffmpegProgress);
                     }
                 } else {
                     while (($line = fgets($handle)) !== false) {
                         self::scanForSiteAndPlaylist($line, $siteset, $site, $playlist);
-                        self::scanForCurrentStatus($line, $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename);
+                        self::scanForCurrentStatus($line, $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename, $ffmpegProgress);
                     }
                 }
 
@@ -341,10 +345,17 @@ class Downloader
                     $lastline = $sleepStatus;
                 }
 
+                // Прогресс ffmpeg (трансляции) важнее "Собираю информацию"/"В Процессе", но слабее фаз перевода ниже:
+                // там ffmpeg занят миксом дорожек, а не приёмом потока.
+                if ($ffmpegProgress !== null && !$isTranslateJob) {
+                    $lastline = "Записываю трансляцию: " . self::formatBytes($ffmpegProgress['bytes'])
+                        . ", " . $ffmpegProgress['time'];
+                }
+
                 // Фаза перевода перекрывает всё - vot/ffmpeg не пишут проценты, иначе висело бы вечное "В Процессе".
-                if ($muxPhase) {
+                if ($muxPhase && $isTranslateJob) {
                     $lastline = "Вклеиваю русскую дорожку в видео, почти готово";
-                } elseif ($votPhase) {
+                } elseif ($votPhase && $isTranslateJob) {
                     // Таймер от старта задачи (mtime pid-файла) - vot-cli стартует вместе со скачиванием.
                     $elapsed = max(0, time() - (int) @filemtime($pidFile));
                     $mins = intdiv($elapsed, 60);
@@ -453,6 +464,44 @@ class Downloader
             return 'instagram';
         }
         return null;
+    }
+
+    // Хосты, для которых Яндекс-VOT реально умеет перевод. Всё остальное (в первую очередь Twitch и любые
+    // live-трансляции) переводить нечем: vot-cli либо сразу отваливается, либо висит до таймаута, пока
+    // yt-dlp ждёт его в "wait", и поток не доезжает до пользователя. Такие ссылки качаем обычной веткой.
+    private const VOT_SUPPORTED_DOMAINS = [
+        'youtube.com', 'youtu.be', 'vk.com', 'vkvideo.ru', 'vk.ru', 'vkvideo.com',
+        'rutube.ru', 'ok.ru', 'my.mail.ru', 'vimeo.com', 'bilibili.com', 'coub.com'
+    ];
+
+    // Живая трансляция не переводится даже на поддерживаемом хосте - у ролика нет конечной дорожки, которую мог бы взять Яндекс.
+    private static function isLiveStreamUrl($url)
+    {
+        return (bool) preg_match('#(?:twitch\.tv|/live/|/live\b|[?&]live=)#i', $url);
+    }
+
+    private function translationSupported(array $urls)
+    {
+        foreach ($urls as $url) {
+            if (self::isLiveStreamUrl($url)) {
+                return false;
+            }
+            $host = $this->getHost($url);
+            if ($host === '') {
+                return false;
+            }
+            $ok = false;
+            foreach (self::VOT_SUPPORTED_DOMAINS as $domain) {
+                if ($host === $domain || substr($host, -strlen('.' . $domain)) === '.' . $domain) {
+                    $ok = true;
+                    break;
+                }
+            }
+            if (!$ok) {
+                return false;
+            }
+        }
+        return !empty($urls);
     }
 
     // Путь к файлу кук для сайта из detectCookiesSite() - пусто, если сайт неизвестен или ключ не задан в конфиге.
@@ -575,6 +624,7 @@ class Downloader
         }
 
         rename($outfile, $completefile);
+        self::salvagePartialVideo($completefile);
         // Убираем маркер [USES_PROXY], чтобы файл был чистым
         $ytcmd = preg_replace('/^\[USES_PROXY\]\s+/', '', $ytcmd);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
@@ -582,6 +632,66 @@ class Downloader
         // IP уже провалидирован FILTER_VALIDATE_IP. Нужен restart_download'у - putenv живёт в FPM-воркере между запросами, реальный IP иначе теряется.
         if ($clientip !== '') {
             file_put_contents($completefile, "[ytip] " . $clientip . "\n", FILE_APPEND);
+        }
+    }
+
+    // Обрезок меньше этого размера спасать бессмысленно - там нет ни одного кадра.
+    private const SALVAGE_MIN_BYTES = 262144;
+    private const SALVAGE_EXTENSIONS = ['mp4', 'mkv', 'ts', 'webm'];
+
+    // Оборванная запись остаётся в outputFolder как "<имя>.mp4.part" и не видна во вкладке "Видео".
+    // Файл фрагментированный (см. --downloader-args в executeDownload), то есть играется как есть,
+    // поэтому достаточно снять суффикс .part. Зовётся из finalize_job_log - покрывает и кнопку "Стоп",
+    // и падение yt-dlp, и обрыв самой трансляции. При обычной успешной загрузке .part уже нет - no-op.
+    private static function salvagePartialVideo(string $logFile): void
+    {
+        $folder = $GLOBALS['config']['outputFolder'] ?? '';
+        $realFolder = ($folder === '') ? false : realpath($folder);
+        if ($realFolder === false) {
+            return;
+        }
+
+        $handle = @fopen($logFile, 'r');
+        if (!$handle) {
+            return;
+        }
+
+        // Спасаем только запись через ffmpeg (трансляции): её .part фрагментированный и играется обрезком.
+        // Обычная HTTP-загрузка обрывается посреди неполного mp4 - переименовать его значило бы подсунуть
+        // человеку заведомо битый файл, поэтому такие .part оставляем как есть.
+        $viaFfmpeg = false;
+        $targets = [];
+        while (($line = fgets($handle)) !== false) {
+            if (!$viaFfmpeg && strpos($line, 'frame=') !== false && strpos($line, 'size=') !== false) {
+                $viaFfmpeg = true;
+            }
+            $pos = strpos($line, 'Destination:');
+            if ($pos === false) {
+                continue;
+            }
+            $path = trim(substr($line, $pos + 12));
+            if ($path !== '') {
+                $targets[$path] = true;
+            }
+        }
+        fclose($handle);
+
+        if (!$viaFfmpeg) {
+            return;
+        }
+
+        foreach (array_keys($targets) as $target) {
+            if (!in_array(strtolower(pathinfo($target, PATHINFO_EXTENSION)), self::SALVAGE_EXTENSIONS, true)) {
+                continue;
+            }
+            $realPart = realpath($target . '.part');
+            if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
+                continue;
+            }
+            if (@filesize($realPart) < self::SALVAGE_MIN_BYTES || file_exists($target)) {
+                continue;
+            }
+            @rename($realPart, $target);
         }
     }
 
@@ -605,6 +715,17 @@ class Downloader
         return ucfirst($m[1]);
     }
 
+    private static function formatBytes(float $bytes): string
+    {
+        if ($bytes >= 1073741824) {
+            return number_format($bytes / 1073741824, 2, '.', '') . " ГБ";
+        }
+        if ($bytes >= 1048576) {
+            return number_format($bytes / 1048576, 1, '.', '') . " МБ";
+        }
+        return number_format($bytes / 1024, 0, '.', '') . " КБ";
+    }
+
     // Site и заголовок плейлиста печатаются раз в начале лога - для больших логов ищутся только в голове, не в хвосте.
     private static function scanForSiteAndPlaylist(string $line, bool &$siteset, string &$site, string &$playlist): void
     {
@@ -623,8 +744,21 @@ class Downloader
     }
 
     // Текущее состояние задачи. Поля либо "последний победил" (filename/lastline/verylastline/listpos), либо флаг, повторяющийся и в хвосте большого лога (votPhase/muxPhase) - поэтому ищется только в хвосте, не в голове.
-    private static function scanForCurrentStatus(string $line, string &$listpos, bool &$votPhase, bool &$muxPhase, string &$lastline, string &$verylastline, string &$filename): void
+    private static function scanForCurrentStatus(string $line, string &$listpos, bool &$votPhase, bool &$muxPhase, string &$lastline, string &$verylastline, string &$filename, ?array &$ffmpegProgress = null): void
     {
+        // Живые трансляции (Twitch и любой HLS без известной длительности) yt-dlp тянет через ffmpeg,
+        // а тот не печатает процентов - только свой прогресс "size= ... time= ...". Без этого статус
+        // намертво застревал на "Собираю информацию", хотя файл на диске рос.
+        // Строки ffmpeg разделены \r, поэтому ищем все вхождения в куске и берём последнее.
+        if (preg_match_all('/size=\s*(\d+(?:\.\d+)?)\s*(k|K|M|G)i?B.*?time=\s*(\d+:\d{2}:\d{2})/', $line, $fm, PREG_SET_ORDER)) {
+            $last = end($fm);
+            $mult = ['k' => 1024, 'K' => 1024, 'M' => 1048576, 'G' => 1073741824];
+            $ffmpegProgress = [
+                'bytes' => (float) $last[1] * $mult[$last[2]],
+                'time' => $last[3],
+            ];
+        }
+
         // yt-dlp печатает по-английски: "[download] Downloading item N of M"
         if (preg_match('/\[download\] Downloading item (.+)/', $line, $lm)) {
             $listpos = "(" . trim($lm[1]) . ")";
@@ -1456,6 +1590,11 @@ class Downloader
         } else {
             $cmd .= " --merge-output-format mp4";
             $cmd .= " --remux-video mp4";
+            // Трансляции (Twitch и прочий live-HLS) yt-dlp тянет через ffmpeg, а обычный mp4 без moov-атома
+            // в конце файла не открывается вообще - оборванная запись превращалась в мусор. Фрагментированный
+            // mp4 пишет заголовки по ходу, поэтому любой обрезок играется. Ключ уходит в выходные аргументы
+            // ffmpeg (yt-dlp кладёт голый "ffmpeg:" именно туда) и молча игнорируется, когда качает не ffmpeg.
+            $cmd .= " --downloader-args " . escapeshellarg("ffmpeg:-movflags +frag_keyframe+empty_moov+default_base_moof");
         }
 
         $cmd .= " --embed-thumbnail --embed-metadata";
@@ -1523,7 +1662,7 @@ class Downloader
         $cmd .= " --ignore-errors";
 
         // Перевод озвучки через Яндекс-VOT, только для видео. yt-dlp качает как обычно, vot-cli тянет переведённую дорожку, mux_translated.sh вклеивает. Обёртка bash -c: yt-dlp остаётся в cmdline, liveness-проверка продолжает видеть задачу.
-        if (!empty($onedownload['translate']) && empty($onedownload['audio_only'])) {
+        if (!empty($onedownload['translate']) && empty($onedownload['audio_only']) && $this->translationSupported($urls)) {
             $votTmp = $this->config['logPath'] . "/vot_" . uniqid();
             $pathFile = $votTmp . "/vpath";
 

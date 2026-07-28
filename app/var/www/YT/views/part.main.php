@@ -267,7 +267,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
 
                                 <div style="display: none !important;">
                                     <input id="audio_convert" type="checkbox" name="audio">
-                                    <input type="hidden" name="translate" id="translate_field" value="">
+                                    <input type="hidden" name="translate" id="translate_field" value="" autocomplete="off">
                                     <select name="audio_format" id="audio_format">
                                         <option value="mp3-high">mp3 HQ</option>
                                         <option value="mp3">mp3</option>

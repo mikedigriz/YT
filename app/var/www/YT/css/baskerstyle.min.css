@@ -284,21 +284,6 @@
     }
 }
 
-/* G.3: лёгкий пульс маскота, пока есть хотя бы одна реально качающаяся задача.
-   Через filter, не transform - .snej-eye-wrap уже анимирует transform для
-   лазерной пасхалки/подмигивания буфера обмена, отдельное свойство не
-   конфликтует с ними, даже если оба состояния совпадут по времени. */
-@keyframes snej-active-pulse {
-    0%, 100% { filter: drop-shadow(0 0 0 rgba(212,175,55,0)); }
-    50% { filter: drop-shadow(0 0 10px rgba(212,175,55,0.55)); }
-}
-#snej.snej-is-downloading {
-    animation: snej-active-pulse 2s ease-in-out infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-    #snej.snej-is-downloading { animation: none; }
-}
-
 /* I.2: Видео/Музыка/Recent растут в пределах 120-минутного retention-окна -
    каждая перерисовка (renderTable()) укладывает разметку всех строк разом.
    content-visibility пропускает layout/paint для строк вне вьюпорта. */

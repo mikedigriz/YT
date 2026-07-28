@@ -1241,13 +1241,6 @@ function loadList() {
         updateProxyStatus(data.proxy);
         updateTabTitleProgress(data.jobs);
 
-        // Лёгкий пульс маскота, пока есть хотя бы одна реально качающаяся задача
-        // (не просто стоящая в очереди) - живой отклик без лишнего UI-шума.
-        const snejEl = document.getElementById('snej');
-        if (snejEl) {
-            snejEl.classList.toggle('snej-is-downloading', !!(data.jobs && data.jobs.length > 0));
-        }
-
         const isActive = (data.jobs && data.jobs.length > 0) || (data.queue && data.queue.length > 0);
         lastActiveState = isActive;
 
@@ -1860,6 +1853,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     uiAudioMode.checked = hiddenAudioCheckbox.checked;
     qualityToggle.checked = (hiddenVideoFormat.value === 'worst');
+
+    // Перевод - одноразовый выбор из попапа, не липкая настройка. Браузер восстанавливает значения полей формы
+    // при возврате на тот же URL (после сабмита идёт редирект обратно на index.php), и hidden-поле оставалось "1"
+    // на все следующие загрузки. format от этого спасает syncLogic() ниже, translate спасать было нечему.
+    const translateField = document.getElementById('translate_field');
+    if (translateField) translateField.value = '';
     syncLogic();
 
     if (uiAudioMode.checked && hiddenAudioFormat) {
