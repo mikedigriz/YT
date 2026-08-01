@@ -350,6 +350,9 @@ class Downloader
                 if ($ffmpegProgress !== null && !$isTranslateJob) {
                     $lastline = "Записываю трансляцию: " . self::formatBytes($ffmpegProgress['bytes'])
                         . ", " . $ffmpegProgress['time'];
+                    if (!empty($ffmpegProgress['speed'])) {
+                        $lastline .= ", " . self::formatBytes($ffmpegProgress['speed']) . "/с";
+                    }
                 }
 
                 // Фаза перевода перекрывает всё - vot/ffmpeg не пишут проценты, иначе висело бы вечное "В Процессе".
@@ -750,12 +753,26 @@ class Downloader
         // а тот не печатает процентов - только свой прогресс "size= ... time= ...". Без этого статус
         // намертво застревал на "Собираю информацию", хотя файл на диске рос.
         // Строки ffmpeg разделены \r, поэтому ищем все вхождения в куске и берём последнее.
-        if (preg_match_all('/size=\s*(\d+(?:\.\d+)?)\s*(k|K|M|G)i?B.*?time=\s*(\d+:\d{2}:\d{2})/', $line, $fm, PREG_SET_ORDER)) {
+        // Внутри одной записи прогресса ищем через [^\r\n], а не через ".": точка в PCRE не матчит \n,
+        // но матчит \r, и жадность утащила бы bitrate из соседней записи.
+        $rx = '/size=\s*(\d+(?:\.\d+)?)\s*(k|K|M|G)i?B'
+            . '[^\r\n]*?time=\s*(\d+:\d{2}:\d{2})'
+            . '(?:[^\r\n]*?bitrate=\s*([\d.]+)\s*kbits\/s)?'
+            . '(?:[^\r\n]*?speed=\s*([\d.]+)\s*x)?/';
+        if (preg_match_all($rx, $line, $fm, PREG_SET_ORDER)) {
             $last = end($fm);
             $mult = ['k' => 1024, 'K' => 1024, 'M' => 1048576, 'G' => 1073741824];
+            // Скорость приёма = битрейт потока, умноженный на коэффициент опережения реального времени
+            // (у живой трансляции speed около 1.00x, но yt-dlp сначала догоняет буфер и там бывает 5x).
+            $speed = null;
+            if (isset($last[4]) && $last[4] !== '') {
+                $factor = (isset($last[5]) && $last[5] !== '') ? (float) $last[5] : 1.0;
+                $speed = (float) $last[4] * 1000 / 8 * $factor;
+            }
             $ffmpegProgress = [
                 'bytes' => (float) $last[1] * $mult[$last[2]],
                 'time' => $last[3],
+                'speed' => $speed,
             ];
         }
 
