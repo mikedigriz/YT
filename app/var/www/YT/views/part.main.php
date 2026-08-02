@@ -3,6 +3,23 @@
     $showLifetime = isset($config['showFileLifetime']) && $config['showFileLifetime'];
     $retentionMinutes = (int)($config['retentionMinutes'] ?? 120);
     if ($retentionMinutes <= 0) $retentionMinutes = 120;
+
+    // "2 часа" / "45 минут" / "1 час 30 минут" - подпись должна ехать за конфигом,
+    // иначе она врёт про реальное окно host-cron чистки.
+    $plural = function ($n, $one, $few, $many) {
+        $n = abs($n) % 100;
+        if ($n > 10 && $n < 20) return $many;
+        $n %= 10;
+        if ($n === 1) return $one;
+        if ($n >= 2 && $n <= 4) return $few;
+        return $many;
+    };
+    $rh = intdiv($retentionMinutes, 60);
+    $rm = $retentionMinutes % 60;
+    $retentionParts = [];
+    if ($rh > 0) $retentionParts[] = $rh . ' ' . $plural($rh, 'час', 'часа', 'часов');
+    if ($rm > 0) $retentionParts[] = $rm . ' ' . $plural($rm, 'минуту', 'минуты', 'минут');
+    $retentionText = implode(' ', $retentionParts);
 ?>
 <?php
 $video_hidden_class = $audio_check ? ' is-hidden' : '';
@@ -162,7 +179,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                         <div class="col-md-12">
                             <div class="url-input-wrapper">
                                 <input class="form-control url-input-animation" id="url" name="urls"
-                                    value="<?php echo htmlspecialchars($sharedUrl ?? '', ENT_QUOTES, 'UTF-8'); ?>"
+                                    value="<?php echo htmlspecialchars($sharedUrl ?? $formUrls ?? '', ENT_QUOTES, 'UTF-8'); ?>"
                                     placeholder="Ссылка на видео..." type="text">
                                 <div id="url-clear" class="url-clear-btn" title="Очистить поле">
                                     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor"
@@ -175,6 +192,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                                     <img id="url-favicon-img" src="" alt="">
                                 </div>
                             </div>
+                            <div id="url-error" class="url-error is-hidden" role="alert" aria-live="polite"></div>
                             <div id="clipboard-magic-prompt" class="clipboard-magic-prompt is-hidden">
                                 <div class="clipboard-magic-bubble">
                                     <span>Включить магию вставки?</span>
@@ -312,6 +330,11 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                 <br />
                 <?php if(!$config['disableQueue']) : ?>
                 <h4>Очередь</h4>
+                <p id="queue-hint" class="queue-hint is-hidden">
+                    Очередь двигается, пока эта вкладка на виду. Свернёшь окно, уйдёшь на
+                    другую вкладку или закроешь - запущенное доработает, а следующее дождётся
+                    твоего возвращения (ничего не теряется).
+                </p>
                 <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
@@ -323,7 +346,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                     </thead>
                     <tbody id="dlqueue">
                         <tr>
-                            <td colspan="3">Добавляю в очередь ждемс...</td>
+                            <td colspan="3" class="skeleton-shimmer">Смотрю очередь...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -358,8 +381,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                     <tr>
                         <th style="height:35px; min-width:300px;">Файл <?php if ($showLifetime): ?><small
                                 class="text-muted"
-                                style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через 2
-                                часа)</small></th><?php endif; ?>
+                                style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через <?= htmlspecialchars($retentionText, ENT_QUOTES) ?>)</small></th><?php endif; ?>
                         <th style="width:80px">Размер</th>
                         <?php if ($config['allowFileDelete']) : ?>
                         <th style="width:110px">Действия</th>
@@ -385,8 +407,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                     <tr>
                         <th style="height:35px; min-width:300px;">Файл <?php if ($showLifetime): ?><small
                                 class="text-muted"
-                                style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через 2
-                                часа)</small></th><?php endif; ?>
+                                style="font-weight: 400; font-size: 12px; margin-left: 8px;">(автоудаление через <?= htmlspecialchars($retentionText, ENT_QUOTES) ?>)</small></th><?php endif; ?>
                         <th style="width:80px">Размер</th>
                         <?php if ($config['allowFileDelete']) : ?>
                         <th style="width:110px">Действия</th>
@@ -408,6 +429,17 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
 </div>
 <script nonce="<?= htmlspecialchars($cspNonce ?? '', ENT_QUOTES) ?>">
 function showTab(link) {
+    // Смена вкладки - самое заметное перестроение на странице, поэтому идёт
+    // через View Transitions (withViewTransition в youtubedlwebui.js: сам
+    // отступает, если API нет или в системе включено "уменьшить движение").
+    if (typeof withViewTransition === 'function') {
+        withViewTransition(function () { applyTab(link); });
+    } else {
+        applyTab(link);
+    }
+}
+
+function applyTab(link) {
     var id = link.getAttribute('href').substr(1);
 
     document.querySelectorAll('#mainnav > li').forEach(function (li) {

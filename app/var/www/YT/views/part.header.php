@@ -29,6 +29,8 @@ $staticVersionQuery = $staticVersion !== '' ? ('?v=' . rawurlencode($staticVersi
     <link rel="stylesheet" href="<?= htmlspecialchars($themeCss . $staticVersionQuery, ENT_QUOTES) ?>" fetchpriority="high">
     <link rel="stylesheet" href="<?= htmlspecialchars('css/baskerstyle.min.css' . $staticVersionQuery, ENT_QUOTES) ?>" fetchpriority="high">
     <script nonce="<?= htmlspecialchars($cspNonce ?? '', ENT_QUOTES) ?>">const KNOWN_SERVICES = <?= json_encode($knownServices ?? [], JSON_UNESCAPED_SLASHES) ?>;
+    const AUDIO_ONLY_SERVICES = <?= json_encode($audioServices ?? [], JSON_UNESCAPED_SLASHES) ?>;
+    const DIRECT_ACCESS_DOMAINS = <?= json_encode($directDomains ?? [], JSON_UNESCAPED_SLASHES) ?>;
     const MASCOT_IMG = <?= json_encode($mascotImg ?? 'img/snej.webp', JSON_UNESCAPED_SLASHES) ?>;
     const STATIC_VERSION = <?= json_encode($staticVersion, JSON_UNESCAPED_SLASHES) ?>;</script>
     <script defer src="<?= htmlspecialchars('js/youtubedlwebui.min.js' . $staticVersionQuery, ENT_QUOTES) ?>" fetchpriority="high"></script>

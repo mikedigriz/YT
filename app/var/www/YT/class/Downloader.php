@@ -4,6 +4,40 @@ class Downloader
 {
     private $dl_list = [];
     private $errors = [];
+    // Отклонённые ссылки и факт "хоть что-то ушло качаться" - index.php по ним
+    // решает, редиректить ли на вкладку загрузок и что вернуть в поле ввода.
+    private $rejectedUrls = [];
+    private $accepted = false;
+    // Что реально произошло с отправкой - для сводки "3 качаются, 6 в очереди,
+    // 1 отклонена". Считается на уровне группы-хоста, там же, где принимается
+    // решение "запустить или в очередь" (dispatchGroup).
+    private $startedUrls = [];
+    private $queuedUrls = [];
+
+    public function getStartedUrls(): array
+    {
+        return $this->startedUrls;
+    }
+
+    public function getQueuedUrls(): array
+    {
+        return $this->queuedUrls;
+    }
+
+    public function getErrors(): array
+    {
+        return $this->errors;
+    }
+
+    public function getRejectedUrls(): array
+    {
+        return $this->rejectedUrls;
+    }
+
+    public function hasAcceptedDownloads(): bool
+    {
+        return $this->accepted;
+    }
     private $download_path = "";
     private $config = [];
 
@@ -13,7 +47,9 @@ class Downloader
     private const LOG_TAIL_BYTES = 65536;
 
     // Домены с прямым доступом (без прокси) - иностранные прокси их часто блокируют или тормозят.
-    private const DIRECT_ACCESS_DOMAINS = [
+    // public, потому что тот же список инжектится на фронт (index.php -> part.header.php):
+    // предупреждение "прокси мёртв" не должно всплывать на ссылке, которая прокси не касается.
+    public const DIRECT_ACCESS_DOMAINS = [
         // Социальные сети и видеохостинги
         'vk.com', 'vk.ru', 'm.vk.com', 'video.vk.com', 'vkvideo.ru', 'vkclips.ru',
         'ok.ru', 'odnoklassniki.ru',
@@ -57,7 +93,7 @@ class Downloader
         'pleer.net',
         // Социальные сети и короткие видео
         'yappy.media',
-        'tiktok.com', 'vm.tiktok.com', 'vt.tiktok.com', 'douyin.com',
+        // TikTok исключён - блокирует по IP даже с куками, только через прокси
         'reddit.com', 'redd.it', 'v.redd.it',
         // Аудио и музыкальные платформы
         'bandcamp.com',
@@ -82,28 +118,41 @@ class Downloader
         }
 
         if (!empty($dl_list)) {
+            // Раньше первая же кривая ссылка отменяла всю пачку: пять ссылок, одна
+            // с опечаткой - не запускалось ничего. Теперь валидные уходят качаться,
+            // отклоняется только битая, и она же возвращается в поле ввода.
+            $accepted = [];
             foreach ($dl_list as $onedownload) {
-                $urls = explode('||', $onedownload['url']);
-                $hasNonEmptyUrl = false;
+                $urls = self::splitUrls($onedownload['url']);
+                // Ввод вида "||" проходит !empty() в index.php, но после разбора не остаётся ни одного сегмента.
+                if (empty($urls)) {
+                    $this->errors[] = "Пустая ссылка - нечего качать";
+                    continue;
+                }
+
+                $valid = [];
                 foreach ($urls as $url) {
-                    $url = trim($url);
-                    if (empty($url)) continue;
-                    $hasNonEmptyUrl = true;
-                    if (!$this->is_valid_url($url)) {
+                    if ($this->is_valid_url($url)) {
+                        $valid[] = $url;
+                    } else {
                         $this->errors[] = "«" . $url . "» ты в порядке? Поправь ссыль, ну че ты!";
+                        $this->rejectedUrls[] = $url;
                     }
                 }
-                // Ввод вида "||" проходит !empty() в index.php, но после trim() все сегменты пустые.
-                if (!$hasNonEmptyUrl) {
-                    $this->errors[] = "Пустая ссылка - нечего качать";
+
+                if (!empty($valid)) {
+                    $onedownload['url'] = implode('||', $valid);
+                    $accepted[] = $onedownload;
                 }
             }
 
-            if (!empty($this->errors)) {
+            if (empty($accepted)) {
                 $_SESSION['errors'] = $this->errors;
                 return;
             }
 
+            $this->dl_list = $accepted;
+            $this->accepted = true;
             $this->do_download();
 
             // dispatchGroup() может добавить ошибку (max_dl исчерпан, битый конфиг) - флашим, иначе не дойдёт до юзера.
@@ -170,11 +219,51 @@ class Downloader
                 continue;
             }
 
+            // Задача, ждущая начала эфира (--wait-for-video), слот не занимает:
+            // при max_dl = 1 она заперла бы очередь на часы, ничего при этом не
+            // качая. Как только эфир начнётся, ждущей она быть перестанет и
+            // попадёт в счёт на следующем же опросе.
+            if (self::isWaitingForStream($pidFile)) {
+                continue;
+            }
+
             $count++;
         }
 
         self::$bg_jobs_cache = $count;
         return $count;
+    }
+
+    // Приметы ожидания эфира в логе yt-dlp. Прогресс закачки любую из них
+    // отменяет - значит эфир начался.
+    private const WAITING_PATTERNS = '/Waiting for video|This live event will begin|Premiere will begin|will begin in a few moments/i';
+
+    // Задача стоит на --wait-for-video? Читаем хвост её job-лога: ждущая задача
+    // пишет туда строку ожидания и не пишет процентов.
+    private static function isWaitingForStream(string $pidFile): bool
+    {
+        $jobLog = dirname($pidFile) . '/' . str_replace('pid_', 'job_', basename($pidFile));
+        $size = @filesize($jobLog);
+        if ($size === false || $size === 0) {
+            return false;
+        }
+
+        // Хвоста хватает: строка ожидания переписывается yt-dlp по мере отсчёта,
+        // а начавшаяся закачка сразу пишет проценты и Destination.
+        $handle = @fopen($jobLog, 'r');
+        if (!$handle) {
+            return false;
+        }
+        $offset = max(0, $size - 4096);
+        if ($offset > 0) fseek($handle, $offset);
+        $tail = (string) fread($handle, 4096);
+        fclose($handle);
+
+        if (strpos($tail, 'Destination:') !== false || strpos($tail, '[download]') !== false) {
+            return false;
+        }
+
+        return (bool) preg_match(self::WAITING_PATTERNS, $tail);
     }
 
     // $fileList по ссылке: если задача завершается прямо тут, finalize_job_log() переименовывает job_*->ytdl_*, а старый скан этого не видел. Без обновления по ссылке get_finished_background_jobs() в этом же запросе использовал бы устаревший список - задача пропала бы и из активных, и из finished до следующего запроса.
@@ -345,6 +434,12 @@ class Downloader
                     $lastline = $sleepStatus;
                 }
 
+                // Ожидание анонсированного эфира: без этого статус выглядел бы как
+                // зависшее "Собираю информацию по сайту" часами.
+                if (preg_match(self::WAITING_PATTERNS, $verylastline) || preg_match(self::WAITING_PATTERNS, $lastline)) {
+                    $lastline = "Жду начала эфира, слот очереди не занимаю";
+                }
+
                 // Прогресс ffmpeg (трансляции) важнее "Собираю информацию"/"В Процессе", но слабее фаз перевода ниже:
                 // там ffmpeg занят миксом дорожек, а не приёмом потока.
                 if ($ffmpegProgress !== null && !$isTranslateJob) {
@@ -404,9 +499,117 @@ class Downloader
     }
 
     // Авторетрей через прокси при гео-блоке/403 для прямых доменов. Возвращает имя нового pid_-файла или null.
+    // Сколько держать хост придержанным после 429. Минуты, чтобы можно было
+    // менять из конфига, не трогая код.
+    private static function hostCooldownSeconds(): int
+    {
+        $minutes = (int) ($GLOBALS['config']['hostCooldownMinutes'] ?? 10);
+        if ($minutes < 1 || $minutes > 240) {
+            $minutes = 10;
+        }
+        return $minutes * 60;
+    }
+
+    // Файл-отметка вместо общего хранилища состояния: пауза живёт минуты, а
+    // logPath чистится по возрасту в часах - переживать пересборку тут нечему.
+    // Само время берём из mtime, содержимое не нужно.
+    private static function cooldownFile(string $host): ?string
+    {
+        $logPath = $GLOBALS['config']['logPath'] ?? '';
+        if ($logPath === '' || $host === '') {
+            return null;
+        }
+        // Хост в имени файла - только буквы, цифры, точки и дефисы
+        $safeHost = preg_replace('/[^a-z0-9.\-]/', '_', $host);
+        return $logPath . '/cooldown_' . $safeHost;
+    }
+
+    // Хост ответил 429 - запоминаем время. Ставится при завершении задачи, там же,
+    // где разбирается её лог.
+    private static function rememberHostRefusal($completefile, string $urltext): void
+    {
+        if ($urltext === '') {
+            return;
+        }
+        $log = @file_get_contents($completefile);
+        if ($log === false || !preg_match('/HTTP Error 429|Too Many Requests/i', $log)) {
+            return;
+        }
+        $file = self::cooldownFile(self::getHostStatic(explode(',', $urltext)[0]));
+        if ($file !== null) {
+            @file_put_contents($file, '');
+        }
+    }
+
+    // Сколько секунд ещё держать хост придержанным, 0 - можно качать
+    public static function hostCooldownLeft(string $host): int
+    {
+        $file = self::cooldownFile($host);
+        if ($file === null || !file_exists($file)) {
+            return 0;
+        }
+        $at = @filemtime($file);
+        if ($at === false) {
+            return 0;
+        }
+        $left = $at + self::hostCooldownSeconds() - time();
+        return $left > 0 ? $left : 0;
+    }
+
+    // getHost() - метод экземпляра, а очередь разбирается и статически
+    private static function getHostStatic(string $url): string
+    {
+        $host = parse_url(trim($url), PHP_URL_HOST);
+        return is_string($host) ? preg_replace('/^www\./i', '', strtolower($host)) : '';
+    }
+
+    // Файл на диске есть - значит задача сделала своё дело, что бы ни мелькало в
+    // логе по дороге. Без этой проверки успешная загрузка, во время которой
+    // yt-dlp сам пережил 503 или тайм-аут фрагмента и докачал файл, считалась
+    // проваленной и уезжала на повторную попытку через прокси.
+    private static function jobProducedFile(string $logFile): bool
+    {
+        $folder = $GLOBALS['config']['outputFolder'] ?? '';
+        $realFolder = ($folder === '') ? false : realpath($folder);
+        if ($realFolder === false) {
+            return false;
+        }
+
+        $handle = @fopen($logFile, 'r');
+        if (!$handle) {
+            return false;
+        }
+
+        $targets = [];
+        while (($line = fgets($handle)) !== false) {
+            // "Destination:" - обычная загрузка, "Merging formats into" - склейка
+            // видео и звука, у неё имя итогового файла только в этой строке.
+            if (($pos = strpos($line, 'Destination:')) !== false) {
+                $target = trim(substr($line, $pos + 12));
+                if ($target !== '') $targets[$target] = true;
+            } elseif (preg_match('/Merging formats into "([^"]+)"/', $line, $m)) {
+                $targets[$m[1]] = true;
+            }
+        }
+        fclose($handle);
+
+        foreach (array_keys($targets) as $target) {
+            $real = realpath($target);
+            if ($real !== false && strpos($real, $realFolder . '/') === 0 && is_file($real)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static function autoRetryIfNeeded($completefile)
     {
         if (!file_exists($completefile)) {
+            return null;
+        }
+
+        if (self::jobProducedFile($completefile)) {
             return null;
         }
 
@@ -466,6 +669,9 @@ class Downloader
         if (preg_match('/instagram\.com/i', $url)) {
             return 'instagram';
         }
+        if (preg_match('/(tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com|douyin\.com)/i', $url)) {
+            return 'tiktok';
+        }
         return null;
     }
 
@@ -515,6 +721,8 @@ class Downloader
                 return $GLOBALS['config']['youtubeCookiesFile'] ?? '';
             case 'instagram':
                 return $GLOBALS['config']['instagramCookiesFile'] ?? '';
+            case 'tiktok':
+                return $GLOBALS['config']['tiktokCookiesFile'] ?? '';
             default:
                 return '';
         }
@@ -567,6 +775,11 @@ class Downloader
     private static function autoRetryWithCookiesIfNeeded($completefile)
     {
         if (!file_exists($completefile)) {
+            return null;
+        }
+
+        // Та же защита, что у ретрея через прокси: файл получен - задача удалась
+        if (self::jobProducedFile($completefile)) {
             return null;
         }
 
@@ -628,6 +841,15 @@ class Downloader
 
         rename($outfile, $completefile);
         self::salvagePartialVideo($completefile);
+        // Отменённую задачу не проверяем: её файл оборван по воле человека, и
+        // "не читается плеером" перебило бы честный статус "Отменено".
+        if (substr($completefile, -10) !== '_cancelled') {
+            self::verifyPlayable($completefile);
+            // Счётчик в state/: постпроцессор LogPluginPP до неудачных задач не
+            // доходит, поэтому неудачи считать больше негде.
+            // Хост сказал 429 - придерживаем его в очереди, см. process_queue()
+            self::rememberHostRefusal($completefile, $urltext);
+        }
         // Убираем маркер [USES_PROXY], чтобы файл был чистым
         $ytcmd = preg_replace('/^\[USES_PROXY\]\s+/', '', $ytcmd);
         file_put_contents($completefile, "[ytcmd] " . $ytcmd . "\n", FILE_APPEND);
@@ -696,6 +918,198 @@ class Downloader
             }
             @rename($realPart, $target);
         }
+    }
+
+    // Убирает .part одиночно остановленной задачи, если keepPartialFiles = false.
+    // "Стоп ВСЕ" сметает все .part в папке разом, одиночному "Стоп" так нельзя -
+    // соседние задачи ещё качаются, поэтому цели берём из лога самой задачи.
+    // Зовётся строго после finalize_job_log: спасённая запись к этому моменту
+    // уже переименована из .part, под удаление попадают только обрубки.
+    private static function cleanupPartialFiles(string $logFile): void
+    {
+        if (!empty($GLOBALS['config']['keepPartialFiles'])) {
+            return;
+        }
+
+        $folder = $GLOBALS['config']['outputFolder'] ?? '';
+        $realFolder = ($folder === '') ? false : realpath($folder);
+        if ($realFolder === false) {
+            return;
+        }
+
+        $handle = @fopen($logFile, 'r');
+        if (!$handle) {
+            return;
+        }
+
+        $targets = [];
+        while (($line = fgets($handle)) !== false) {
+            $pos = strpos($line, 'Destination:');
+            if ($pos === false) {
+                continue;
+            }
+            $path = trim(substr($line, $pos + 12));
+            if ($path !== '') {
+                $targets[$path] = true;
+            }
+        }
+        fclose($handle);
+
+        foreach (array_keys($targets) as $target) {
+            $realPart = realpath($target . '.part');
+            if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
+                continue;
+            }
+            @unlink($realPart);
+        }
+    }
+
+    // yt-dlp умеет вернуть нулевой код, оставив обрубок: сеть отвалилась на
+    // последних байтах, постпроцессор упал, диск кончился. Прогоняем ffprobe
+    // (он уже в образе рядом с ffmpeg) и, если файл не читается, дописываем в лог
+    // строку ERROR - её подхватывает parseYtDlpError, и задача честно становится
+    // неудачной вместо "Готово" с битым файлом.
+    private static function verifyPlayable(string $logFile): void
+    {
+        $folder = $GLOBALS['config']['outputFolder'] ?? '';
+        $realFolder = ($folder === '') ? false : realpath($folder);
+        if ($realFolder === false) {
+            return;
+        }
+
+        $handle = @fopen($logFile, 'r');
+        if (!$handle) {
+            return;
+        }
+
+        // Запись трансляции идёт через ffmpeg и часто обрывается на полуслове:
+        // длительности в таком файле нет, зато кадры есть. Проверять его как
+        // обычный файл значило бы штамповать провал на только что спасённой записи.
+        $viaFfmpeg = false;
+        $targets = [];
+        while (($line = fgets($handle)) !== false) {
+            if (!$viaFfmpeg && strpos($line, 'frame=') !== false && strpos($line, 'size=') !== false) {
+                $viaFfmpeg = true;
+            }
+            $pos = strpos($line, 'Destination:');
+            if ($pos === false) continue;
+            $target = trim(substr($line, $pos + 12));
+            if ($target !== '') $targets[$target] = true;
+        }
+        fclose($handle);
+
+        foreach (array_keys($targets) as $target) {
+            $real = realpath($target);
+            if ($real === false || strpos($real, $realFolder . '/') !== 0) {
+                continue;
+            }
+            if (self::probeReadable($real, $viaFfmpeg)) {
+                continue;
+            }
+            file_put_contents(
+                $logFile,
+                "ERROR: файл не читается плеером (проверка ffprobe не нашла ни длительности, ни кадров)\n",
+                FILE_APPEND
+            );
+            return;
+        }
+    }
+
+    // true - файл читается. Для записи через ffmpeg достаточно одного декодируемого
+    // кадра, обычному файлу нужна ещё и положительная длительность.
+    private static function probeReadable(string $file, bool $framesAreEnough): bool
+    {
+        // Порог намеренно крошечный, не SALVAGE_MIN_BYTES: короткий mp3 весит
+        // меньше четверти мегабайта и был бы объявлен битым ни за что.
+        if (!is_file($file) || filesize($file) < 1024) {
+            return false;
+        }
+
+        $common = 'ffprobe -v error -analyzeduration 5M -probesize 5M ';
+        $quoted = escapeshellarg($file);
+
+        // Один кадр из начала - дешевле, чем полный разбор, и работает на
+        // фрагментированном mp4 без корректного завершения
+        $frames = @shell_exec($common . '-select_streams v:0 -show_entries frame=pkt_size '
+            . '-read_intervals "%+#1" -of csv=p=0 ' . $quoted . ' 2>/dev/null');
+        $hasFrames = is_string($frames) && trim($frames) !== '';
+
+        if ($framesAreEnough) {
+            return $hasFrames;
+        }
+
+        $duration = @shell_exec($common . '-show_entries format=duration -of csv=p=0 ' . $quoted . ' 2>/dev/null');
+        $seconds = is_string($duration) ? (float) trim($duration) : 0.0;
+
+        // Аудиофайлы кадров видео не имеют - для них решает длительность
+        return $seconds > 0.0 || $hasFrames;
+    }
+
+    // Огрызок моложе минуты не трогаем: файл может дописываться постпроцессором
+    // задачи, которая только что закончила качать.
+    private const ORPHAN_PART_MIN_AGE = 60;
+
+    // Подчищает .part, оставшиеся без задачи: после docker restart процесс убит,
+    // pid-файл остался, а огрызок висел в папке до возрастной чистки. Живые задачи
+    // защищены дважды - по возрасту файла и по списку целей из их же логов.
+    // Зовётся при обычном рендере страницы, не на каждом опросе ?jobs.
+    public static function sweepOrphanPartFiles(): int
+    {
+        if (!empty($GLOBALS['config']['keepPartialFiles'])) {
+            return 0;
+        }
+        $folder = $GLOBALS['config']['outputFolder'] ?? '';
+        $realFolder = ($folder === '') ? false : realpath($folder);
+        if ($realFolder === false) {
+            return 0;
+        }
+
+        // Цели живых задач: их .part трогать нельзя, сколько бы им ни было лет
+        $activeTargets = [];
+        $logPath = $GLOBALS['config']['logPath'] ?? '';
+        $youtubedlExe = $GLOBALS['config']['youtubedlExe'] ?? 'yt-dlp';
+        foreach (glob($logPath . '/pid_*') ?: [] as $pidFile) {
+            $jpid = trim(explode("\n", (string) @file_get_contents($pidFile))[0] ?? '');
+            if ($jpid === '' || !file_exists('/proc/' . $jpid)) {
+                continue;
+            }
+            $pidcmd = @file_get_contents('/proc/' . $jpid . '/cmdline');
+            if ($pidcmd !== false && strpos($pidcmd, $youtubedlExe) === false) {
+                continue;
+            }
+            $jobLog = $logPath . '/' . str_replace('pid_', 'job_', basename($pidFile));
+            $handle = @fopen($jobLog, 'r');
+            if (!$handle) {
+                continue;
+            }
+            while (($line = fgets($handle)) !== false) {
+                $pos = strpos($line, 'Destination:');
+                if ($pos === false) continue;
+                $target = trim(substr($line, $pos + 12));
+                if ($target !== '') $activeTargets[$target] = true;
+            }
+            fclose($handle);
+        }
+
+        $now = time();
+        $removed = 0;
+        foreach (glob($realFolder . '/*.part') ?: [] as $part) {
+            $target = substr($part, 0, -5);
+            if (isset($activeTargets[$target])) {
+                continue;
+            }
+            $mtime = @filemtime($part);
+            if ($mtime === false || ($now - $mtime) < self::ORPHAN_PART_MIN_AGE) {
+                continue;
+            }
+            $realPart = realpath($part);
+            if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
+                continue;
+            }
+            if (@unlink($realPart)) $removed++;
+        }
+
+        return $removed;
     }
 
     // Служебные теги, не являющиеся именем сайта - vot-cli пишет в тот же лог параллельно с yt-dlp.
@@ -1110,7 +1524,11 @@ class Downloader
         $log = self::sanitizeLog($log);
 
         if (preg_match(self::EXPIRED_COOKIES_PATTERN, $log)) {
-            $siteLabel = $site === 'instagram' ? 'Instagram' : 'YouTube';
+            $siteLabel = match ($site) {
+                'instagram' => 'Instagram',
+                'tiktok' => 'TikTok',
+                default => 'YouTube',
+            };
             return "Куки $siteLabel протухли 🍪\nНадо зайти под тем же аккаунтом и обновить cookies.txt на сервере";
         }
 
@@ -1162,9 +1580,29 @@ class Downloader
         if ($pidcmd === false || strpos($pidcmd, $GLOBALS['config']['youtubedlExe']) === false) {
             return;
         }
-        shell_exec("kill -- -" . escapeshellarg($jpid));
-        if ($sleepAfterKill) {
-            usleep(500000);
+        $group = escapeshellarg($jpid);
+
+        // SIGINT, а не SIGTERM: и yt-dlp, и ffmpeg обрабатывают его штатно -
+        // дописывают заголовки, закрывают файл и выходят. SIGTERM обрывал ffmpeg
+        // на полуслове, и запись оставалась с недописанной структурой, годной
+        // только через спасателя (см. salvagePartialVideo).
+        shell_exec("kill -INT -- -" . $group);
+
+        // Ждём завершения: одиночный "Стоп" может позволить себе подождать дольше,
+        // "Стоп ВСЕ" бьёт по многим задачам подряд и ждёт коротко на каждой.
+        $waitSteps = $sleepAfterKill ? 20 : 4;   // 2 секунды против 0.4
+        for ($i = 0; $i < $waitSteps; $i++) {
+            usleep(100000);
+            if (!file_exists('/proc/' . $jpid)) {
+                return;
+            }
+        }
+
+        // Не вышел сам - обычное завершение, и только потом добивание.
+        shell_exec("kill -- -" . $group);
+        usleep(300000);
+        if (file_exists('/proc/' . $jpid)) {
+            shell_exec("kill -9 -- -" . $group);
         }
     }
 
@@ -1193,6 +1631,7 @@ class Downloader
         self::killProcessGroupIfAlive($jpid, true);
 
         self::finalize_job_log($outfile, $completed, $ytcmd, $urltext, $clientip);
+        self::cleanupPartialFiles($completed);
         @unlink($file);
 
         self::$bg_jobs_cache = null;
@@ -1417,7 +1856,125 @@ class Downloader
         return true;
     }
 
-    private function is_valid_url($url)
+    // Ссылки приходят как придётся: через "||" (формат dl_queue), переносами строк
+    // или просто пробелами. Резать по любому пробелу нельзя - незакодированный пробел
+    // ВНУТРИ одной ссылки (".../search?q=привет мир") распался бы на валидный огрызок,
+    // который ушёл бы качаться не туда, и мусорный хвост. Поэтому пробел считается
+    // разделителем, только когда сразу за ним идёт "http://" или "https://" - внутри
+    // одной ссылки такого быть не может, а is_valid_url() других схем и не принимает.
+    // Запятая разделителем НЕ считается: она легальна в пути и query ("?list=a,b").
+    private static function splitUrls($raw): array
+    {
+        $urls = [];
+        foreach (explode('||', (string) $raw) as $chunk) {
+            $chunk = trim($chunk);
+            if ($chunk === '') continue;
+            foreach (self::extractUrls($chunk) as $extracted) {
+                $extracted = trim($extracted);
+                if ($extracted !== '') $urls[] = $extracted;
+            }
+        }
+        return $urls;
+    }
+
+    // Ссылку часто копируют вместе с куском переписки ("[14:03] Петя: смотри https://... огонь").
+    // Вытаскиваем ссылки регекспом, остальное отбрасываем - но только там, где это
+    // однозначно проза: ссылок несколько, либо перед первой есть текст. Единственная
+    // ссылка в начале строки с хвостом после пробела остаётся целой: отличить прозу
+    // от незакодированного пробела ВНУТРИ ссылки (".../search?q=привет мир") здесь
+    // нечем, а обрезка молча увела бы загрузку не туда. Такая строка, как и раньше,
+    // честно отвергается is_valid_url().
+    private static function extractUrls(string $text): array
+    {
+        if (filter_var($text, FILTER_VALIDATE_URL) !== false) {
+            return [$text];
+        }
+
+        if (!preg_match_all('~https?://\S+~i', $text, $matches, PREG_OFFSET_CAPTURE)) {
+            // Ссылок не видно - отдаём как есть, чтобы ошибку сформулировал is_valid_url()
+            return [$text];
+        }
+
+        $junkBefore = trim(substr($text, 0, $matches[0][0][1])) !== '';
+        if (count($matches[0]) === 1 && !$junkBefore) {
+            return [$text];
+        }
+
+        $found = [];
+        foreach ($matches[0] as $match) {
+            // Хвостовая пунктуация из текста: "...смотри https://site/video." или "(https://site/v)"
+            $url = rtrim($match[0], '.,;:!?)]»"\'');
+            if ($url !== '') $found[] = $url;
+        }
+
+        return $found ?: [$text];
+    }
+
+    // Прямая ссылка на файл (".../clip.mp4", ".../track.mp3"): экстрактора там нет,
+    // yt-dlp скачивает файл как есть через generic. Перебор форматов, ремукс и
+    // вшивание обложки к такому файлу неприменимы - только лишняя работа ffmpeg.
+    private const DIRECT_MEDIA_EXTENSIONS = [
+        'mp4', 'mkv', 'webm', 'mov', 'avi', 'ts', 'm4v', 'flv',
+        'mp3', 'm4a', 'aac', 'opus', 'ogg', 'oga', 'flac', 'wav', 'wma',
+    ];
+
+    private static function directMediaExtension(string $url): ?string
+    {
+        $path = parse_url($url, PHP_URL_PATH);
+        if (!is_string($path) || $path === '') {
+            return null;
+        }
+        $ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+        return in_array($ext, self::DIRECT_MEDIA_EXTENSIONS, true) ? $ext : null;
+    }
+
+    // Секунды из таймкода ссылки: "t=1234", "t=1h2m3s", "start=90". null, если
+    // таймкода нет или он нулевой (качать "с нулевой секунды" незачем).
+    private static function startTimeSeconds(string $url): ?int
+    {
+        $query = parse_url($url, PHP_URL_QUERY);
+        if (!is_string($query) || $query === '') {
+            return null;
+        }
+        parse_str($query, $params);
+
+        foreach (['t', 'start'] as $key) {
+            $raw = $params[$key] ?? null;
+            if (!is_string($raw) || $raw === '') continue;
+
+            if (ctype_digit($raw)) {
+                $seconds = (int) $raw;
+            } elseif (preg_match('/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/i', $raw, $m) && $raw !== '') {
+                $seconds = ((int) ($m[1] ?? 0)) * 3600 + ((int) ($m[2] ?? 0)) * 60 + ((int) ($m[3] ?? 0));
+            } else {
+                continue;
+            }
+
+            if ($seconds > 0) return $seconds;
+        }
+
+        return null;
+    }
+
+    private static function allDirectMedia(array $urls): bool
+    {
+        if (empty($urls)) {
+            return false;
+        }
+        foreach ($urls as $url) {
+            if (self::directMediaExtension($url) === null) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // $checkNetwork = false отключает резолв хоста (SSRF-проверку), оставляя разбор
+    // самой строки. Нужно там, где ссылка уже проходила полную проверку при приёме:
+    // process_queue() перебирает всю очередь на КАЖДОМ опросе ?jobs, и резолв
+    // превращался в два DNS-запроса на ссылку раз в полторы секунды - задержка
+    // ответа плюс, при моргнувшем DNS, молчаливый выброс задач из очереди.
+    private function is_valid_url($url, bool $checkNetwork = true)
     {
         if (filter_var($url, FILTER_VALIDATE_URL) === false) {
             return false;
@@ -1425,7 +1982,70 @@ class Downloader
         // Только http/https - иначе yt-dlp можно скормить file://, ftp:// и прочие
         // схемы, дающие доступ к локальным путям сервера
         $scheme = strtolower(parse_url($url, PHP_URL_SCHEME) ?? '');
-        return $scheme === 'http' || $scheme === 'https';
+        if ($scheme !== 'http' && $scheme !== 'https') {
+            return false;
+        }
+        if (!$checkNetwork) {
+            return true;
+        }
+        return !self::pointsToInternalHost(parse_url($url, PHP_URL_HOST) ?? '');
+    }
+
+    // SSRF: без проверки yt-dlp сходит по ссылке за нас, и адрес вида
+    // http://169.254.169.254/latest/meta-data/ или http://192.168.1.1/ превращает
+    // Качалку в разведчика по внутренней сети хоста (ответ виден в логе задачи).
+    // Резолв обязателен - имя вроде localtest.me указывает на 127.0.0.1.
+    // Неразрешимое имя пропускаем: домены, закрытые для хоста, но доступные
+    // через SOCKS5, локально не резолвятся, и отказ ломал бы обычные загрузки.
+    // Результаты резолва на время запроса: пачка ссылок с одного хоста иначе
+    // тянула бы DNS столько раз, сколько в ней ссылок.
+    private static $internalHostCache = [];
+
+    private static function pointsToInternalHost(string $host): bool
+    {
+        $host = trim(strtolower($host), " \t\n\r\0\x0B.[]");
+        if ($host === '') {
+            return true;
+        }
+        if (array_key_exists($host, self::$internalHostCache)) {
+            return self::$internalHostCache[$host];
+        }
+        return self::$internalHostCache[$host] = self::resolveInternalHost($host);
+    }
+
+    private static function resolveInternalHost(string $host): bool
+    {
+        if ($host === 'localhost' || substr($host, -6) === '.local' ||
+            substr($host, -10) === '.localhost' || substr($host, -8) === '.internal') {
+            return true;
+        }
+
+        $addresses = [];
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            $addresses[] = $host;
+        } elseif (ctype_digit($host)) {
+            // http://2130706433/ - тот же 127.0.0.1 одним числом, yt-dlp его развернёт
+            $addresses[] = long2ip((int) $host);
+        } else {
+            foreach ([DNS_A, DNS_AAAA] as $type) {
+                $records = @dns_get_record($host, $type);
+                if (!is_array($records)) {
+                    continue;
+                }
+                foreach ($records as $record) {
+                    if (isset($record['ip'])) $addresses[] = $record['ip'];
+                    if (isset($record['ipv6'])) $addresses[] = $record['ipv6'];
+                }
+            }
+        }
+
+        foreach ($addresses as $address) {
+            if (!filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function check_output_folder()
@@ -1513,7 +2133,7 @@ class Downloader
 
     public function addOneDownload($onedownload)
     {
-        $urls = array_filter(array_map('trim', explode('||', $onedownload['url'])));
+        $urls = self::splitUrls($onedownload['url']);
 
         // Группируем по хосту - один сайт, один процесс (иначе параллельные запросы через общий прокси ловят 429). Разные хосты качаются параллельно.
         $groups = [];
@@ -1540,12 +2160,14 @@ class Downloader
     {
         if ($this->config["max_dl"] == -1) {
             $this->executeDownload($onedownload, $groupUrls, $useProxy, $paceRequests);
+            $this->startedUrls = array_merge($this->startedUrls, $groupUrls);
             return;
         }
 
         // background_jobs() кэширован на запрос, но инкрементируется сразу после exec() - видит процессы, запущенные более ранними группами этого же запроса.
         if (self::background_jobs() < $this->config["max_dl"]) {
             $this->executeDownload($onedownload, $groupUrls, $useProxy, $paceRequests);
+            $this->startedUrls = array_merge($this->startedUrls, $groupUrls);
             return;
         }
 
@@ -1558,6 +2180,7 @@ class Downloader
         $groupDownload = $onedownload;
         $groupDownload['url'] = implode('||', $groupUrls);
         $this->addToQueue($groupDownload);
+        $this->queuedUrls = array_merge($this->queuedUrls, $groupUrls);
     }
 
     private function executeDownload($onedownload, $urls, $useProxy, $paceRequests = false)
@@ -1569,11 +2192,25 @@ class Downloader
         $cmd .= " --plugin-dirs default";
         $cmd .= " --plugin-dirs " . escapeshellarg("/etc/yt-dlp/plugins/log_plugin");
         $cmd .= " --use-postprocessor LogPluginPP";
-        $cmd .= " -o " . escapeshellarg($this->download_path . "/%(title)s_%(id)s.%(ext)s");
+        // Музыке даём человеческое имя "Исполнитель - Трек", когда теги есть.
+        // Синтаксис yt-dlp: %(artist&{} - |)s печатает "<artist> - " только при
+        // непустом artist, иначе ничего; %(track,title)s берёт первое непустое поле.
+        // У музыки имя чистое - "Исполнитель - Трек", как в плеере. У видео
+        // остаётся "_%(id)s": названия роликов на одном канале часто совпадают
+        // ("Стрим #12", "Выпуск 3"), и без хвоста второй файл затёр бы первый.
+        // У трека такой беды нет - совпадение имени означает тот же трек.
+        $nameTemplate = !empty($onedownload['audio_only'])
+            ? "/%(artist&{} - |)s%(track,title)s.%(ext)s"
+            : "/%(title)s_%(id)s.%(ext)s";
+        $cmd .= " -o " . escapeshellarg($this->download_path . $nameTemplate);
         $cmd .= " --restrict-filenames";
 
+        $directMedia = self::allDirectMedia($urls);
+
         $sanitizedFormat = $this->sanitizeDlFormat($onedownload['dl_format']);
-        if ($sanitizedFormat === 'worst') {
+        if ($directMedia) {
+            // У прямой ссылки один-единственный формат - выбирать не из чего.
+        } elseif ($sanitizedFormat === 'worst') {
             $cmd .= " -f worst";
         } else {
             // 'top': лучшее видео+аудио до maxVideoRes; явный выбор качества переопределяет потолок
@@ -1604,7 +2241,7 @@ class Downloader
                 $cmd .= " " . $sanitizedAudio;
             }
             $suffix = "_a";
-        } else {
+        } elseif (!$directMedia) {
             $cmd .= " --merge-output-format mp4";
             $cmd .= " --remux-video mp4";
             // Трансляции (Twitch и прочий live-HLS) yt-dlp тянет через ffmpeg, а обычный mp4 без moov-атома
@@ -1612,9 +2249,17 @@ class Downloader
             // mp4 пишет заголовки по ходу, поэтому любой обрезок играется. Ключ уходит в выходные аргументы
             // ffmpeg (yt-dlp кладёт голый "ffmpeg:" именно туда) и молча игнорируется, когда качает не ffmpeg.
             $cmd .= " --downloader-args " . escapeshellarg("ffmpeg:-movflags +frag_keyframe+empty_moov+default_base_moof");
+            // Переподключение при обрыве связи: без него короткий провал сети
+            // заканчивал многочасовую запись. Префикс "ffmpeg_i:" обязателен -
+            // это ВХОДНЫЕ аргументы (относятся к чтению потока), а голый "ffmpeg:"
+            // выше yt-dlp кладёт в выходные, где они молча ничего не делают.
+            $cmd .= " --downloader-args " . escapeshellarg("ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5");
         }
 
-        $cmd .= " --embed-thumbnail --embed-metadata";
+        if (!$directMedia) {
+            // У сырого файла ни обложки, ни метаданных источника нет - вшивать нечего
+            $cmd .= " --embed-thumbnail --embed-metadata";
+        }
 
         $isYoutube = false;
         $isYoutubeMulti = false;
@@ -1627,8 +2272,19 @@ class Downloader
                 }
             }
         }
+        // Таймкод из ссылки (&t=1234, t=1h2m3s). yt-dlp сам его не применяет, хотя
+        // человек копировал ссылку именно с этого места. Одна ссылка на задачу -
+        // иначе непонятно, к какому ролику относится отрезок.
+        $startSeconds = (count($urls) === 1) ? self::startTimeSeconds($urls[0]) : null;
+        if ($startSeconds !== null) {
+            $cmd .= " --download-sections " . escapeshellarg('*' . $startSeconds . '-');
+        }
+
         if ($isYoutube) {
-            $cmd .= " --sponsorblock-remove sponsor";
+            // sponsorblock-remove режет куски из середины и сдвигает всё, что после:
+            // вместе с отрезком по таймкоду это дало бы не то место. Когда отрезок
+            // задан - только помечаем главы, ничего не вырезаем.
+            $cmd .= $startSeconds !== null ? " --sponsorblock-mark sponsor" : " --sponsorblock-remove sponsor";
             // mweb - официально рекомендованный yt-dlp клиент для связки с PO-токен провайдером (у нас bgutil,
             // см. app/start.sh) - https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide. web/web_safari туда же
             // требуют GVS PO-токен, но именно на них ловили бот-чек - исключены. android_vr токен для GVS не
@@ -1636,21 +2292,50 @@ class Downloader
             // https://github.com/yt-dlp/yt-dlp/issues/16150), поэтому не первым. tv токен тоже не требует, но без
             // подключённых кук (на первую попытку куки не даём, см. ниже) у него все форматы DRM - бесполезен здесь.
             $cmd .= " --extractor-args " . escapeshellarg("youtube:player_client=mweb,android_vr");
+
+            // Подключились к трансляции на середине - без этого ключа всё, что было
+            // до подключения, теряется навсегда. С ним запись идёт с начала эфира.
+            // Цена честная: стрим на пятом часу начнётся с закачки пятичасового
+            // хвоста, диск заполняется быстрее, готовый файл появится только в
+            // конце, а сама задача гарантированно переваливает за окно чистки
+            // (её pid-файл защищён, см. 2hourcleanup.sh). Ключ действует только на
+            // живой эфир, для обычных роликов yt-dlp его игнорирует.
+            // Отключается в конфиге: 'liveFromStart' => false.
+            if (($this->config['liveFromStart'] ?? true) && $startSeconds === null) {
+                $cmd .= " --live-from-start";
+            }
+
+            // Ссылка на анонсированный эфир: вместо ошибки "трансляция ещё не
+            // началась" задача ждёт и стартует сама. Ключ действует только на
+            // запланированные стримы и премьеры, обычный ролик по нему не ждёт.
+            // Диапазон - интервал опроса в секундах.
+            if ($this->config['waitForVideo'] ?? true) {
+                $cmd .= " --wait-for-video 30-300";
+            }
         }
 
         // YouTube: куки не подключаются к обычной загрузке - аккаунт-based PO-токен запросы требуют Data Sync ID, который без реальной нужды в куках взяться неоткуда, только лишние WARNING. Точечно, только повторной попыткой - см. autoRetryWithCookiesIfNeeded().
-        // Instagram: наоборот, публичный доступ у yt-dlp часто отсутствует вовсе (приватные аккаунты, stories) - ждать первой неудачной попытки бессмысленно, куки подключаем сразу, если настроены и пригодны.
+        // Instagram и TikTok: наоборот, публичный доступ у yt-dlp часто отсутствует вовсе (приватные аккаунты, IP-блок) - ждать первой неудачной попытки бессмысленно, куки подключаем сразу, если настроены и пригодны.
         $isInstagram = false;
+        $isTikTok = false;
         foreach ($urls as $url) {
-            if (self::detectCookiesSite($url) === 'instagram') {
+            $site = self::detectCookiesSite($url);
+            if ($site === 'instagram') {
                 $isInstagram = true;
-                break;
+            } elseif ($site === 'tiktok') {
+                $isTikTok = true;
             }
         }
         if ($isInstagram) {
             $instagramCookiesFile = self::cookiesFileForSite('instagram');
             if (self::cookiesFileUsable($instagramCookiesFile)) {
                 $cmd .= " --cookies " . escapeshellarg($instagramCookiesFile);
+            }
+        }
+        if ($isTikTok) {
+            $tiktokCookiesFile = self::cookiesFileForSite('tiktok');
+            if (self::cookiesFileUsable($tiktokCookiesFile)) {
+                $cmd .= " --cookies " . escapeshellarg($tiktokCookiesFile);
             }
         }
 
@@ -1665,6 +2350,13 @@ class Downloader
         } elseif ($isYoutube) {
             $cmd .= " --sleep-requests 0.5";
         }
+
+        // Скорость просела ниже порога - yt-dlp переизвлекает ссылку и начинает
+        // заново. Лечит "висит часами на дохлом соединении CDN", но порог должен
+        // быть заведомо ниже honest-скорости через SOCKS5: на 100K загрузка,
+        // идущая нормальные 100-150 КБ/с, считалась задушенной и перезапускалась
+        // по кругу. 20K - это уже точно не работа, а стоящее соединение.
+        $cmd .= " --throttled-rate 20K";
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
         $fnp = str_replace("job_", "pid_", $fno);
@@ -1791,13 +2483,21 @@ class Downloader
             $parsed = self::parseQueueLine($line);
             if ($parsed === null) continue;
 
-            if (!$this->is_valid_url($parsed['url'])) {
+            // Без резолва: ссылка уже прошла полную проверку при постановке в очередь,
+            // а тут строка перебирается заново на каждом опросе (см. is_valid_url).
+            if (!$this->is_valid_url($parsed['url'], false)) {
                 $this->errors[] = $parsed['urlData'] . " не верный URL, удаляю из списка очереди";
                 continue;
             }
 
+            // Хост недавно ответил 429 - не долбимся в него, но и очередь не
+            // держим: строка остаётся на месте, а слот забирает следующая задача
+            // другого хоста. Строгий FIFO тут сознательно нарушен - при max_dl = 1
+            // один придержанный хост иначе останавливал бы вообще всё.
+            $cooldownLeft = self::hostCooldownLeft(self::getHostStatic($parsed['url']));
+
             // max_dl == -1 нужен отдельным условием - "$currently_running < -1" всегда false, задачи в очереди никогда бы не продвинулись, если лимит сменили на -1 постфактум.
-            if ($this->config["max_dl"] == -1 || $currently_running < $this->config["max_dl"]) {
+            if ($cooldownLeft === 0 && ($this->config["max_dl"] == -1 || $currently_running < $this->config["max_dl"])) {
                 $newDownloads[] = array(
                     'url' => $parsed['url'],
                     'dl_format' => $parsed['dl_format'],

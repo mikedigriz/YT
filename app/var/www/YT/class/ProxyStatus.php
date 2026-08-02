@@ -150,7 +150,10 @@ class ProxyStatus
         @file_put_contents($file, $lines, LOCK_EX);
     }
 
-    // Фоновый curl через прокси, пишет "ts 0|1" в лог. Прокси передаётся через окружение (как в Downloader), не через argv.
+    // Фоновый curl через прокси, пишет "ts 0|1" в лог. Прокси уходит в окружение curl
+    // через env, но сама строка запуска - argv для sh -c и env, то есть учётные данные
+    // видны в ps любому, кто уже внутри контейнера. Наружу они по-прежнему не текут:
+    // в UI и логи задач попадает только work/death.
     private static function launch_probe(): void
     {
         $proxy = $GLOBALS['config']['socks5'];

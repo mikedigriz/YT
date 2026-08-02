@@ -116,6 +116,12 @@ $queuedJobsAfterProcessing = [];
 if (!$config['disableQueue']) {
     $downloader = new Downloader([]);
     $queuedJobsAfterProcessing = $downloader->process_queue($logPathFileList);
+    // Поднятая из очереди задача уже удалена из dl_queue, но её pid_-файл создан
+    // ПОСЛЕ скана выше - без повторного скана она пропадает разом из обоих списков
+    // (в очереди нет, среди активных не видно) до следующего опроса.
+    if ($downloader->getStartedUrls()) {
+        $logPathFileList = Downloader::scanLogPath();
+    }
 }
 
 function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
@@ -373,10 +379,47 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         $downloader = new Downloader($dl_list);
     }
 
-    if(!isset($_SESSION['errors']) || count($_SESSION['errors']) === 0) {
+    $hasErrors = isset($_SESSION['errors']) && count($_SESSION['errors']) > 0;
+    $rejected = isset($downloader) ? $downloader->getRejectedUrls() : [];
+
+    // Отправка через fetch (как все остальные действия на сайте) отвечает JSON -
+    // после редиректа сводку показывать негде, данные умирают вместе с запросом.
+    // Обычный POST формы сохранён рабочим: без JS страница ведёт себя как раньше.
+    // Признаём два маркера: свой заголовок и обычный Accept. Заголовок может не
+    // дойти (прокси/фильтры), Accept шлёт сам fetch - хватит любого из двух.
+    $wantsJson = (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'fetch')
+        || (isset($_SERVER['HTTP_ACCEPT']) && stripos($_SERVER['HTTP_ACCEPT'], 'application/json') !== false);
+
+    if ($wantsJson) {
+        $started = isset($downloader) ? $downloader->getStartedUrls() : [];
+        $queued  = isset($downloader) ? $downloader->getQueuedUrls() : [];
+        header('Content-Type: application/json');
+        echo json_encode([
+            'ok'       => !$hasErrors,
+            'started'  => count($started),
+            'queued'   => count($queued),
+            'rejected' => $rejected,
+            'errors'   => $_SESSION['errors'] ?? [],
+            // Что вернуть в поле: только битые ссылки, иначе повторная отправка
+            // задвоила бы уже запущенные
+            'keepInField' => implode('||', $rejected),
+        ]);
+        unset($_SESSION['errors']);
+        die();
+    }
+
+    // Классический путь без JS. Три состояния вместо двух: всё ушло качаться -
+    // редирект; всё отклонено - остаёмся и возвращаем введённое в поле; часть
+    // ушла, часть отклонена - тоже остаёмся (иначе ошибку негде показать), но в
+    // поле кладём только битые ссылки.
+    if (!$hasErrors) {
         header("Location: index.php#" . $config['redirectAfterSubmit']);
         die();
     }
+
+    $_SESSION['form_urls'] = !empty($rejected)
+        ? implode('||', $rejected)
+        : (string) ($_POST['urls'] ?? '');
 }
 
 // Новогодний маскот (ноябрь - март) - месяц считается один раз тут и
@@ -415,11 +458,28 @@ if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
 // Тот же список доменов, что читает load_favicons.py. Downloader::DIRECT_ACCESS_DOMAINS -
 // отдельный список (прямой доступ vs прокси), сюда не входит. Читается только тут, не в начале
 // файла - единственный потребитель part.header.php, куда ?jobs/destructive POST не доходят (die() раньше).
+// Сироты .part (после docker restart процесс убит, огрызок остался). Только на
+// обычном рендере страницы: на опросах ?jobs это лишний обход папки, а сюда мы
+// доходим уже после process_queue, то есть после finalize_job_log со спасателем -
+// спасённая запись к этому моменту .part уже не называется.
+Downloader::sweepOrphanPartFiles();
+
 $faviconDomainsJson = file_get_contents(__DIR__ . '/config/favicon_domains.json');
-$knownServices = json_decode($faviconDomainsJson, true) ?: [];
+$faviconDomains = json_decode($faviconDomainsJson, true) ?: [];
+// Формат файла - объект {domains, audio}; голый массив тоже принимаем, чтобы
+// старая копия конфига не роняла страницу в пустой список сервисов.
+$knownServices = isset($faviconDomains['domains']) ? $faviconDomains['domains'] : (array_is_list($faviconDomains) ? $faviconDomains : []);
+$audioServices = isset($faviconDomains['audio']) && is_array($faviconDomains['audio']) ? $faviconDomains['audio'] : [];
+// Список прямых доменов нужен фронту только чтобы не пугать мёртвым прокси там,
+// где прокси не используется. Источник тот же, что у маршрутизации - без копии.
+$directDomains = Downloader::DIRECT_ACCESS_DOMAINS;
+// Введённое возвращается в поле после ошибки: раньше страница перерисовывалась
+// пустой, и пять ссылок из-за одной опечатки набирали заново.
+$formUrls = (string) ($_SESSION['form_urls'] ?? '');
 
 require_once 'views/part.header.php';
 require_once 'views/part.main.php';
 require_once 'views/part.footer.php';
 
 unset($_SESSION['errors']);
+unset($_SESSION['form_urls']);

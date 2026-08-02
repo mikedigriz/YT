@@ -21,7 +21,12 @@ import io
 DOMAINS_FILE = "app/var/www/YT/config/favicon_domains.json"
 
 with open(DOMAINS_FILE, encoding="utf-8") as f:
-    DOMAINS = json.load(f)
+    _data = json.load(f)
+
+# Формат файла - объект {domains, audio}; голый список тоже понимаем, чтобы
+# скрипт не падал на старой копии конфига. Ключ audio здесь не нужен - он
+# помечает музыкальные сервисы для формы, иконки у них общие.
+DOMAINS = _data["domains"] if isinstance(_data, dict) else _data
 
 OUTPUT_DIR = "app/var/www/YT/favicons"
 MIN_DIMENSION = 32
