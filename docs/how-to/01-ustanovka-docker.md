@@ -6,7 +6,7 @@
 
 Самый короткий путь - `docker run` с готовым образом, он разобран в [туториале](../tutorials/01-pervyy-zapusk.md). Здесь - способы посерьёзнее.
 
-Через `docker-compose` (удобнее, если сервис будет жить долго) - создай `docker-compose.yml`:
+Через `docker compose` (удобнее, если сервис будет жить долго) - создай `docker-compose.yml`:
 
 ```yaml
 services:
@@ -15,20 +15,47 @@ services:
     tty: true
     restart: always
     container_name: yt
+    # tini как PID 1: php-fpm, tail и сервер PO-токенов запускаются из start.sh
+    # в фоне, а nginx (он становится PID 1 после exec) не умеет ни раздавать им
+    # SIGTERM при docker stop, ни хоронить зомби-процессы.
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env
     ports:
       - 8000:80
+    volumes:
+      - yt_download:/var/www/YT/download
+      - yt_tmp:/var/www/YT/tmp
+      - yt_feedback:/var/www/YT_data
+      # Куки нужных сайтов - файлами с хоста, чтобы обновлять их без пересборки.
+      # Права 600, владелец - UID www-data (33), иначе yt-dlp их не примет.
+      # - ./youtube_cookies.txt:/var/www/YT/config/youtube_cookies.txt:ro
+
+volumes:
+  yt_download:
+  yt_tmp:
+  yt_feedback:
 ```
 
 Создай рядом файл `.env` (можно пустой) и запусти:
 
 ```bash
 touch .env
-docker-compose up -d
+docker compose up -d
 ```
 
 Как прописать в `.env` прокси - в разделе [Настроить прокси через .env](#настроить-прокси-через-env) ниже.
+
+### Почему volumes именно такие
+
+- **Именованные volumes, а не bind-mount на хост.** Всё внутри контейнера работает от `www-data` (UID 33). Bind-mount отдаёт папке владельца с хоста, и запись падает с `Permission denied` ещё до первой загрузки. Именованный volume Docker создаёт с правами точки монтирования из образа - там уже нужный владелец.
+- **`yt_feedback` на `/var/www/YT_data`** - каталог доски обратной связи. Он лежит **выше** корня сайта (`/var/www/YT`) намеренно: так его нельзя отдать по HTTP в принципе. Без этого volume доска не переживёт пересоздание контейнера - обращения исчезнут вместе с ним. Если обратная связь выключена (`'feedback' => false`), volume не нужен.
+- **`yt_download` и `yt_tmp`** - скачанные файлы и служебное состояние (очередь, PID-файлы, логи задач). Без них `docker compose up` с новым образом обнуляет и очередь, и историю.
+- **`cap_drop: [ALL]`** - контейнер запускает yt-dlp против непроверенного удалённого контента, это самая широкая поверхность атаки в проекте. Отбирать возможности у процесса, который и так не root, дёшево. nginx при этом всё равно слушает порт 80 - право на это выдано самому бинарнику через `setcap` при сборке образа.
 
 ## Собрать образ из исходников
 
@@ -40,7 +67,9 @@ docker build -t yt .
 docker run -it -p 8000:80 yt
 ```
 
-Готовый `docker-compose.yml` в репозитории ссылается на локальный образ `yt:latest` - перед `docker-compose up -d` его нужно один раз собрать той же командой `docker build -t yt .`.
+Готовый `docker-compose.yml` в репозитории ссылается на локальный образ `yt:latest` - перед `docker compose up -d` его нужно один раз собрать той же командой `docker build -t yt .`.
+
+Сборка занимает несколько минут: ставятся ffmpeg, nginx, PHP 8.4-FPM, Python, Node.js 22, aria2, потом `pip install "yt-dlp[default]"`, сервер PO-токенов и патч имён файлов поверх свежего yt-dlp. Патч накладывается через `patch -p0 --fuzz=0` и при несовпадении контекста **роняет сборку** - это сделано специально, см. [Обновить yt-dlp](07-obnovit-yt-dlp.md).
 
 ## Настроить прокси через .env
 
@@ -69,14 +98,16 @@ docker build --no-cache -t yt .
 - Python 3.13
 - FFmpeg
 - Node.js 22+
+- aria2 (нужен только при `'externalDownloader' => true`, без пакета ускорение просто не включится)
 - yt-dlp, установленный с дополнительными зависимостями: `pip install "yt-dlp[default]"`
 
 Дальше:
 
 1. Скопируй содержимое `app/var/www/YT` в корень веб-сервера.
 2. Настрой nginx по образцу `app/etc/nginx/sites-available/default`.
-3. Пропиши правильные пути в `config/config.php` (`outputFolder`, `logPath`, `youtubedlExe`).
+3. Пропиши правильные пути в `config/config.php` (`outputFolder`, `logPath`, `youtubedlExe`, `feedbackPath`). Каталог из `feedbackPath` должен лежать **выше** корня сайта.
 4. Запусти генератор плагина-логгера - содержимое скрипта `logger.sh` - вручную, чтобы создать Python-постпроцессор для yt-dlp.
+5. Заведи файлы логов (`/var/log/yt_dlp.log`, `/var/log/feedback.log`) с владельцем www-data - без них плагин логирования и лог обратной связи молча ничего не пишут.
 
 Зачем нужен именно Node.js 22+ и что делает `logger.sh` - разобрано в [Архитектуре](../explanation/01-arhitektura.md).
 
@@ -97,7 +128,12 @@ crontab -e
 
 # Чистка файлов старше 120 минут, каждые 15 минут
 */15 * * * * docker exec yt /etc/Scripts/2hourcleanup.sh >> /var/log/yt/cleanup.log 2>&1
+
+# Необязательно: двигать очередь, даже когда сайт никто не смотрит
+* * * * * curl -fsS "http://127.0.0.1:8000/index.php?jobs&cron" > /dev/null 2>&1
 ```
+
+Последняя строка нужна не всем. Очередь продвигается сама на каждом запросе к сайту, включая фоновый опрос статуса, - но опрос глохнет, когда вкладку сворачивают или закрывают. Поставленная на ночь очередь без этой строки дождётся утра и первого открытого браузера. Режим `?jobs&cron` делает ту же работу, что обычный опрос, но ничего не отдаёт в ответ.
 
 Проверить, что очистка работает:
 

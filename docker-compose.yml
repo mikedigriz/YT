@@ -62,7 +62,11 @@ services:
       # контейнера и теряются при docker rm/пересоздании.
       - yt_download:/var/www/YT/download
       - yt_tmp:/var/www/YT/tmp
+      # Диалоги обратной связи. В отличие от tmp/download возрастной чистки нет -
+      # том переживает и пересборку образа, и docker rm контейнера.
+      - yt_feedback:/var/www/YT_data
 
 volumes:
   yt_download:
   yt_tmp:
+  yt_feedback:

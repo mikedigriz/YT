@@ -1,5 +1,40 @@
 <?php
 
+// Страницы нет (сейчас - выключенная в конфиге обратная связь). Отдельная функция,
+// а не голый 404: пустой ответ выглядит как поломка сайта, а не как "тут ничего нет".
+function showNotFoundPage(string $text = 'Такой страницы нет.') {
+    http_response_code(404);
+    header('Content-Type: text/html; charset=UTF-8');
+    ?>
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Страницы нет</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+                   min-height: 100vh; display: flex; align-items: center; justify-content: center;
+                   background: #f5f5f5; margin: 0; padding: 20px; }
+            .container { background: #fff; border-radius: 8px; padding: 40px; max-width: 460px;
+                         box-shadow: 0 2px 10px rgba(0,0,0,.1); }
+            h1 { font-size: 22px; margin: 0 0 12px; color: #333; }
+            p { color: #666; line-height: 1.6; margin: 0 0 20px; }
+            a { color: #2b6cb0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Страницы нет</h1>
+            <p><?= htmlspecialchars($text, ENT_QUOTES, 'UTF-8') ?></p>
+            <p><a href="/">Вернуться на главную</a></p>
+        </div>
+    </body>
+    </html>
+    <?php
+    die();
+}
+
 function showCsrfErrorPage() {
     http_response_code(403);
     ?>

@@ -110,26 +110,69 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    ssl_dhparam /etc/nginx/cert/dhparam.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_prefer_server_ciphers on;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
     ssl_session_cache shared:SSL:50m;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
-    ssl_stapling on;
-    ssl_stapling_verify on;
+
+    # OCSP stapling выключен: Let's Encrypt перестал отдавать OCSP-ответы,
+    # включённый stapling только добавляет задержку на попытку их получить.
+    # ssl_stapling on;
+    # ssl_stapling_verify on;
 
     http2 on;
     http3 on;
+    quic_gso on;
+    quic_retry on;
     add_header Alt-Svc 'h3=":443"; ma=86400' always;
 
+    include /etc/nginx/snippets/security-headers.conf;
+
+    # Ответ приложения несёт CSP с nonce и длинный набор security-заголовков -
+    # дефолтных буферов на них не хватает, апстрим падает с "upstream sent too
+    # big header".
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+
+    # Защита от медленных клиентов (slowloris)
+    client_body_timeout 10s;
+    client_header_timeout 10s;
+    send_timeout 10s;
+
     access_log /var/log/nginx/yt_access.log;
+    access_log /var/log/nginx/blocked.log combined if=$block_non_browser;
     error_log /var/log/nginx/yt_error.log warn;
 
-    location / {
-        if ($block_non_browser) { return 444; }
+    if ($block_non_browser) { return 444; }
 
+    error_page 400 401 402 403 404 405 406 407 408 409 410 411 412 413 414 415
+               416 417 418 421 422 423 424 425 426 428 429 431 451 =404 /404.html;
+    error_page 500 501 502 503 504 505 506 507 508 510 511 =500 /500.html;
+
+    location = /404.html {
+        root /usr/share/nginx/html;
+        internal;
+        default_type text/html;
+        add_header Cache-Control "public, max-age=300" always;
+        add_header Alt-Svc 'h3=":443"; ma=86400' always;
+        include /etc/nginx/snippets/security-headers.conf;
+    }
+
+    location = /500.html {
+        root /usr/share/nginx/html;
+        internal;
+        default_type text/html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
+        add_header Retry-After "60" always;
+        add_header Alt-Svc 'h3=":443"; ma=86400' always;
+        include /etc/nginx/snippets/security-headers.conf;
+    }
+
+    location / {
         limit_req zone=general burst=15 nodelay;
         limit_conn conn_limit 20;
 
@@ -138,7 +181,7 @@ server {
         proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header X-Forwarded-Host $host;
         proxy_set_header X-Forwarded-Port $server_port;
@@ -150,13 +193,16 @@ server {
         proxy_cache app_cache;
         proxy_cache_valid 200 10m;
         proxy_cache_valid 404 1m;
+        proxy_cache_methods GET HEAD;
         proxy_cache_bypass $is_args;
         proxy_no_cache $is_args;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         proxy_cache_background_update on;
         proxy_cache_lock on;
-        add_header X-Cache-Status $upstream_cache_status;
-
+        proxy_cache_revalidate on;
+        proxy_ignore_headers Expires;
+        add_header X-Cache-Status $upstream_cache_status always;
+        add_header Alt-Svc 'h3=":443"; ma=86400' always;
         include /etc/nginx/snippets/security-headers.conf;
     }
 
@@ -165,25 +211,18 @@ server {
         proxy_cache app_cache;
         proxy_cache_valid 200 365d;
         expires 1y;
-        add_header Cache-Control "public, immutable";
+        add_header Cache-Control "public, immutable" always;
+        add_header Alt-Svc 'h3=":443"; ma=86400' always;
         include /etc/nginx/snippets/security-headers.conf;
     }
-
-    location = /404.html {
-        add_header Cache-Control "public, max-age=300" always;
-        include /etc/nginx/snippets/security-headers.conf;
-    }
-
-    location = /500.html {
-        add_header Cache-Control "no-cache, no-store, must-revalidate" always;
-        add_header Retry-After "60" always;
-        include /etc/nginx/snippets/security-headers.conf;
-    }
-
-    error_page 404 /404.html;
-    error_page 500 502 503 504 /500.html;
 }
 ```
+
+**Про `X-Forwarded-For $remote_addr` - это не опечатка.** Привычный `$proxy_add_x_forwarded_for` (он же стоит в дебиановском `proxy_params`) **дописывает** к заголовку, который прислал клиент. Приложение доверяет заголовкам, когда запрос пришёл с приватного адреса - то есть всегда, если оно стоит за прокси. Пока адрес нужен был только лимитам частоты, ценой ошибки был обход лимита; с доверенными сетями администратора доски обратной связи ценой стал доступ к кнопкам удаления по подставленному заголовку. Замещай заголовок целиком, см. [Включить обратную связь](09-obratnaya-svyaz.md#шаг-4-грабля-с-обратным-прокси-обязательно-прочитать).
+
+**Про `add_header` в каждом `location`.** В nginx `add_header` не складывается по уровням: первый же `add_header` внутри `location` отменяет наследование всех заголовков, заданных на уровне `server`. Поэтому `Alt-Svc` и `include` со security-заголовками продублированы в каждом блоке. Забудешь - конкретный `location` останется без HSTS и остальных заголовков, причём молча.
+
+**Про кеш и динамику.** `proxy_cache_bypass $is_args` выключает кеш для любого запроса с query-строкой. Под это правило попадает всё живое: опрос статуса `?jobs`, разбор плейлиста `?playlist`, страница обратной связи `?feedback`. Закешированный ответ `?jobs` показывал бы прогресс десятиминутной давности.
 
 ### /etc/nginx/snippets/security-headers.conf
 
@@ -199,13 +238,37 @@ add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style
 
 **Важно про CSP.** Приложение уже отдаёт свой `Content-Security-Policy` с одноразовым nonce для инлайн-скриптов. Если внешний nginx добавит второй CSP без nonce, браузер применит пересечение обеих политик - и интерфейс сломается. Поэтому строку `Content-Security-Policy` из сниппета убери, приложение выставит её само. Остальные заголовки дублировать безопасно.
 
+### Необязательно: закрыть сайт для чужих
+
+Если Качалка нужна только тебе и домашней сети, дешевле всего закрыть её на пограничном nginx, не трогая приложение:
+
+```nginx
+    location / {
+        allow 192.168.1.0/24;
+        allow 203.0.113.10;      # свой внешний адрес
+        deny all;
+
+        # ... остальное как выше
+    }
+```
+
+`deny all` последним - порядок в nginx именно такой: сначала разрешения, потом общий запрет.
+
 ## Шаг 2. Подставь свои значения
 
-Замени `example.com` и пути до сертификатов на свои, затем перезагрузи nginx:
+Замени `example.com` и пути до сертификатов на свои, при необходимости - адрес контейнера в `upstream app`, затем перезагрузи nginx:
 
 ```bash
 nginx -t && systemctl reload nginx
 ```
+
+Проверить, что приложение видит настоящий адрес посетителя, а не адрес прокси: открой доску обратной связи, отправь обращение и посмотри строку в логе.
+
+```bash
+docker logs --tail 20 yt | grep feedback
+```
+
+В поле `ip=` должен быть адрес твоего браузера. Стоит адрес контейнера или шлюза - `X-Real-IP` до приложения не доходит.
 
 ## Почему конфиг устроен именно так
 
@@ -215,3 +278,5 @@ nginx -t && systemctl reload nginx
 - **Таймауты `10s`** - защита от slowloris-атак, когда клиент специально тянет с отправкой данных, чтобы занять соединение.
 - **`limit_req`/`limit_conn`** - один агрессивный клиент не положит сервер частыми запросами или сотней открытых соединений.
 - **`proxy_cache_use_stale` + `proxy_cache_lock`** - при недоступности приложения nginx отдаст старую закешированную версию вместо ошибки, а за свежей страницей сходит только один запрос, даже если её ждёт толпа.
+- **`proxy_buffer_size 128k`** - приложение отдаёт CSP с nonce и полный набор security-заголовков. Дефолтных 4-8 КБ на них не хватает, и nginx отвечает 502 с записью `upstream sent too big header` в лог ошибок.
+- **Один общий `error_page` на все коды** - наружу уходит одна из двух своих страниц (404 или 500) вместо стандартных страниц nginx, по которым видно версию и устройство сервера.

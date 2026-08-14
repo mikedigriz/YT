@@ -174,10 +174,53 @@ function formatClock(totalSeconds) {
     return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
-// Ссылка на канал/главную вместо ролика. Те же приметы, что у isYoutubeMulti
-// в Downloader::executeDownload(), плюс голый хост без пути. Ошибиться в другую
-// сторону дешевле: лишний вопрос человек закроет, лишние сорок роликов - нет.
-function isBulkPageUrl(raw) {
+// Приметы того, что за ссылкой не один ролик, а список: плейлист, альбом, канал,
+// страница автора, выдача поиска. Намеренно обобщённые и не привязанные к сайту -
+// экстракторов у yt-dlp почти две тысячи, формы ссылок у них несовместимы
+// (/playlist?list=, /sets/, /album/, /plst/, /-/), и любой поимённый список
+// устареет с очередным обновлением. Поэтому здесь только подсказка, а
+// окончательный ответ даёт сам yt-dlp полем _type (см. PlaylistProbe::parse).
+// Ошибиться в сторону лишнего вопроса дешевле: вопрос человек закроет, сорок
+// лишних роликов на диске - нет.
+const COLLECTION_QUERY_PARAMS = [
+    'list', 'playlist', 'album', 'set', 'series', 'season', 'channel', 'wl', 'start_radio'
+];
+
+const COLLECTION_PATH_SEGMENTS = new Set([
+    'playlist', 'playlists', 'album', 'albums', 'set', 'sets', 'series', 'season',
+    'collection', 'collections', 'channel', 'channels', 'user', 'users', 'feed',
+    'results', 'search', 'mix', 'chart', 'charts', 'podcast', 'show', 'shows',
+    'episodes', 'videos', 'streams', 'shorts', 'tracks', 'favorites', 'bookmarks',
+    'subscriptions', 'library', 'plst',
+    // Кириллические варианты попадаются на российских сайтах
+    'плейлист', 'подборка', 'альбом'
+]);
+
+// Сегменты, которые считаются приметой списка ТОЛЬКО в хвосте пути. У сайтов со
+// стоковым видео такие слова стоят папкой посреди адреса конкретного файла
+// (/shutterstock/videos/4074757469/preview/...webm), и списком там не пахнет.
+// Настоящие вкладки-списки, наоборот, путь заканчивают: /@user/videos,
+// /channel/123/streams, /music/tracks.
+const COLLECTION_TAIL_ONLY_SEGMENTS = new Set([
+    'videos', 'streams', 'shorts', 'tracks', 'episodes', 'feed',
+    'favorites', 'bookmarks', 'subscriptions', 'library'
+]);
+
+// Прямая ссылка на медиафайл списком быть не может по определению - расширение в
+// конце пути перевешивает любые "папочные" приметы выше.
+const MEDIA_FILE_EXTENSIONS = new Set([
+    'mp4', 'webm', 'mkv', 'mov', 'avi', 'm4v', 'ts', 'flv', 'm3u8', 'mpd',
+    'mp3', 'm4a', 'aac', 'opus', 'ogg', 'oga', 'flac', 'wav', 'wma'
+]);
+
+function pathIsMediaFile(path) {
+    const last = path.split('/').pop() || '';
+    const dot = last.lastIndexOf('.');
+    if (dot <= 0) return false;
+    return MEDIA_FILE_EXTENSIONS.has(last.slice(dot + 1).toLowerCase());
+}
+
+function looksLikeCollection(raw) {
     let url;
     try {
         url = new URL(String(raw ?? '').trim());
@@ -185,13 +228,52 @@ function isBulkPageUrl(raw) {
         return false;
     }
 
-    const path = url.pathname.replace(/\/+$/, '');
-    if (path === '' && !url.search) return true;
-    if (/^\/(?:playlist|channel|c|user|feed|results)(?:\/|$)/i.test(path)) return true;
-    // /@handle - страница автора, но /@handle/video/123 у некоторых сайтов уже ролик
-    if (/^\/@[^/]+(?:\/(?:videos|streams|shorts|playlists|featured)?)?$/i.test(path)) return true;
+    let path = url.pathname.replace(/\/+$/, '');
 
-    return false;
+    // Проверка файла идёт ДО параметров запроса: у прямых ссылок на CDN сплошь и
+    // рядом висит подписной хвост, среди которого попадаются и наши приметы.
+    if (pathIsMediaFile(path)) return false;
+
+    for (const param of COLLECTION_QUERY_PARAMS) {
+        if (url.searchParams.has(param)) return true;
+    }
+
+    if (path === '' && !url.search) return true;
+
+    // pathname приходит percent-encoded, а кириллические сегменты сверяем текстом.
+    // Битую последовательность decodeURIComponent роняет исключением - не повод
+    // терять весь разбор поля.
+    try { path = decodeURIComponent(path); } catch (e) {}
+
+    // @handle - страница автора. Не обязательно первым сегментом: у VK это
+    // /video/@user. Но /@handle/video/123 у части сайтов уже конкретный ролик,
+    // поэтому handle должен быть последним либо перед известной вкладкой.
+    if (/\/@[^/]+(?:\/(?:videos|streams|shorts|playlists|featured|releases)?)?$/i.test(path)) {
+        return true;
+    }
+    // VK-шная форма списка: /-/, /-12345
+    if (/^\/-/.test(path)) return true;
+    // Раздел видео сообщества VK: /video-123456. Подчёркивание отличает его от
+    // конкретного ролика - /video-123456_456239017.
+    if (/^\/video-\d+$/.test(path)) return true;
+    // Подборка на OK: /video/c1234567 против одиночного /video/9876543210.
+    if (/\/video\/c\d+/i.test(path)) return true;
+    // Ютубовское /c/Name - только первым сегментом. В общий список "c" класть
+    // нельзя: под него попадал любой путь с однобуквенным сегментом (/a/b/c/d).
+    if (/^\/c\//i.test(path)) return true;
+
+    const segments = path.split('/').filter(Boolean).map(s => s.toLowerCase());
+    return segments.some((seg, i) => {
+        if (!COLLECTION_PATH_SEGMENTS.has(seg)) return false;
+        // "Хвостовые" слова засчитываем только у конца пути: после них допустим
+        // разве что номер страницы (/@user/videos/2), но не адрес файла.
+        // Строго последним сегментом: продолжение пути после такого слова - это
+        // адрес конкретной записи, а не страница списка (twitch.tv/videos/123456789).
+        if (COLLECTION_TAIL_ONLY_SEGMENTS.has(seg)) {
+            return i === segments.length - 1;
+        }
+        return true;
+    });
 }
 
 // Разбирает поле целиком. Возвращает {urls, bad} - что уйдёт на сервер и что
@@ -918,9 +1000,17 @@ function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerH
     // раньше: кроссфейд полтора раза в секунду выглядел бы как мигание.
     const structuralChange = container.children.length !== desired.length;
 
+    // Перестроение бывает отложенным: startViewTransition зовёт колбэк не сразу,
+    // а опрос успевает запланировать следующее. Метку версии ставим СИНХРОННО,
+    // чтобы устаревший колбэк не разложил строки по неактуальным данным - так
+    // строка с кнопкой "Очистить всё" однажды оказалась выше файлов.
+    const generation = (Number(container.dataset.renderGen) || 0) + 1;
+    container.dataset.renderGen = String(generation);
+    container.dataset.lastHash = hash;
+
     const apply = () => {
+        if (Number(container.dataset.renderGen) !== generation) return;
         reconcileRows(container, desired);
-        container.dataset.lastHash = hash;
     };
 
     if (structuralChange) {
@@ -1089,6 +1179,433 @@ function renderFileRow(file, isNew) {
             <td>${escapeHtml(file.size)}</td>
             <td>${actions}</td>
         </tr>`;
+}
+
+// === Массовый выбор и скачивание файлов (Видео/Музыка) ===
+// Вход - только долгим нажатием (никаких чекбоксов, см. ТЗ). Выбор живёт в JS
+// Set вне DOM/HTML строки: renderFileRow() не знает о выборе, иначе
+// reconcileRows() считал бы неизменившиеся файлы "изменившимися" каждый опрос
+// (см. dataset.rowHtml сравнение в reconcileRows) и убивал бы узлы/анимации.
+// Синхронизация с перерисованной таблицей - отдельным проходом reapplySelectionClasses()
+// сразу после каждого renderTable() в loadList().
+const LONG_PRESS_SELECT_TIME = 500;
+const LONG_PRESS_MOVE_TOLERANCE = 10;
+const BULK_CONFIRM_COUNT_THRESHOLD = 10;
+const BULK_CONFIRM_BYTES_THRESHOLD = 500 * 1024 * 1024;
+// Пауза между запусками файлов. Держим её маленькой намеренно: право качать
+// без спроса браузер даёт на короткое окно после нажатия (в Chrome - порядка
+// 5 секунд), и чем дольше тянется очередь, тем вероятнее, что хвост упрётся в
+// запрет. 400мс - видимая глазом последовательность и ~12 файлов внутри окна.
+const BULK_SEQUENTIAL_DELAY = 400;
+
+function createFileSelectionState(tbodyId, barId, type) {
+    return {
+        tbodyId, barId, type,
+        tbody: null, bar: null,
+        active: false,
+        selected: new Set(),
+        lastKnownFiles: new Map(),
+        queue: null
+    };
+}
+
+const fileSelection = {
+    video: createFileSelectionState('videofiles', 'video-select-bar', 'v'),
+    music: createFileSelectionState('musicfiles', 'music-select-bar', 'm')
+};
+
+// На мобильном панель прижата к низу экрана (position: fixed) и накрыла бы
+// последнюю строку таблицы - класс на body добавляет странице отступ под неё.
+function syncSelectionBodyClass() {
+    const anyActive = fileSelection.video.active || fileSelection.music.active;
+    document.body.classList.toggle('selection-active', anyActive);
+}
+
+function enterSelectionMode(state) {
+    if (state.active) return;
+    state.active = true;
+    if (state.bar) state.bar.hidden = false;
+    if (state.tbody) state.tbody.classList.add('selection-mode');
+    syncSelectionBodyClass();
+    reapplySelectionClasses(state);
+}
+
+function exitSelectionMode(state) {
+    stopBulkDownload(state);
+    state.active = false;
+    state.selected.clear();
+    if (state.bar) state.bar.hidden = true;
+    if (state.tbody) state.tbody.classList.remove('selection-mode');
+    syncSelectionBodyClass();
+    reapplySelectionClasses(state);
+}
+
+function toggleRowSelection(state, row) {
+    const key = row.dataset.rowKey;
+    if (!key) return;
+    if (state.selected.has(key)) state.selected.delete(key);
+    else state.selected.add(key);
+    row.classList.toggle('row-selected', state.selected.has(key));
+    row.setAttribute('aria-selected', state.selected.has(key) ? 'true' : 'false');
+    updateSelectionUI(state);
+}
+
+// Единственная точка синхронизации выбора с DOM - зовётся после каждого
+// renderTable() для файловых таблиц. HTML строки выбор не знает, поэтому
+// подсветка/aria/tabindex расставляются здесь заново на живых узлах.
+function reapplySelectionClasses(state) {
+    if (!state.tbody) return;
+    for (const row of Array.from(state.tbody.children)) {
+        const key = row.dataset.rowKey;
+        if (!key) continue;
+        const selected = state.selected.has(key);
+        row.classList.toggle('row-selected', selected);
+        if (state.active) {
+            row.setAttribute('aria-selected', selected ? 'true' : 'false');
+            row.tabIndex = 0;
+        } else {
+            row.removeAttribute('aria-selected');
+            row.removeAttribute('tabindex');
+        }
+    }
+    updateSelectionUI(state);
+    // Все файлы пропали из-под выбора (удалены/дочистились) - закрываем режим тихо.
+    if (state.active && state.tbody.children.length === 0) {
+        exitSelectionMode(state);
+    }
+}
+
+// Ключ строки-файла отличается от служебных строк тем же tbody (у подвала
+// "Очистить всё" тоже есть data-row-key, ='__footer__' - иначе он бы ловил
+// long-press и попадал в счётчик выбранного как несуществующий файл).
+function isSelectableFileRow(row) {
+    return !!row && typeof row.dataset.rowKey === 'string' && row.dataset.rowKey.indexOf('file:') === 0;
+}
+
+function updateSelectionUI(state) {
+    if (!state.bar) return;
+    const count = state.selected.size;
+    const running = !!state.queue;
+    const countEl = state.bar.querySelector('.selection-toolbar-count');
+    if (countEl) {
+        countEl.textContent = running
+            ? `Запущено ${state.queue.started} из ${state.queue.items.length}`
+            : 'Выбрано: ' + count;
+    }
+    const dlBtn = state.bar.querySelector('.selection-toolbar-download');
+    const allBtn = state.bar.querySelector('.selection-toolbar-all');
+    if (dlBtn) {
+        // В ручном режиме (телефон) кнопка остаётся живой и выпускает следующий
+        // файл - каждому нужен свой жест пользователя, см. runBulkDownload().
+        const manual = running && state.queue.manual;
+        dlBtn.disabled = manual ? false : (running || count === 0);
+        dlBtn.textContent = manual
+            ? `Ещё ${state.queue.items.length - state.queue.started}`
+            : 'Скачать';
+        // Пульсация подсказывает, что очередь ждёт следующего нажатия -
+        // без неё кнопка "Ещё 2" выглядит как обычный итог, а не как призыв.
+        dlBtn.classList.toggle('selection-btn-waiting', manual);
+    }
+    if (allBtn) {
+        allBtn.disabled = running;
+        const total = state.lastKnownFiles.size;
+        const allSelected = total > 0 && count >= total;
+        allBtn.textContent = allSelected ? 'Снять всё' : 'Выбрать всё';
+    }
+}
+
+function initSelectionForTable(state) {
+    const tbody = document.getElementById(state.tbodyId);
+    const bar = document.getElementById(state.barId);
+    if (!tbody || !bar) return;
+    state.tbody = tbody;
+    state.bar = bar;
+
+    let pressTimer = null;
+    let startX = 0, startY = 0;
+    // Долгое нажатие уже переключает строку в колбэке таймера; отпускание
+    // пальца/кнопки после этого рождает обычный click по той же строке -
+    // без подавления он тут же переключал бы выбор обратно (нужно было жать
+    // дважды, чтобы строка осталась выбранной).
+    let suppressNextClick = false;
+
+    tbody.addEventListener('pointerdown', (e) => {
+        const row = e.target.closest('tr[data-row-key]');
+        // Жест, начатый на кнопке действия строки (play/qr/copy/pin/удалить),
+        // не должен запускать выбор - у кнопок своё поведение.
+        if (!isSelectableFileRow(row) || e.target.closest('button, a')) return;
+        startX = e.clientX; startY = e.clientY;
+        clearTimeout(pressTimer);
+        pressTimer = setTimeout(() => {
+            pressTimer = null;
+            suppressNextClick = true;
+            enterSelectionMode(state);
+            toggleRowSelection(state, row);
+            haptic('tick');
+        }, LONG_PRESS_SELECT_TIME);
+    });
+
+    tbody.addEventListener('pointermove', (e) => {
+        if (!pressTimer) return;
+        if (Math.abs(e.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE || Math.abs(e.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
+            clearTimeout(pressTimer);
+            pressTimer = null;
+        }
+    });
+
+    const clearPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+    tbody.addEventListener('pointerup', clearPress);
+    tbody.addEventListener('pointercancel', clearPress);
+    tbody.addEventListener('pointerleave', clearPress);
+
+    // Короткий тап: вне режима выбора - обычное поведение строки (play/qr/...,
+    // те слушатели навешаны отдельно и здесь не участвуют). В режиме выбора -
+    // toggle, действия строки подавляются через capture-фазу.
+    tbody.addEventListener('click', (e) => {
+        if (suppressNextClick) {
+            suppressNextClick = false;
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
+        if (!state.active) return;
+        const row = e.target.closest('tr[data-row-key]');
+        if (!isSelectableFileRow(row)) return;
+        if (e.target.closest('button, a')) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        toggleRowSelection(state, row);
+    }, true);
+
+    tbody.addEventListener('keydown', (e) => {
+        if (!state.active) return;
+        if (e.key === ' ' || e.key === 'Enter') {
+            const row = e.target.closest('tr[data-row-key]');
+            if (isSelectableFileRow(row)) { e.preventDefault(); toggleRowSelection(state, row); }
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+            e.preventDefault();
+            state.lastKnownFiles.forEach((file, key) => state.selected.add(key));
+            reapplySelectionClasses(state);
+        }
+    });
+
+    bar.querySelector('.selection-toolbar-cancel').addEventListener('click', () => exitSelectionMode(state));
+    // Одна кнопка на выбрать/снять всё - вместо пары "Выбрать всё"/"Сброс" с
+    // дублирующимся смыслом (снять выбор можно было и тем, и другим).
+    bar.querySelector('.selection-toolbar-all').addEventListener('click', () => {
+        const allSelected = state.lastKnownFiles.size > 0 && state.selected.size >= state.lastKnownFiles.size;
+        if (allSelected) {
+            state.selected.clear();
+        } else {
+            state.lastKnownFiles.forEach((file, key) => state.selected.add(key));
+        }
+        reapplySelectionClasses(state);
+    });
+    bar.querySelector('.selection-toolbar-download').addEventListener('click', () => {
+        // Очередь уже идёт - значит это ручной режим и нажатие выпускает
+        // следующий файл (в автоматическом кнопка на это время заблокирована).
+        if (state.queue) releaseNextDownload(state);
+        else startBulkDownload(state);
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && state.active) exitSelectionMode(state);
+    });
+}
+
+function initFileSelection() {
+    initSelectionForTable(fileSelection.video);
+    initSelectionForTable(fileSelection.music);
+}
+
+function formatBytesHuman(bytes) {
+    const units = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'];
+    let value = bytes, i = 0;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+    return value.toFixed(i === 0 || value >= 10 ? 0 : 1) + ' ' + units[i];
+}
+
+let bulkConfirmModalEl = null;
+
+function ensureBulkConfirmModal() {
+    if (bulkConfirmModalEl) return bulkConfirmModalEl;
+    const overlay = document.createElement('div');
+    overlay.className = 'qr-modal-overlay';
+    overlay.innerHTML = `
+        <div class="qr-modal-card" role="dialog" aria-modal="true" aria-label="Подтверждение массового скачивания">
+            <button type="button" class="qr-modal-close" aria-label="Закрыть">&times;</button>
+            <div class="qr-modal-title">Скачать пачкой?</div>
+            <div class="qr-modal-subtitle bulk-confirm-text"></div>
+            <div class="bulk-confirm-actions">
+                <button type="button" class="selection-btn bulk-confirm-cancel">Отмена</button>
+                <button type="button" class="selection-btn selection-btn-primary bulk-confirm-ok">Продолжить</button>
+            </div>
+        </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) hideBulkConfirmModal(); });
+    overlay.querySelector('.qr-modal-close').addEventListener('click', hideBulkConfirmModal);
+    overlay.querySelector('.bulk-confirm-cancel').addEventListener('click', hideBulkConfirmModal);
+    bulkConfirmModalEl = overlay;
+    return overlay;
+}
+
+function hideBulkConfirmModal() {
+    if (bulkConfirmModalEl) bulkConfirmModalEl.classList.remove('is-visible');
+}
+
+function showBulkDownloadConfirm(count, totalBytes, onConfirm) {
+    const modal = ensureBulkConfirmModal();
+    modal.querySelector('.bulk-confirm-text').textContent =
+        `Скачать ${count} файлов` + (totalBytes ? `, ~${formatBytesHuman(totalBytes)}` : '') +
+        '. Браузер может спросить разрешение на несколько скачиваний сразу.';
+    const okBtn = modal.querySelector('.bulk-confirm-ok');
+    const handler = () => {
+        hideBulkConfirmModal();
+        okBtn.removeEventListener('click', handler);
+        onConfirm();
+    };
+    okBtn.addEventListener('click', handler);
+    modal.classList.add('is-visible');
+}
+
+function triggerFileDownload(url, name) {
+    // Единственный вызывающий (releaseNextDownload) уже фильтрует мусор перед
+    // сюда - но без own-guard'а пустой/невалидный url страшнее, чем "ничего не
+    // скачалось": без атрибута download (он не ставится без name) <a href="">
+    // с пустым или нестроковым href браузер не скачивает, а НАВИГИРУЕТ - вся
+    // SPA-страница заменяется чужим документом (например, 404), и всё
+    // состояние теряется. Один if здесь дешевле, чем гарантия "все вызывающие
+    // всегда правы" - тем более, что вызывающих может стать больше.
+    if (typeof url !== 'string' || !url) return;
+    const a = document.createElement('a');
+    a.href = url;
+    if (name) a.download = name;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+let bulkDownloadToastEl = null;
+
+function showBulkDownloadSummary(text) {
+    if (!bulkDownloadToastEl) {
+        bulkDownloadToastEl = document.createElement('div');
+        bulkDownloadToastEl.className = 'bulk-download-toast';
+        document.body.appendChild(bulkDownloadToastEl);
+    }
+    bulkDownloadToastEl.textContent = text;
+    bulkDownloadToastEl.classList.add('is-visible');
+    clearTimeout(bulkDownloadToastEl._hideTimer);
+    bulkDownloadToastEl._hideTimer = setTimeout(() => bulkDownloadToastEl.classList.remove('is-visible'), 5000);
+}
+
+// Сенсорное устройство определяем не по строке User-Agent (её подделывают и она
+// врёт на планшетах), а по способу ввода: нет курсора и грубый указатель.
+function isTouchDevice() {
+    return !!(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches);
+}
+
+// Файлы уходят по одному. Дождаться ОКОНЧАНИЯ файла браузер не даёт: у
+// <a download> нет ни события завершения, ни ошибки - как только ссылка нажата,
+// файл уходит в менеджер загрузок, и связь с ним теряется. Поэтому
+// "последовательно" здесь - последовательный ЗАПУСК, а не ожидание докачки.
+//
+// Два режима, и разница между ними - не косметика:
+//
+// Десктоп - по таймеру: первый файл синхронно в самом жесте, остальные через
+// BULK_SEQUENTIAL_DELAY внутри окна активации.
+//
+// Телефон - по нажатию на файл. На втором файле Chrome спрашивает "разрешить
+// скачивание нескольких файлов", и пока висит этот запрос, таймер продолжает
+// тикать: третий файл уходит до выдачи разрешения и молча теряется (ровно то,
+// что видно как "выбрал три, скачалось два"). Гонки не будет, если у каждого
+// файла свой жест пользователя, - поэтому кнопка превращается в "Ещё N", и
+// каждое нажатие выпускает ровно один файл. Медленнее, зато не теряет ничего.
+function runBulkDownload(state, items, skippedCount) {
+    stopBulkDownload(state);
+    state.queue = { items, started: 0, skipped: skippedCount, timer: null, manual: isTouchDevice() };
+    releaseNextDownload(state);
+}
+
+// Выпускает один файл очереди. На десктопе сама заводит таймер на следующий,
+// на телефоне возвращает управление кнопке "Ещё N".
+function releaseNextDownload(state) {
+    const queue = state.queue;
+    if (!queue) return;
+
+    const item = queue.items[queue.started];
+    // Второй барьер: startBulkDownload() уже фильтрует мусор при сборке items,
+    // но queue живёт дольше одного тика (setTimeout между файлами) - если
+    // что-то повредит элемент между запусками, не отдаём браузеру пустую ссылку.
+    if (item && item.url) {
+        triggerFileDownload(item.url, item.name);
+    } else {
+        queue.skipped = (queue.skipped || 0) + 1;
+    }
+    queue.started++;
+    updateSelectionUI(state);
+
+    if (queue.started >= queue.items.length) {
+        state.queue = null;
+        const parts = [`Запущено: ${queue.started} из ${queue.items.length}`];
+        if (queue.skipped) parts.push(`пропущено: ${queue.skipped}`);
+        showBulkDownloadSummary(parts.join(', '));
+        haptic('done');
+        // Выбор снимается: пачка ушла, держать подсветку незачем - иначе
+        // непонятно, скачалось это уже или ещё нет.
+        exitSelectionMode(state);
+        return;
+    }
+
+    if (!queue.manual) {
+        queue.timer = setTimeout(() => releaseNextDownload(state), BULK_SEQUENTIAL_DELAY);
+    }
+}
+
+// Гасит очередь запусков. Уже отданные браузеру файлы не отменяет - ими
+// распоряжается менеджер загрузок, у нас на них ручки нет.
+function stopBulkDownload(state) {
+    if (!state.queue) return;
+    clearTimeout(state.queue.timer);
+    state.queue = null;
+}
+
+function startBulkDownload(state) {
+    if (state.queue || !state.selected.size) return;
+
+    const items = [];
+    let skipped = 0;
+    let totalBytes = 0;
+    state.selected.forEach((key) => {
+        const file = state.lastKnownFiles.get(key);
+        // Барьер против мусора в очереди: даже если выше по цепочке когда-нибудь
+        // просочится файл без ссылки (пустой downloadurl, недогруженная запись
+        // между опросами), triggerFileDownload() не должен получить
+        // undefined - иначе <a> уйдёт с пустым href, что для юзера выглядит
+        // как "ничего не скачалось" без единой строчки в логе.
+        if (file && typeof file.downloadurl === 'string' && file.downloadurl && typeof file.name === 'string' && file.name) {
+            items.push({ key, url: file.downloadurl, name: file.name });
+            totalBytes += Number(file.size_bytes) || 0;
+        } else {
+            skipped++;
+        }
+    });
+
+    if (!items.length) {
+        showBulkDownloadSummary('Выбранные файлы недоступны.');
+        return;
+    }
+
+    const proceed = () => runBulkDownload(state, items, skipped);
+    // Подтверждение не ломает жест: нажатие "Продолжить" в модалке - такой же
+    // жест пользователя, из него скачивания стартуют так же законно.
+    if (items.length > BULK_CONFIRM_COUNT_THRESHOLD || totalBytes > BULK_CONFIRM_BYTES_THRESHOLD) {
+        showBulkDownloadConfirm(items.length, totalBytes, proceed);
+    } else {
+        proceed();
+    }
 }
 
 // === QR-код на готовый файл ===
@@ -1823,6 +2340,17 @@ function loadList() {
             item => 'file:' + getFileKey(item));
         renderTable(nativeUI.music, data.music, 3, "Музыки нет.", item => renderFileRow(item, newMusicKeys.has(getFileKey(item))), clearMusicFooter,
             item => 'file:' + getFileKey(item));
+
+        // Выбор живёт вне HTML строки (см. комментарий у reapplySelectionClasses) -
+        // синхронизируем его с только что перерисованным DOM и свежими данными файлов.
+        // Ключ тот же, что уходит в data-row-key через keyFn выше ('file:' + getFileKey) -
+        // без совпадения по префиксу startBulkDownload не находил файлы по выбранным ключам
+        // и всегда сообщал "выбранные файлы недоступны".
+        fileSelection.video.lastKnownFiles = new Map((data.videos || []).map(f => ['file:' + getFileKey(f), f]));
+        reapplySelectionClasses(fileSelection.video);
+        fileSelection.music.lastKnownFiles = new Map((data.music || []).map(f => ['file:' + getFileKey(f), f]));
+        reapplySelectionClasses(fileSelection.music);
+
         updateFileBadges(data);
         updateProxyStatus(data.proxy);
         updateTabTitleProgress(data.jobs);
@@ -1881,6 +2409,7 @@ function stopAutoRefresh() {
 
 document.addEventListener('DOMContentLoaded', function () {
     initCache();
+    initFileSelection();
     if (nativeUI.progress) {
         startAutoRefresh();
         if (urlInput) urlInput.focus();
@@ -2683,28 +3212,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
         let urls = parsed.urls;
 
-        // Ссылка вида watch?v=ID&list=PL... внешне неотличима от обычной, а yt-dlp
-        // по ней утащит весь список - самая дорогая ловушка на сайте. Спрашиваем, и
-        // по умолчанию (Отмена, Esc) берём только сам ролик: срезанный list= для
-        // yt-dlp равнозначен --no-playlist. Чистый плейлист без v= не трогаем -
-        // там выбирать не из чего.
-        const withChoice = urls.map(u => {
-            if (!/[?&]list=/i.test(u) || !/[?&]v=/i.test(u)) return u;
-            if (confirm('Ссылка ведёт на плейлист.\n\nОК - скачать весь плейлист целиком.\nОтмена - только этот ролик.')) {
-                return u;
-            }
-            try {
-                const parsedUrl = new URL(u);
-                parsedUrl.searchParams.delete('list');
-                parsedUrl.searchParams.delete('index');
-                parsedUrl.searchParams.delete('start_radio');
-                return parsedUrl.toString();
-            } catch (err) {
-                return u;
-            }
-        });
-        urls = withChoice;
-        urlField.value = urls.join('||');
+        // Одна ссылка, похожая на список, - показываем содержимое и даём выбрать
+        // вместо прежнего "целиком или только этот ролик". Окно само продолжит
+        // отправку (resumeSubmitWith), а если yt-dlp скажет, что это обычный
+        // ролик, - продолжит молча, человек ничего лишнего не увидит.
+        // Пачку ссылок не трогаем: там список составлен руками.
+        const alreadyResolved = playlistState.resolvedFor === urls.join('||');
+        if (urls.length === 1 && !alreadyResolved && looksLikeCollection(urls[0])) {
+            e.preventDefault();
+            openPlaylistPicker(urls[0], document.activeElement);
+            return;
+        }
 
         // Таймкод в ссылке применяется сам (бэкенд ставит --download-sections),
         // поэтому спрашиваем до старта: срезанный t= возвращает ролик целиком.
@@ -2730,7 +3248,9 @@ document.addEventListener('DOMContentLoaded', function () {
         // Канал, страница автора или голая главная разворачиваются в десятки роликов,
         // а с виду это обычная ссылка. Предупреждаем до старта - остановить потом
         // можно только кнопкой Стоп, когда часть уже на диске.
-        const bulkUrl = urls.find(isBulkPageUrl);
+        // При отправке из окна выбора вопрос не задаём: человек только что видел
+        // список и сам решил, что берёт.
+        const bulkUrl = alreadyResolved ? null : urls.find(looksLikeCollection);
         if (bulkUrl && !confirm('Ссылка ведёт не на ролик, а на канал или страницу со списком:\n\n' +
             (bulkUrl.length > 70 ? bulkUrl.slice(0, 70) + '...' : bulkUrl) +
             '\n\nСкачается всё, что там найдётся. Продолжить?')) {
@@ -2801,6 +3321,425 @@ document.addEventListener('DOMContentLoaded', function () {
         sendDownloadForm(downloadForm, urlField);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Выбор роликов плейлиста
+//
+// Список показывается модалкой и живёт ВНЕ таблиц ?jobs - те перерисовываются
+// полтора раза в секунду, и строка со снятым выбором внутри такой таблицы не
+// пережила бы ближайший опрос (по той же причине туда вынесены плеер и QR).
+//
+// Выбор хранится множеством ключей, а не классом в разметке строки: тот же
+// инвариант, что у массового выбора файлов (см. createFileSelectionState).
+// ---------------------------------------------------------------------------
+
+// Опрос результата разбора: интервал и потолок ожидания. Потолок чуть больше
+// серверного PROBE_TIMEOUT, чтобы ответ об ошибке успел прийти от сервера, а не
+// от нас - у сервера он осмысленнее.
+const PLAYLIST_POLL_INTERVAL = 1200;
+const PLAYLIST_POLL_LIMIT = 55000;
+
+// Столько ссылок принимает бэкенд за одну отправку ($max_urls_per_submit).
+const PLAYLIST_MAX_SUBMIT = 50;
+
+// Выше этого числа спрашиваем подтверждение - как у массового скачивания файлов.
+const PLAYLIST_CONFIRM_COUNT = 10;
+
+const playlistState = {
+    sourceUrl: '',
+    parsing: 'idle',
+    key: null,
+    contentType: null,
+    title: '',
+    total: 0,
+    truncated: false,
+    frozenItems: [],
+    selectedIds: new Set(),
+    pollTimer: null,
+    pollStartedAt: 0,
+    errorText: '',
+    // Ссылка, по которой выбор уже сделан: второй раз окно на неё не открываем
+    // и повторных вопросов про "скачается всё" не задаём.
+    resolvedFor: null,
+    opener: null
+};
+
+let playlistModalEl = null;
+
+function playlistItemKey(item) {
+    return 'pl:' + (item.id || item.url);
+}
+
+function resetPlaylistState() {
+    if (playlistState.pollTimer) {
+        clearTimeout(playlistState.pollTimer);
+        playlistState.pollTimer = null;
+    }
+    playlistState.parsing = 'idle';
+    playlistState.key = null;
+    // Без сброса второе открытие окна сразу упиралось бы в потолок ожидания,
+    // отсчитанный от первого разбора.
+    playlistState.pollStartedAt = 0;
+    playlistState.contentType = null;
+    playlistState.title = '';
+    playlistState.total = 0;
+    playlistState.truncated = false;
+    playlistState.frozenItems = [];
+    playlistState.selectedIds.clear();
+    playlistState.errorText = '';
+}
+
+function ensurePlaylistModal() {
+    if (playlistModalEl) return playlistModalEl;
+
+    // Оболочка - те же классы, что у QR и плеера: одно затемнение, одна анимация,
+    // дублировать CSS незачем.
+    const overlay = document.createElement('div');
+    overlay.className = 'qr-modal-overlay playlist-modal-overlay';
+    overlay.innerHTML = `
+        <div class="qr-modal-card playlist-modal-card" role="dialog" aria-modal="true" aria-labelledby="playlist-modal-title">
+            <button type="button" class="qr-modal-close playlist-modal-close" aria-label="Закрыть">&times;</button>
+            <div class="qr-modal-title" id="playlist-modal-title">Что скачать из плейлиста</div>
+            <div class="playlist-modal-subtitle"></div>
+            <div class="playlist-modal-body">
+                <div class="playlist-modal-status">Разбираю плейлист, это занимает до минуты...</div>
+                <div class="playlist-modal-list" role="listbox" aria-multiselectable="true" aria-label="Ролики плейлиста" hidden>
+                    <!-- role=presentation на таблице и tbody: без этого их
+                         собственные роли разрывают связь listbox -> option,
+                         и скринридер перестаёт видеть строки как варианты. -->
+                    <table class="table table-striped playlist-modal-table" role="presentation">
+                        <tbody class="playlist-modal-rows" role="presentation"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="playlist-modal-bar" hidden>
+                <span class="selection-toolbar-count playlist-modal-count" aria-live="polite">Выбрано: 0</span>
+                <span class="selection-toolbar-break" aria-hidden="true"></span>
+                <button type="button" class="selection-btn playlist-modal-all">Снять всё</button>
+                <button type="button" class="selection-btn selection-btn-primary playlist-modal-submit">Скачать</button>
+            </div>
+            <div class="playlist-modal-bar playlist-modal-errorbar" hidden>
+                <button type="button" class="selection-btn playlist-modal-cancel">Отмена</button>
+                <button type="button" class="selection-btn selection-btn-primary playlist-modal-whole">Скачать целиком</button>
+            </div>
+        </div>`;
+
+    document.body.appendChild(overlay);
+    playlistModalEl = overlay;
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closePlaylistPicker();
+    });
+    overlay.querySelector('.playlist-modal-close').addEventListener('click', closePlaylistPicker);
+    overlay.querySelector('.playlist-modal-cancel').addEventListener('click', closePlaylistPicker);
+
+    overlay.querySelector('.playlist-modal-all').addEventListener('click', () => {
+        const selectable = playlistState.frozenItems.filter(i => i.available);
+        if (playlistState.selectedIds.size >= selectable.length) {
+            playlistState.selectedIds.clear();
+        } else {
+            selectable.forEach(i => playlistState.selectedIds.add(playlistItemKey(i)));
+        }
+        reapplyPlaylistSelection();
+        updatePlaylistBar();
+    });
+
+    overlay.querySelector('.playlist-modal-submit').addEventListener('click', submitPlaylistSelection);
+
+    // "Скачать целиком" - запасной путь, когда разбор не удался: отправляем
+    // исходную ссылку как раньше, вопросов про неё больше не задаём.
+    overlay.querySelector('.playlist-modal-whole').addEventListener('click', () => {
+        const url = playlistState.sourceUrl;
+        closePlaylistPicker();
+        resumeSubmitWith(url, url);
+    });
+
+    const rows = overlay.querySelector('.playlist-modal-rows');
+    rows.addEventListener('click', (e) => {
+        const row = e.target.closest('tr[data-row-key]');
+        if (row) togglePlaylistRow(row.dataset.rowKey);
+    });
+    rows.addEventListener('keydown', (e) => {
+        const row = e.target.closest('tr[data-row-key]');
+        if (!row) return;
+        if (e.key === ' ' || e.key === 'Enter') {
+            e.preventDefault();
+            togglePlaylistRow(row.dataset.rowKey);
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const all = Array.from(rows.querySelectorAll('tr[tabindex="0"]'));
+            const idx = all.indexOf(row);
+            const next = all[idx + (e.key === 'ArrowDown' ? 1 : -1)];
+            if (next) next.focus();
+        }
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (!overlay.classList.contains('is-visible')) return;
+        if (e.key === 'Escape') {
+            closePlaylistPicker();
+        } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+            if (playlistState.parsing !== 'ready') return;
+            e.preventDefault();
+            playlistState.frozenItems.filter(i => i.available)
+                .forEach(i => playlistState.selectedIds.add(playlistItemKey(i)));
+            reapplyPlaylistSelection();
+            updatePlaylistBar();
+        }
+    });
+
+    return overlay;
+}
+
+// Открыть окно выбора. Модалка показывается сразу, до ответа сервера - разбор
+// идёт десятки секунд, и молчащая кнопка всё это время выглядит сломанной.
+function openPlaylistPicker(url, opener) {
+    resetPlaylistState();
+    playlistState.sourceUrl = url;
+    playlistState.parsing = 'detecting';
+    playlistState.opener = opener || null;
+
+    const overlay = ensurePlaylistModal();
+    overlay.classList.add('is-visible');
+    renderPlaylistModal();
+
+    const body = new FormData();
+    body.append('playlist', url);
+    body.append('csrf_token', getCsrfToken());
+
+    fetch('index.php', {
+        method: 'POST',
+        body: body,
+        headers: { 'X-CSRF-Token': getCsrfToken(), 'X-Requested-With': 'fetch', 'Accept': 'application/json' }
+    })
+        .then(resp => {
+            const ctype = resp.headers.get('content-type') || '';
+            if (!ctype.includes('application/json')) {
+                throw new Error('сервер ответил не JSON (' + resp.status + ')');
+            }
+            return resp.json();
+        })
+        .then(applyPlaylistResponse)
+        .catch(err => failPlaylist('Не удалось разобрать плейлист: ' + (err && err.message ? err.message : 'нет связи')));
+}
+
+function applyPlaylistResponse(data) {
+    if (!data || data.state === 'missing') {
+        failPlaylist('Разбор потерялся, попробуй ещё раз');
+        return;
+    }
+    if (data.state === 'error') {
+        failPlaylist(data.error || 'Не удалось разобрать плейлист');
+        return;
+    }
+    if (data.state === 'pending') {
+        playlistState.key = data.key || playlistState.key;
+        if (!playlistState.pollStartedAt) playlistState.pollStartedAt = Date.now();
+        if (Date.now() - playlistState.pollStartedAt > PLAYLIST_POLL_LIMIT) {
+            failPlaylist('Не успел разобрать плейлист, попробуй ещё раз');
+            return;
+        }
+        playlistState.pollTimer = setTimeout(() => pollPlaylist(playlistState.key), PLAYLIST_POLL_INTERVAL);
+        return;
+    }
+
+    // Готово. Ответ на вопрос "плейлист ли" пришёл от yt-dlp, а не от эвристики:
+    // одиночный ролик закрывает окно и продолжает обычную отправку.
+    playlistState.contentType = data.contentType || 'video';
+    if (playlistState.contentType !== 'playlist' && playlistState.contentType !== 'multi_video') {
+        const url = playlistState.sourceUrl;
+        closePlaylistPicker();
+        resumeSubmitWith(url, url);
+        return;
+    }
+
+    const items = Array.isArray(data.entries) ? data.entries : [];
+    if (!items.length) {
+        failPlaylist('В плейлисте нечего скачивать');
+        return;
+    }
+
+    playlistState.parsing = 'ready';
+    playlistState.title = data.title || '';
+    playlistState.total = data.count || items.length;
+    playlistState.truncated = !!data.truncated;
+    // Снимок: рисуем только его, что бы дальше ни приехало с сервера.
+    playlistState.frozenItems = items;
+    playlistState.selectedIds = new Set(
+        items.filter(i => i.available).map(playlistItemKey)
+    );
+    renderPlaylistModal();
+}
+
+function pollPlaylist(key) {
+    if (!key || playlistState.parsing !== 'detecting') return;
+    fetch('index.php?playlist=' + encodeURIComponent(key), { headers: { 'Accept': 'application/json' } })
+        .then(resp => resp.json())
+        .then(applyPlaylistResponse)
+        .catch(() => failPlaylist('Связь с сервером потерялась'));
+}
+
+function failPlaylist(message) {
+    playlistState.parsing = 'error';
+    playlistState.errorText = message;
+    if (playlistState.pollTimer) {
+        clearTimeout(playlistState.pollTimer);
+        playlistState.pollTimer = null;
+    }
+    renderPlaylistModal();
+}
+
+function renderPlaylistModal() {
+    const overlay = ensurePlaylistModal();
+    const status = overlay.querySelector('.playlist-modal-status');
+    const list = overlay.querySelector('.playlist-modal-list');
+    const bar = overlay.querySelector('.playlist-modal-bar:not(.playlist-modal-errorbar)');
+    const errorBar = overlay.querySelector('.playlist-modal-errorbar');
+    const subtitle = overlay.querySelector('.playlist-modal-subtitle');
+
+    if (playlistState.parsing === 'detecting') {
+        status.textContent = 'Разбираю плейлист, это занимает до минуты...';
+        status.hidden = false;
+        list.hidden = true;
+        bar.hidden = true;
+        errorBar.hidden = true;
+        subtitle.textContent = '';
+        return;
+    }
+
+    if (playlistState.parsing === 'error') {
+        status.textContent = playlistState.errorText;
+        status.hidden = false;
+        list.hidden = true;
+        bar.hidden = true;
+        errorBar.hidden = false;
+        subtitle.textContent = '';
+        return;
+    }
+
+    status.hidden = true;
+    list.hidden = false;
+    bar.hidden = false;
+    errorBar.hidden = true;
+
+    let sub = playlistState.title ? playlistState.title : '';
+    if (playlistState.truncated) {
+        sub += (sub ? ' - ' : '') + 'показаны первые ' + playlistState.frozenItems.length +
+            ' из ' + playlistState.total;
+    }
+    subtitle.textContent = sub;
+
+    renderPlaylistRows();
+    updatePlaylistBar();
+}
+
+function renderPlaylistRows() {
+    const rows = ensurePlaylistModal().querySelector('.playlist-modal-rows');
+    rows.innerHTML = playlistState.frozenItems.map((item, idx) => {
+        const key = playlistItemKey(item);
+        const duration = item.duration > 0 ? formatClock(item.duration) : '';
+        const badge = item.available
+            ? ''
+            : '<span class="playlist-row-badge">' + escapeHtml(item.reason || 'Недоступен') + '</span>';
+        return '<tr data-row-key="' + escapeHtml(key) + '"' +
+            ' role="option" aria-selected="false"' +
+            (item.available ? ' tabindex="0"' : ' aria-disabled="true" class="playlist-row-unavailable"') +
+            '><td class="playlist-row-num">' + (idx + 1) + '</td>' +
+            '<td class="playlist-row-title">' + escapeHtml(item.title) + badge + '</td>' +
+            '<td class="playlist-row-time">' + escapeHtml(duration) + '</td></tr>';
+    }).join('');
+    reapplyPlaylistSelection();
+}
+
+// Подсветка накладывается отдельным проходом по живым строкам, а не встраивается
+// в разметку при генерации - см. комментарий у массового выбора файлов.
+function reapplyPlaylistSelection() {
+    const rows = ensurePlaylistModal().querySelectorAll('.playlist-modal-rows tr[data-row-key]');
+    rows.forEach(row => {
+        const on = playlistState.selectedIds.has(row.dataset.rowKey);
+        row.classList.toggle('row-selected', on);
+        row.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+}
+
+function togglePlaylistRow(key) {
+    const item = playlistState.frozenItems.find(i => playlistItemKey(i) === key);
+    if (!item || !item.available) return;
+    if (playlistState.selectedIds.has(key)) {
+        playlistState.selectedIds.delete(key);
+    } else {
+        playlistState.selectedIds.add(key);
+    }
+    reapplyPlaylistSelection();
+    updatePlaylistBar();
+    haptic('tick');
+}
+
+function updatePlaylistBar() {
+    const overlay = ensurePlaylistModal();
+    const count = playlistState.selectedIds.size;
+    const selectable = playlistState.frozenItems.filter(i => i.available).length;
+
+    overlay.querySelector('.playlist-modal-count').textContent =
+        'Выбрано: ' + count + ' из ' + playlistState.frozenItems.length;
+
+    overlay.querySelector('.playlist-modal-all').textContent =
+        count >= selectable ? 'Снять всё' : 'Выбрать всё';
+
+    const submit = overlay.querySelector('.playlist-modal-submit');
+    submit.textContent = count ? 'Скачать ' + count : 'Скачать';
+    submit.disabled = count === 0;
+    submit.setAttribute('aria-disabled', count === 0 ? 'true' : 'false');
+}
+
+function submitPlaylistSelection() {
+    const urls = playlistState.frozenItems
+        .filter(i => playlistState.selectedIds.has(playlistItemKey(i)))
+        .map(i => i.url);
+
+    if (!urls.length) return;
+
+    if (urls.length > PLAYLIST_MAX_SUBMIT) {
+        failPlaylist('За раз можно отправить до ' + PLAYLIST_MAX_SUBMIT +
+            ' ссылок, а выбрано ' + urls.length + '. Сними лишние.');
+        return;
+    }
+
+    if (urls.length > PLAYLIST_CONFIRM_COUNT &&
+        !confirm('Отправить ' + urls.length + ' роликов на скачивание?')) {
+        return;
+    }
+
+    const joined = urls.join('||');
+    closePlaylistPicker();
+    resumeSubmitWith(joined, joined);
+}
+
+// Продолжить обычную отправку: кладём ссылки в поле, помечаем их разрешёнными
+// (чтобы окно не открылось по второму кругу) и жмём submit формы штатно -
+// requestSubmit, а не submit(), иначе обработчик со всеми проверками был бы обойдён.
+function resumeSubmitWith(fieldValue, resolvedFor) {
+    const field = document.getElementById('url');
+    const form = document.getElementById('download-form');
+    if (!field || !form) return;
+    field.value = fieldValue;
+    // Метку ставим в том же виде, в каком её увидит обработчик отправки: он
+    // сначала прогоняет поле через validateUrlField/normalizeMediaUrl, и сырая
+    // строка после нормализации могла бы с ней не совпасть - окно открылось бы
+    // по второму кругу.
+    const normalized = validateUrlField(resolvedFor).urls.join('||');
+    playlistState.resolvedFor = normalized || resolvedFor;
+    form.requestSubmit();
+}
+
+function closePlaylistPicker() {
+    if (playlistModalEl) playlistModalEl.classList.remove('is-visible');
+    const opener = playlistState.opener;
+    resetPlaylistState();
+    playlistState.opener = null;
+    // Фокус обратно на то, чем окно открыли - иначе он улетает в начало страницы.
+    if (opener && typeof opener.focus === 'function') opener.focus();
+}
 
 function sendDownloadForm(form, urlField) {
     const submitBtn = form.querySelector('button[type="submit"]');

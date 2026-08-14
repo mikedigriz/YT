@@ -12,5 +12,9 @@ fi
 
 php-fpm8.4 -F &
 tail -F /var/log/yt_dlp.log &
+# События обратной связи (новое обращение, ответ, удаление) - тем же способом,
+# что и лог yt-dlp: файл на диске плюс tail в stdout PID 1, поэтому строки видны
+# в "docker logs". Файл создаётся в Dockerfile; -F переживает его пересоздание.
+tail -F /var/log/feedback.log &
 
 exec nginx -g "daemon off;"

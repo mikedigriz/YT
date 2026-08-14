@@ -28,7 +28,7 @@ server {
         internal;
     }
 
-    location ~* ^/(tmp|class|config)/ {
+    location ~* ^/(tmp|class|config|data)/ {
         deny all;
     }
 

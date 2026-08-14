@@ -38,7 +38,7 @@ docker exec yt vot-cli --reslang=ru 'https://www.youtube.com/watch?v=<id>'
 Починить: пересобрать образ, чтобы подтянуть свежую версию инструмента:
 
 ```bash
-docker build --no-cache -t yt . && docker-compose up -d
+docker build --no-cache -t yt . && docker compose up -d
 ```
 
 Либо на горячую, без пересборки образа:

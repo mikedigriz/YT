@@ -266,6 +266,82 @@ class Downloader
         return (bool) preg_match(self::WAITING_PATTERNS, $tail);
     }
 
+    // Признаки закрытого контента в логе ЖИВОЙ задачи. Ключ --wait-for-video ждёт не
+    // только анонсированный эфир: любую недоступность видео он считает "ещё не началось"
+    // и переизвлекает ссылку по кругу без предела. Возрастной гейт детерминирован, ждать
+    // его бессмысленно, а задача при этом не завершается - значит и авторетрей с куками
+    // (см. autoRetryWithCookiesIfNeeded(), "18+ контент" у него в списке) никогда не
+    // сработает. Список намеренно уже, чем COOKIES_RETRY_KEYWORDS: тут сырой лог yt-dlp,
+    // а не разобранный статус.
+    private const HOPELESS_WAIT_PATTERNS = '/Sign in to confirm your age|age-restricted|This video is private|members-only|Join this channel|Sign in to confirm you.re not a bot/i';
+
+    // Сколько раз примета должна повториться, чтобы задачу признать безнадёжной. Одного
+    // раза мало: yt-dlp перебирает клиентов (см. --extractor-args player_client), и первый
+    // из них может выхватить бот-чек, после чего следующий спокойно скачает ролик.
+    private const HOPELESS_WAIT_HITS = 2;
+
+    // Гасит задачи, залипшие на --wait-for-video из-за закрытого контента. Лог финализируется
+    // БЕЗ суффикса _cancelled (в отличие от kill_one_of_them()): "отменено" тут неправда, да и
+    // авторетреи такие логи пропускают - а нам нужен именно ретрей с куками.
+    // $fileList по ссылке - по той же причине, что у get_current_background_jobs():
+    // финализированный тут ytdl_ должен попасть в список этого же запроса.
+    public static function abortHopelessWaiters(?array &$fileList = null): void
+    {
+        if (!isset($GLOBALS['config']['logPath'])) {
+            return;
+        }
+
+        $logPath = $GLOBALS['config']['logPath'];
+        $pidFiles = $fileList['pid'] ?? glob($logPath . '/pid_*');
+
+        foreach ($pidFiles as $pidFile) {
+            $pidBasename = basename($pidFile);
+            $outfile = $logPath . '/' . str_replace('pid_', 'job_', $pidBasename);
+            $completefile = $logPath . '/' . str_replace('pid_', 'ytdl_', $pidBasename);
+
+            $log = @file_get_contents($outfile);
+            if ($log === false || $log === '') {
+                continue;
+            }
+
+            // Началась закачка - значит один из клиентов пробился, задача здорова.
+            if (strpos($log, 'Destination:') !== false || strpos($log, '[download]') !== false) {
+                continue;
+            }
+
+            if (preg_match_all(self::HOPELESS_WAIT_PATTERNS, $log) < self::HOPELESS_WAIT_HITS) {
+                continue;
+            }
+
+            $content = @file_get_contents($pidFile);
+            if ($content === false) {
+                continue;
+            }
+
+            $parts = explode("\n", trim($content));
+            $jpid = $parts[0] ?? '';
+            $ytcmd = $parts[1] ?? '';
+            $urltext = $parts[2] ?? '';
+            $clientip = trim($parts[3] ?? '');
+
+            // Короткое ожидание: вызов сидит в опросе ?jobs, а качать тут нечего -
+            // дописывать файл процессу не надо, ждать его до последнего незачем.
+            self::killProcessGroupIfAlive($jpid, false);
+
+            @unlink($pidFile);
+            self::$bg_jobs_cache = null;
+
+            self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip);
+            self::cleanupPartialFiles($completefile);
+
+            if ($fileList !== null) {
+                $fileList['ytdl'][] = $completefile;
+            }
+
+            self::autoRetryWithCookiesIfNeeded($completefile);
+        }
+    }
+
     // $fileList по ссылке: если задача завершается прямо тут, finalize_job_log() переименовывает job_*->ytdl_*, а старый скан этого не видел. Без обновления по ссылке get_finished_background_jobs() в этом же запросе использовал бы устаревший список - задача пропала бы и из активных, и из finished до следующего запроса.
     public static function get_current_background_jobs(?array &$fileList = null)
     {
@@ -317,27 +393,14 @@ class Downloader
                     if ($fileList !== null) {
                         $fileList['ytdl'][] = $completefile;
                     }
-                    // Авторетрей через прокси при гео-блоке/403 для прямых доменов
-                    $retryPid = self::autoRetryIfNeeded($completefile);
-                    $retryStatus = "Первая попытка не прошла, пробую через прокси";
-                    if ($retryPid === null) {
-                        // Авторетрей с куками YouTube при бот-чеке/приватности/возрасте
-                        $retryPid = self::autoRetryWithCookiesIfNeeded($completefile);
-                        $retryStatus = "Обычный способ заблокирован, пробую с куками аккаунта";
-                    }
-
-                    // Pid-файл ретрея пишется асинхронно и в этот ответ ?jobs не попадает (каталог уже проитерирован). Отдаём синтетическую строку с реальным pid ретрея, чтобы фронтенд не ушёл в медленный опрос - следующий тик заменит её настоящей задачей бесшовно.
-                    if ($retryPid !== null) {
-                        $isaudioRetry = (strpos($retryPid, "_a") !== false);
-                        $bjs[] = array(
-                            'file'   => "Повторная попытка",
-                            'site'   => "Повтор",
-                            'status' => $retryStatus,
-                            'type'   => $isaudioRetry ? "audio" : "video",
-                            'pid'    => $retryPid,
-                            'url'    => $urltext
-                        );
-                    }
+                    // Авторетреи (прокси/куки/другой клиент) не рестартуют сразу - только помечают
+                    // лог маркером [RETRY_ATTEMPTED:...], фактический рестарт делает
+                    // processScheduledRetries() через RETRY_SCHEDULE_DELAY секунд (см. там же) -
+                    // чтобы статус в списке "Загрузки" успевал побыть прочитанным. Первый
+                    // применимый маркер и выигрывает, порядок совпадает с приоритетом причин.
+                    self::autoRetryIfNeeded($completefile);
+                    self::autoRetryWithCookiesIfNeeded($completefile);
+                    self::autoRetryWithAltClientIfNeeded($completefile);
                     continue;
                 }
 
@@ -372,7 +435,9 @@ class Downloader
                 $isTranslateJob = strpos($ytcmd, 'vot-cli') !== false;
                 $votPhase = false;
                 $muxPhase = false;
+                $mp4Phase = false;
                 $ffmpegProgress = null;
+                $aria2Progress = null;
 
                 // Большие логи читаем частично: голова для site/playlist (печатаются раз в начале), хвост для текущего статуса. Цена тика O(головы+хвоста), не растёт с логом.
                 $outSize = @filesize($outfile);
@@ -381,6 +446,12 @@ class Downloader
                     if ($head !== false && $head !== '') {
                         foreach (explode("\n", $head) as $headLine) {
                             self::scanForSiteAndPlaylist($headLine . "\n", $siteset, $site, $playlist);
+                            // Имя файла печатается один раз в начале, как site и playlist:
+                            // у длинной закачки Destination: уходит за пределы хвоста, и
+                            // имя в таблице сползало на "Ща..". Прочие выходные параметры
+                            // выброшены - статус берётся только из хвоста.
+                            $skipLine = ''; $skipFlag = false; $skipPos = '';
+                            self::scanForCurrentStatus($headLine . "\n", $skipPos, $skipFlag, $skipFlag, $skipLine, $skipLine, $filename);
                         }
                     }
 
@@ -388,18 +459,23 @@ class Downloader
                     fseek($handle, $tailStart);
                     $tail = stream_get_contents($handle);
                     $tailLines = ($tail === false) ? [] : explode("\n", $tail);
-                    if ($tailStart > 0 && count($tailLines) > 0) {
-                        // Первая строка хвоста обрублена fseek не по границе - выбрасываем.
+                    // Первая строка хвоста обрублена fseek не по границе - выбрасываем,
+                    // но только если есть что оставить. aria2c и ffmpeg разделяют
+                    // прогресс символом \r, без \n, и весь хвост бывает одной строкой:
+                    // выбросив её, теряли разом проценты и Destination:, а статус
+                    // посреди загрузки откатывался на "Собираю информацию по сайту".
+                    // Обрубок безвреден - регулярки якорные, на неполной записи молчат.
+                    if ($tailStart > 0 && count($tailLines) > 1) {
                         array_shift($tailLines);
                     }
 
                     foreach ($tailLines as $tailLine) {
-                        self::scanForCurrentStatus($tailLine . "\n", $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename, $ffmpegProgress);
+                        self::scanForCurrentStatus($tailLine . "\n", $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename, $ffmpegProgress, $aria2Progress, $mp4Phase);
                     }
                 } else {
                     while (($line = fgets($handle)) !== false) {
                         self::scanForSiteAndPlaylist($line, $siteset, $site, $playlist);
-                        self::scanForCurrentStatus($line, $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename, $ffmpegProgress);
+                        self::scanForCurrentStatus($line, $listpos, $votPhase, $muxPhase, $lastline, $verylastline, $filename, $ffmpegProgress, $aria2Progress, $mp4Phase);
                     }
                 }
 
@@ -450,8 +526,30 @@ class Downloader
                     }
                 }
 
+                // Прогресс aria2c - там же по старшинству, что и ffmpeg: перекрывает
+                // "Собираю информацию"/"В Процессе", но уступает фазам перевода ниже.
+                if ($aria2Progress !== null && !$isTranslateJob) {
+                    // Скачанные байты не показываем - третье число в строке лишнее,
+                    // оно выводится из процента и размера.
+                    $lastline = $aria2Progress['percent'] . "% из "
+                        . self::formatBytes($aria2Progress['total']);
+                    if (!empty($aria2Progress['speed'])) {
+                        $lastline .= ", " . self::formatBytes($aria2Progress['speed']) . "/с";
+                    }
+                    if (!empty($aria2Progress['eta'])) {
+                        $eta = self::formatEta($aria2Progress['eta']);
+                        if ($eta !== null) {
+                            $lastline .= ", осталось " . $eta;
+                        }
+                    }
+                }
+
                 // Фаза перевода перекрывает всё - vot/ffmpeg не пишут проценты, иначе висело бы вечное "В Процессе".
-                if ($muxPhase && $isTranslateJob) {
+                if ($mp4Phase) {
+                    // Скачивание кончилось, идёт ensure_mp4.sh. Без этой строки
+                    // человек полминуты-минуту смотрит на застывшие 100%.
+                    $lastline = "Привожу к mp4, почти готово";
+                } elseif ($muxPhase && $isTranslateJob) {
                     $lastline = "Вклеиваю русскую дорожку в видео, почти готово";
                 } elseif ($votPhase && $isTranslateJob) {
                     // Таймер от старта задачи (mtime pid-файла) - vot-cli стартует вместе со скачиванием.
@@ -465,7 +563,10 @@ class Downloader
                 $bjs[] = array(
                     'file' => $playlist . $filename,
                     'site' => $site,
-                    'status' => str_replace("\n", "", $lastline),
+                    // yt-dlp выравнивает поля прогресса пробелами ("of ~   1.57GiB at
+                    // 6.46MiB/s"), чтобы строка не дёргалась в терминале. В таблице
+                    // ширина и так фиксирована, а дыры внутри строки видны - схлопываем.
+                    'status' => trim(preg_replace('/\s+/u', ' ', str_replace("\n", " ", $lastline))),
                     'type' => $isaudio ? "audio" : "video",
                     'pid' => $pidBasename,
                     'url' => $urltext
@@ -563,6 +664,104 @@ class Downloader
         return is_string($host) ? preg_replace('/^www\./i', '', strtolower($host)) : '';
     }
 
+    // Ниже две обёртки для PlaylistProbe. Логика не переезжает и не копируется -
+    // проба обязана решать "через прокси или напрямую", "какие куки" и "пускать ли
+    // ссылку вообще" ровно так же, как загрузка, иначе списки разъедутся.
+    public static function validateUrl(string $url): bool
+    {
+        return self::is_valid_url($url, true);
+    }
+
+    public static function probeRouting(string $url): array
+    {
+        $site = self::detectCookiesSite($url);
+        $cookiesFile = self::cookiesFileForSite($site);
+        if ($cookiesFile !== '' && !self::cookiesFileUsable($cookiesFile)) {
+            $cookiesFile = '';
+        }
+
+        return [
+            'useProxy'    => !self::isDirectAccessHost(self::getHostStatic($url)),
+            'cookiesFile' => $cookiesFile,
+            'host'        => self::getHostStatic($url),
+        ];
+    }
+
+    // Тот же перебор, что в isDirectAccessDomain(), но от готового хоста -
+    // статическим вызовам (проба) экземпляр Downloader ни к чему.
+    private static function isDirectAccessHost(string $hostname): bool
+    {
+        foreach (self::DIRECT_ACCESS_DOMAINS as $domain) {
+            if ($hostname === $domain || str_ends_with($hostname, '.' . $domain)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Потолок соединений к одному хосту. Выше не поднимать: дальше начинается
+    // залп, а не загрузка. Ниже держать незачем - на YouTube, где ловили бот-чек,
+    // ускорение теперь не включается вовсе.
+    private const CONNECTION_BUDGET = 4;
+
+    // Задача уступает диск и процессор веб-морде. Мукс гигабайтного файла в mp4 -
+    // это ffmpeg, копирующий его с диска на диск; PHP-FPM живёт на том же диске и
+    // переставал получать свою очередь - сайт отвечал "Не удалось обновить данные",
+    // пока шёл постпроцессинг. Класс best-effort с худшим приоритетом, а не idle:
+    // запись живого эфира обязана успевать за потоком, её нельзя морить голодом.
+    // ionice и setsid - из одного пакета util-linux, отдельной зависимости нет.
+    // Понижать приоритет непривилегированному процессу можно, повышать нельзя -
+    // прав контейнера хватает.
+    private const NICE_PREFIX = 'nice -n 10 ionice -c 2 -n 7 ';
+
+    // Сколько соединений позволить ЭТОЙ задаче. Константой нельзя: max_dl
+    // настраивается, dispatchGroup() поднимает процесс на каждый хост отправки,
+    // очередь продвигается сразу после освобождения слота - соединения сложились
+    // бы в залп к одному CDN.
+    //
+    // Гонка одновременного старта принята: две задачи возьмут по полному бюджету.
+    // flock ради этого усложнил бы dispatchGroup(), а короткий всплеск не тот
+    // залп, что вызывал бот-чек.
+    private static function connectionBudget(string $host, ?array $fileList = null): int
+    {
+        if ($host === '') {
+            return 1;
+        }
+
+        // Хост уже отвечал 429. Свежесть отметки не проверяем намеренно: первая
+        // задача после кулдауна тоже идёт в один поток.
+        $cooldown = self::cooldownFile($host);
+        if ($cooldown !== null && file_exists($cooldown)) {
+            return 1;
+        }
+
+        // Свой pid-файл ещё не записан (пишется после exec), поэтому любая
+        // найденная живая задача - чужая.
+        if (self::background_jobs($fileList) > 0) {
+            return 1;
+        }
+
+        // Ждущие эфира задачи в background_jobs() не считаются, но соединение к
+        // хосту при старте эфира откроют.
+        $logPath = $GLOBALS['config']['logPath'] ?? '';
+        $pidFiles = $fileList['pid'] ?? (glob($logPath . '/pid_*') ?: []);
+        foreach ($pidFiles as $pidFile) {
+            $lines = explode("\n", (string) @file_get_contents($pidFile));
+            $jpid = trim($lines[0] ?? '');
+            if ($jpid === '' || !file_exists('/proc/' . $jpid)) {
+                continue;
+            }
+            // Третья строка pid-файла - исходные URL задачи через запятую
+            foreach (explode(',', trim($lines[2] ?? '')) as $url) {
+                if ($url !== '' && self::getHostStatic($url) === $host) {
+                    return 1;
+                }
+            }
+        }
+
+        return self::CONNECTION_BUDGET;
+    }
+
     // Файл на диске есть - значит задача сделала своё дело, что бы ни мелькало в
     // логе по дороге. Без этой проверки успешная загрузка, во время которой
     // yt-dlp сам пережил 503 или тайм-аут фрагмента и докачал файл, считалась
@@ -622,23 +821,30 @@ class Downloader
             return null;
         }
 
+        // Сама эта задача уже была автоповтором (метка живёт в [ytcmd], см. restart_download()) -
+        // повтор не помог, вторую попытку не даём, чтобы детерминированная ошибка не зациклилась.
+        if (strpos($log_content, 'YTDL_AUTORETRIED=1') !== false) {
+            return null;
+        }
+
         $jobstatus = self::parseYtDlpError($log_content);
 
         if (!self::isRetryableError($jobstatus)) {
             return null;
         }
 
-        // Лимит max_dl добит другими задачами - маркер не пишем, задача остаётся неудачной для ручного рестарта.
-        if (!self::canSpawnRetry()) {
-            return null;
-        }
+        // Занятость слота тут НЕ проверяется намеренно. Раньше проверялась, и при max_dl = 1
+        // плейлист (поштучные задачи, слот занят всегда) не получал авторетрея вовсе: маркер не
+        // писался, а processScheduledRetries() ищет именно его - второго шанса не было никогда.
+        // Слот проверяет сам processScheduledRetries() на каждом опросе и ждёт, пока освободится.
 
-        $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей через прокси\n";
+        // Не рестартуем сразу - откладываем на RETRY_SCHEDULE_DELAY секунд (см. processScheduledRetries()),
+        // иначе синтетическая строка "пробую..." живёт один опрос (~1.5с) и пользователь не успевает её
+        // прочитать: на следующем опросе новый job_ уже жив и его реальный статус перебивает сообщение.
+        $retry_marker = "[RETRY_ATTEMPTED:" . time() . ":proxy] Авторетрей через прокси\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
 
-        // Ищет лог по имени готового файла (ytdl_*), не по уже удалённому pid_*.
-        $newpid = self::restart_download(basename($completefile), true);
-        return $newpid ?: null;
+        return null;
     }
 
     // В отличие от isRetryableError() - признак закрытого контента, не временный сбой сети.
@@ -687,6 +893,24 @@ class Downloader
     private static function isLiveStreamUrl($url)
     {
         return (bool) preg_match('#(?:twitch\.tv|/live/|/live\b|[?&]live=)#i', $url);
+    }
+
+    // Можно ли отдать закачку aria2c. Четыре запрета:
+    //  - прокси: SOCKS5 у aria2 нет вообще, он пошёл бы мимо него;
+    //  - живой эфир и метка времени: там качает ffmpeg, на нём завязаны
+    //    фрагментированный mp4, salvagePartialVideo() и --download-sections;
+    //  - YouTube: отсекается первым запретом сам собой, но не молча.
+    private static function canUseExternalDownloader(array $urls, bool $useProxy, ?int $startSeconds): bool
+    {
+        if (empty($GLOBALS['config']['externalDownloader']) || $useProxy || $startSeconds !== null) {
+            return false;
+        }
+        foreach ($urls as $url) {
+            if (self::isLiveStreamUrl($url) || preg_match('/(youtube\.com|youtu\.be)/i', $url)) {
+                return false;
+            }
+        }
+        return !empty($urls);
     }
 
     private function translationSupported(array $urls)
@@ -803,6 +1027,12 @@ class Downloader
             return null;
         }
 
+        // Сама эта задача уже была автоповтором (метка живёт в [ytcmd], см. restart_download()) -
+        // повтор не помог, вторую попытку не даём, чтобы детерминированная ошибка не зациклилась.
+        if (strpos($log_content, 'YTDL_AUTORETRIED=1') !== false) {
+            return null;
+        }
+
         // Проверяем только строку [ytcmd], не весь лог - текст ошибки бот-чека сам советует "--cookies", ложно срабатывало бы.
         if (preg_match('/^\[ytcmd\].*--cookies\s/m', $log_content)) {
             return null;
@@ -813,21 +1043,125 @@ class Downloader
             return null;
         }
 
-        // Маркер не пишем - задача остаётся доступной для ручного рестарта.
-        if (!self::canSpawnRetry()) {
+        // Слот тут не проверяем - см. autoRetryIfNeeded().
+
+        // Откладываем сам рестарт - см. комментарий у автопроксийного ретрея выше.
+        $retry_marker = "[RETRY_ATTEMPTED:" . time() . ":cookies] Авторетрей с куками (" . ($site ?? '?') . ")\n";
+        @file_put_contents($completefile, $retry_marker, FILE_APPEND);
+
+        return null;
+    }
+
+    // Клиент, который встаёт вместо mweb при "video data 403" - без PO-токена вовсе (см. restart_download()).
+    private const YOUTUBE_RETRY_CLIENT = 'android_vr';
+
+    // "unable to download video data: ... HTTP Error 403" - НЕ страница/метаданные (те уже получены), а сам
+    // CDN отбил ссылку на конкретный клиентский PO-токен. Детерминированная ошибка (GitHub issues yt-dlp
+    // #16144, #14421 - токен привязан к video ID/клиенту): повтор той же команды не помогает и раньше
+    // зацикливался (см. YTDL_AUTORETRIED). Вместо повтора - другой клиент без PO-токена вовсе.
+    private const VIDEO_DATA_403_PATTERN = '/unable to download video data.*HTTP Error 403/i';
+
+    private static function autoRetryWithAltClientIfNeeded($completefile)
+    {
+        if (!file_exists($completefile)) {
             return null;
         }
 
-        $retry_marker = "[RETRY_ATTEMPTED:" . time() . "] Авторетрей с куками (" . ($site ?? '?') . ")\n";
+        if (self::jobProducedFile($completefile)) {
+            return null;
+        }
+
+        $log_content = @file_get_contents($completefile);
+        if ($log_content === false) {
+            return null;
+        }
+
+        if (strpos($log_content, '[RETRY_ATTEMPTED:') !== false) {
+            return null;
+        }
+
+        if (strpos($log_content, 'YTDL_AUTORETRIED=1') !== false) {
+            return null;
+        }
+
+        if (!preg_match(self::VIDEO_DATA_403_PATTERN, $log_content)) {
+            return null;
+        }
+
+        $jobUrl = '';
+        if (preg_match('/^\[yturl\]\s*(.+)$/m', $log_content, $urlMatch)) {
+            $jobUrl = trim(explode(',', $urlMatch[1])[0]);
+        }
+        // Подмена клиента в restart_download() завязана на "--extractor-args 'youtube:...'" -
+        // фикс имеет смысл только для youtube-ссылок, у остальных сайтов такого аргумента нет.
+        if (self::detectCookiesSite($jobUrl) !== 'youtube') {
+            return null;
+        }
+
+        // Слот тут не проверяем - см. autoRetryIfNeeded().
+
+        // Откладываем сам рестарт - см. комментарий у автопроксийного ретрея выше.
+        $retry_marker = "[RETRY_ATTEMPTED:" . time() . ":altclient] Авторетрей другим клиентом (" . self::YOUTUBE_RETRY_CLIENT . ")\n";
         @file_put_contents($completefile, $retry_marker, FILE_APPEND);
 
-        // Удаляем старый лог только при успехе рестарта - иначе задача осталась бы без следа при провале старта.
-        $newpid = self::restart_download(basename($completefile), false, true);
-        if ($newpid) {
-            @unlink($completefile);
-            return $newpid;
-        }
         return null;
+    }
+
+    // Сколько ждать между обнаружением провала и фактическим стартом авторетрея - чтобы
+    // пользователь успел прочитать статус ("Пробую другим клиентом..." и т.п.) до того, как
+    // новая задача перебьёт его собственным прогрессом.
+    private const RETRY_SCHEDULE_DELAY = 10;
+
+    private const RETRY_TYPE_LABELS = [
+        'proxy'     => 'Первая попытка не прошла, пробую через прокси',
+        'cookies'   => 'Обычный способ заблокирован, пробую с куками аккаунта',
+        'altclient' => 'Ссылка на поток не подошла, пробую другим клиентом YouTube',
+    ];
+
+    // Запускает отложенные автоповторы, чей RETRY_SCHEDULE_DELAY уже истёк. Вызывается на
+    // каждом опросе (см. index.php, рядом с process_queue()) - не только там, где задача
+    // только что упала, а на любом дальнейшем опросе, пока не придёт время рестарта.
+    public static function processScheduledRetries(?array $fileList = null): void
+    {
+        $entries = $fileList['ytdl'] ?? self::scanLogPath()['ytdl'] ?? [];
+
+        foreach ($entries as $filepath) {
+            if (strpos(basename($filepath), '_cancelled') !== false) {
+                continue;
+            }
+
+            $content = @file_get_contents($filepath);
+            if ($content === false) {
+                continue;
+            }
+
+            if (!preg_match('/\[RETRY_ATTEMPTED:(\d+):(proxy|cookies|altclient)\]/', $content, $m)) {
+                continue;
+            }
+
+            if (time() - (int) $m[1] < self::RETRY_SCHEDULE_DELAY) {
+                continue; // Ещё не время
+            }
+
+            if (!self::canSpawnRetry()) {
+                continue; // Слот занят другой задачей - попробуем на следующем опросе
+            }
+
+            $fname = basename($filepath);
+            $newpid = match ($m[2]) {
+                'proxy' => self::restart_download($fname, true),
+                'cookies' => self::restart_download($fname, false, true),
+                'altclient' => self::restart_download($fname, false, false, true),
+                default => false,
+            };
+
+            // Удаляем старый (упавший) лог только при успехе рестарта - иначе задача осталась бы
+            // без следа при провале старта, а не более одной попытки на задачу (сама метка
+            // RETRY_ATTEMPTED не даёт запланировать это же ещё раз).
+            if ($newpid) {
+                @unlink($filepath);
+            }
+        }
     }
 
     private static function finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip = '')
@@ -920,6 +1254,10 @@ class Downloader
         }
     }
 
+    // Хвосты незавершённой закачки. .part пишет сам yt-dlp, .aria2 (и .part.aria2) -
+    // внешний загрузчик: это его файл возобновления, без задачи он бесполезен.
+    private const PARTIAL_SUFFIXES = ['.part', '.part.aria2', '.aria2'];
+
     // Убирает .part одиночно остановленной задачи, если keepPartialFiles = false.
     // "Стоп ВСЕ" сметает все .part в папке разом, одиночному "Стоп" так нельзя -
     // соседние задачи ещё качаются, поэтому цели берём из лога самой задачи.
@@ -956,11 +1294,13 @@ class Downloader
         fclose($handle);
 
         foreach (array_keys($targets) as $target) {
-            $realPart = realpath($target . '.part');
-            if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
-                continue;
+            foreach (self::PARTIAL_SUFFIXES as $suffix) {
+                $realPart = realpath($target . $suffix);
+                if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
+                    continue;
+                }
+                @unlink($realPart);
             }
-            @unlink($realPart);
         }
     }
 
@@ -1003,7 +1343,10 @@ class Downloader
             if ($real === false || strpos($real, $realFolder . '/') !== 0) {
                 continue;
             }
-            if (self::probeReadable($real, $viaFfmpeg)) {
+            $readable = self::probeReadable($real, $viaFfmpeg);
+            // null - проверка не уложилась в отведённое время. Молчим: объявить файл
+            // битым по таймауту хуже, чем не проверить его вовсе.
+            if ($readable === null || $readable) {
                 continue;
             }
             file_put_contents(
@@ -1015,9 +1358,15 @@ class Downloader
         }
     }
 
-    // true - файл читается. Для записи через ffmpeg достаточно одного декодируемого
-    // кадра, обычному файлу нужна ещё и положительная длительность.
-    private static function probeReadable(string $file, bool $framesAreEnough): bool
+    // Проверка идёт внутри запроса ?jobs, а у nginx стоит fastcgi_read_timeout 30s:
+    // ffprobe, задумавшийся над файлом, который прямо сейчас дописывает ремукс,
+    // утаскивал за собой весь опрос, и сайт отвечал "Не удалось обновить данные".
+    private const PROBE_TIMEOUT = 8;
+
+    // true - файл читается, false - нет, null - проверить не успели. Для записи через
+    // ffmpeg достаточно одного декодируемого кадра, обычному файлу нужна ещё и
+    // положительная длительность.
+    private static function probeReadable(string $file, bool $framesAreEnough): ?bool
     {
         // Порог намеренно крошечный, не SALVAGE_MIN_BYTES: короткий mp3 весит
         // меньше четверти мегабайта и был бы объявлен битым ни за что.
@@ -1025,24 +1374,35 @@ class Downloader
             return false;
         }
 
-        $common = 'ffprobe -v error -analyzeduration 5M -probesize 5M ';
+        $common = 'timeout ' . self::PROBE_TIMEOUT . ' ffprobe -v error -analyzeduration 5M -probesize 5M ';
         $quoted = escapeshellarg($file);
 
         // Один кадр из начала - дешевле, чем полный разбор, и работает на
         // фрагментированном mp4 без корректного завершения
-        $frames = @shell_exec($common . '-select_streams v:0 -show_entries frame=pkt_size '
-            . '-read_intervals "%+#1" -of csv=p=0 ' . $quoted . ' 2>/dev/null');
-        $hasFrames = is_string($frames) && trim($frames) !== '';
+        $out = [];
+        $code = 0;
+        @exec($common . '-select_streams v:0 -show_entries frame=pkt_size '
+            . '-read_intervals "%+#1" -of csv=p=0 ' . $quoted . ' 2>/dev/null', $out, $code);
+        if ($code === 124) {
+            return null;
+        }
+        $hasFrames = trim(implode('', $out)) !== '';
 
         if ($framesAreEnough) {
             return $hasFrames;
         }
+        if ($hasFrames) {
+            return true;
+        }
 
-        $duration = @shell_exec($common . '-show_entries format=duration -of csv=p=0 ' . $quoted . ' 2>/dev/null');
-        $seconds = is_string($duration) ? (float) trim($duration) : 0.0;
+        $out = [];
+        @exec($common . '-show_entries format=duration -of csv=p=0 ' . $quoted . ' 2>/dev/null', $out, $code);
+        if ($code === 124) {
+            return null;
+        }
 
         // Аудиофайлы кадров видео не имеют - для них решает длительность
-        return $seconds > 0.0 || $hasFrames;
+        return (float) trim(implode('', $out)) > 0.0;
     }
 
     // Огрызок моложе минуты не трогаем: файл может дописываться постпроцессором
@@ -1093,20 +1453,22 @@ class Downloader
 
         $now = time();
         $removed = 0;
-        foreach (glob($realFolder . '/*.part') ?: [] as $part) {
-            $target = substr($part, 0, -5);
-            if (isset($activeTargets[$target])) {
-                continue;
+        foreach (self::PARTIAL_SUFFIXES as $suffix) {
+            foreach (glob($realFolder . '/*' . $suffix) ?: [] as $part) {
+                $target = substr($part, 0, -strlen($suffix));
+                if (isset($activeTargets[$target])) {
+                    continue;
+                }
+                $mtime = @filemtime($part);
+                if ($mtime === false || ($now - $mtime) < self::ORPHAN_PART_MIN_AGE) {
+                    continue;
+                }
+                $realPart = realpath($part);
+                if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
+                    continue;
+                }
+                if (@unlink($realPart)) $removed++;
             }
-            $mtime = @filemtime($part);
-            if ($mtime === false || ($now - $mtime) < self::ORPHAN_PART_MIN_AGE) {
-                continue;
-            }
-            $realPart = realpath($part);
-            if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
-                continue;
-            }
-            if (@unlink($realPart)) $removed++;
         }
 
         return $removed;
@@ -1130,6 +1492,32 @@ class Downloader
             return null;
         }
         return ucfirst($m[1]);
+    }
+
+    // ETA у aria2c приходит как "15s", "1m10s", "1h2m3s". Точность режем: секунды
+    // при часах не нужны, а строка статуса и так длинная.
+    private static function formatEta(string $eta): ?string
+    {
+        if (!preg_match_all('/(\d+)([dhms])/', $eta, $m, PREG_SET_ORDER)) {
+            return null;
+        }
+        $units = ['d' => 86400, 'h' => 3600, 'm' => 60, 's' => 1];
+        $total = 0;
+        foreach ($m as $part) {
+            $total += (int) $part[1] * $units[$part[2]];
+        }
+        if ($total <= 0) {
+            return null;
+        }
+        if ($total < 60) {
+            return $total . " сек";
+        }
+        if ($total < 3600) {
+            return intdiv($total, 60) . " мин";
+        }
+        $hours = intdiv($total, 3600);
+        $mins = intdiv($total % 3600, 60);
+        return $mins > 0 ? ($hours . " ч " . $mins . " мин") : ($hours . " ч");
     }
 
     private static function formatBytes(float $bytes): string
@@ -1161,8 +1549,36 @@ class Downloader
     }
 
     // Текущее состояние задачи. Поля либо "последний победил" (filename/lastline/verylastline/listpos), либо флаг, повторяющийся и в хвосте большого лога (votPhase/muxPhase) - поэтому ищется только в хвосте, не в голове.
-    private static function scanForCurrentStatus(string $line, string &$listpos, bool &$votPhase, bool &$muxPhase, string &$lastline, string &$verylastline, string &$filename, ?array &$ffmpegProgress = null): void
+    private static function scanForCurrentStatus(string $line, string &$listpos, bool &$votPhase, bool &$muxPhase, string &$lastline, string &$verylastline, string &$filename, ?array &$ffmpegProgress = null, ?array &$aria2Progress = null, ?bool &$mp4Phase = null): void
     {
+        // С внешним загрузчиком yt-dlp своих процентов не печатает вовсе - без этого
+        // статус залипал бы на "Собираю информацию" до конца загрузки. aria2c пишет
+        // "[#a1b2c3 12MiB/100MiB(12%) CN:2 DL:1.2MiB ETA:1m10s]", записи разделены \r
+        // (как у ffmpeg ниже) - берём последнюю в куске.
+        if (strpos($line, '[#') !== false
+            && preg_match_all(
+                '/\[#\w+\s+([\d.]+)([KMGT]?)i?B\/([\d.]+)([KMGT]?)i?B\((\d+)%\)'
+                . '(?:[^\r\n]*?DL:\s*([\d.]+)([KMGT]?)i?B)?'
+                . '(?:[^\r\n]*?ETA:\s*(\d+[dhms](?:\d+[hms])*))?/',
+                $line,
+                $am,
+                PREG_SET_ORDER
+            )
+        ) {
+            $last = end($am);
+            $mult = ['' => 1, 'K' => 1024, 'M' => 1048576, 'G' => 1073741824, 'T' => 1099511627776];
+            $aria2Progress = [
+                'percent' => (int) $last[5],
+                'done' => (float) $last[1] * ($mult[$last[2]] ?? 1),
+                'total' => (float) $last[3] * ($mult[$last[4]] ?? 1),
+                'speed' => (isset($last[6]) && $last[6] !== '')
+                    ? (float) $last[6] * ($mult[$last[7]] ?? 1)
+                    : null,
+                // ETA у aria2c появляется не сразу и пропадает на паузах - null тут норма
+                'eta' => (isset($last[8]) && $last[8] !== '') ? $last[8] : null,
+            ];
+        }
+
         // Живые трансляции (Twitch и любой HLS без известной длительности) yt-dlp тянет через ffmpeg,
         // а тот не печатает процентов - только свой прогресс "size= ... time= ...". Без этого статус
         // намертво застревал на "Собираю информацию", хотя файл на диске рос.
@@ -1202,6 +1618,13 @@ class Downloader
         // mux_translated.sh печатает "[vot] ...", а сырой ffmpeg-микс - "frame="
         if (strpos($line, '[vot]') !== false || strpos($line, 'frame=') !== false) {
             $muxPhase = true;
+        }
+        // ensure_mp4.sh печатает "[mp4] ...". Отдельный флаг, а не $muxPhase:
+        // тот включается и от голого "frame=", то есть от любого ffmpeg, а
+        // перекодирование надо отличать от записи эфира - иначе живая
+        // трансляция подписывалась бы "привожу к mp4" всё время записи.
+        if (strpos($line, '[mp4] привожу') !== false) {
+            $mp4Phase = true;
         }
 
         if (trim($line) != "") {
@@ -1392,7 +1815,22 @@ class Downloader
                     $filename = $playlist . " (" . $listpos . " files)";
                 }
 
-                if ($filename == "Дундук :)") {
+                // Ждём отложенного авторетрея (см. processScheduledRetries()) - показываем понятный
+                // статус вместо голой причины провала, пока рестарт ещё не запущен. Флаг гасит
+                // обе ветки ниже - они иначе безусловно перезаписали бы jobstatus своим разбором.
+                $isPendingRetry = false;
+                if ($jobstatus !== "Отменено" && $jobstatus !== "Отменено (Уже Загружено)") {
+                    $log_content_for_retry = @file_get_contents($filepath);
+                    if ($log_content_for_retry !== false
+                        && preg_match('/\[RETRY_ATTEMPTED:\d+:(proxy|cookies|altclient)\]/', $log_content_for_retry, $rm)) {
+                        $jobstatus = self::RETRY_TYPE_LABELS[$rm[1]] ?? "Пробую ещё раз...";
+                        $isPendingRetry = true;
+                    }
+                }
+
+                if ($isPendingRetry) {
+                    $type = $isaudio ? "audio" : "video";
+                } elseif ($filename == "Дундук :)") {
                     $type = "unknown";
                     $log_content = @file_get_contents($filepath);
 
@@ -1414,6 +1852,20 @@ class Downloader
                     }
                 } else {
                     $type = $isaudio ? "audio" : "video";
+                    // "Destination:" в логе значит только, что закачка СТАРТОВАЛА - не что она
+                    // закончилась. Обрыв посреди файла (сеть, 403 на CDN, крах постобработки)
+                    // до этой проверки всё равно показывался "Готово": итог проверялся только
+                    // в ветке "Дундук :)" выше, для логов без единой Destination-строки вовсе.
+                    // jobProducedFile() - тот же метод, что уже используют все три авторетрея.
+                    if ($jobstatus === "Готово" && !self::jobProducedFile($filepath)) {
+                        $log_content = @file_get_contents($filepath);
+                        // VOT-задачи (перевод) при успехе удаляют исходный файл yt-dlp после мукса в
+                        // *_ru.mp4 (см. docs/explanation/06...) - jobProducedFile() по оригинальному
+                        // Destination-пути такой файл не найдёт, даже если перевод прошёл отлично.
+                        if ($log_content !== false && strpos($log_content, 'vot-cli') === false) {
+                            $jobstatus = self::parseYtDlpError($log_content, self::detectCookiesSite($urltext));
+                        }
+                    }
                     // Пояснение только для чистого "Готово" - "Отменено"/"Отменено
                     // (Уже Загружено)" и так информативны сами по себе
                     if ($usedCookies && $jobstatus === "Готово") {
@@ -1682,7 +2134,7 @@ class Downloader
     }
 
     // Возвращает имя нового pid_-файла или false. Авторетрею нужно, чтобы удалить старый лог только при успехе и сразу показать ретрей активной строкой в ?jobs.
-    public static function restart_download($fpid, $forceUseProxy = false, $forceUseCookies = false)
+    public static function restart_download($fpid, $forceUseProxy = false, $forceUseCookies = false, $forceAltClient = false)
     {
         if (!isset($GLOBALS['config']['logPath'])) return false;
 
@@ -1763,10 +2215,15 @@ class Downloader
         // Убираем замаскированный плейсхолдер "env all_proxy=[SOCKS5_PROXY]" перед вставкой настоящего прокси, иначе yt-dlp получит буквальную строку-плейсхолдер.
         $ytcmd = preg_replace('/^env\s+all_proxy=\S+\s+/', '', $ytcmd);
 
+        // Переменные окружения собираем в ОДИН "env"-вызов, а не цепочкой из нескольких -
+        // commandLooksValid() на следующем рестарте снимает регэкспом только первый префикс
+        // "env VAR=val ...", второй "env" перед бинарником он бы принял за подмену команды.
+        $envVars = [];
+
         // Если исходная задача использовала прокси ИЛИ нас просят принудительно добавить его
         // (как при авторетрее с гео-блоком) - вставляем его из текущего конфига
         if (($usesProxy || $forceUseProxy) && !empty($GLOBALS['config']['socks5'])) {
-            $ytcmd = "env all_proxy=" . escapeshellarg($GLOBALS['config']['socks5']) . " " . $ytcmd;
+            $envVars['all_proxy'] = $GLOBALS['config']['socks5'];
             $usesProxy = true; // Отмечаем, что теперь используется прокси
         }
 
@@ -1780,6 +2237,37 @@ class Downloader
                 $insertPos = $exePos + strlen($expectedExe);
                 $ytcmd = substr($ytcmd, 0, $insertPos) . " --cookies " . escapeshellarg($cookiesFile) . substr($ytcmd, $insertPos);
             }
+        }
+
+        // Подмена клиента YouTube при авторетрее на "video data 403" (см. autoRetryWithAltClientIfNeeded()):
+        // ссылка на CDN, выданная mweb, привязана к его PO-токену и после провала не спасается повтором той
+        // же команды (PO-токен привязан к video ID/клиенту - GitHub issues yt-dlp #16144, #14421). android_vr
+        // токена не требует вовсе и уже в основном наборе (см. executeDownload()) - форсируем только его,
+        // чтобы CDN-ссылка выдавалась без PO-токена с самого начала.
+        if ($forceAltClient && !$isBashWrapped) {
+            $ytcmd = preg_replace(
+                '/(--extractor-args\s+)\'youtube:player_client=[^\']*\'/',
+                '$1' . "'youtube:player_client=" . self::YOUTUBE_RETRY_CLIENT . "'",
+                $ytcmd,
+                1
+            );
+        }
+
+        // Метка "это уже автоповтор" - переживает рестарт вместе с командой (autoRetryIfNeeded()/
+        // autoRetryWithCookiesIfNeeded() пишут [RETRY_ATTEMPTED:...] в СТАРЫЙ, уже завершённый лог,
+        // а новая задача стартует с чистого job_/pid_ и этой строки не видит - без метки в самой
+        // команде детерминированная (не временная) ошибка ретраилась бы на каждом новом провале
+        // бесконечно, а не один раз.
+        if ($forceUseProxy || $forceUseCookies || $forceAltClient) {
+            $envVars['YTDL_AUTORETRIED'] = '1';
+        }
+
+        if (!empty($envVars)) {
+            $envPrefix = 'env';
+            foreach ($envVars as $envName => $envValue) {
+                $envPrefix .= ' ' . $envName . '=' . escapeshellarg($envValue);
+            }
+            $ytcmd = $envPrefix . ' ' . $ytcmd;
         }
 
         $suffix = (strpos($fpid, "_a") !== false || strpos($file, "_a") !== false) ? "_a" : "";
@@ -1799,7 +2287,7 @@ class Downloader
 
         // exec вместо passthru - не выводить мусор в браузер. setsid обязателен: restart_download всегда оборачивает в "bash -c", без него group-kill не нашёл бы группу перезапущенной задачи.
         $cmd = sprintf(
-            'setsid bash -c %s > %s/%s 2>&1 & echo $! > %s/%s',
+            'setsid ' . self::NICE_PREFIX . 'bash -c %s > %s/%s 2>&1 & echo $! > %s/%s',
             escapeshellarg($ytcmd),
             $logPath,
             $fno,
@@ -1911,11 +2399,21 @@ class Downloader
     }
 
     // Прямая ссылка на файл (".../clip.mp4", ".../track.mp3"): экстрактора там нет,
-    // yt-dlp скачивает файл как есть через generic. Перебор форматов, ремукс и
-    // вшивание обложки к такому файлу неприменимы - только лишняя работа ffmpeg.
-    private const DIRECT_MEDIA_EXTENSIONS = [
+    // yt-dlp скачивает файл как есть через generic. Перебор форматов и вшивание
+    // обложки к такому файлу неприменимы - выбирать не из чего, вшивать нечего.
+    // А вот ремукс применим и обязателен: правило "на выходе всегда mp4" на
+    // прямые ссылки не распространялось вовсе, и ".../clip.webm" оседал на диске
+    // как .webm. Видео и аудио разведены именно поэтому - контейнер mp4 нужен
+    // видеофайлу, а прямой ссылке на .mp3 он не нужен и вреден.
+    private const DIRECT_MEDIA_VIDEO_EXTENSIONS = [
         'mp4', 'mkv', 'webm', 'mov', 'avi', 'ts', 'm4v', 'flv',
+    ];
+    private const DIRECT_MEDIA_AUDIO_EXTENSIONS = [
         'mp3', 'm4a', 'aac', 'opus', 'ogg', 'oga', 'flac', 'wav', 'wma',
+    ];
+    private const DIRECT_MEDIA_EXTENSIONS = [
+        ...self::DIRECT_MEDIA_VIDEO_EXTENSIONS,
+        ...self::DIRECT_MEDIA_AUDIO_EXTENSIONS,
     ];
 
     private static function directMediaExtension(string $url): ?string
@@ -1969,12 +2467,31 @@ class Downloader
         return true;
     }
 
+    // Вся пачка - прямые ссылки на ВИДЕОфайлы. Отдельно от allDirectMedia(),
+    // потому что ремукс в mp4 осмыслен только тут: прямой .mp3 переупаковывать
+    // некуда и незачем.
+    private static function allDirectVideo(array $urls): bool
+    {
+        if (empty($urls)) {
+            return false;
+        }
+        foreach ($urls as $url) {
+            $ext = self::directMediaExtension($url);
+            if ($ext === null || !in_array($ext, self::DIRECT_MEDIA_VIDEO_EXTENSIONS, true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // $checkNetwork = false отключает резолв хоста (SSRF-проверку), оставляя разбор
     // самой строки. Нужно там, где ссылка уже проходила полную проверку при приёме:
     // process_queue() перебирает всю очередь на КАЖДОМ опросе ?jobs, и резолв
     // превращался в два DNS-запроса на ссылку раз в полторы секунды - задержка
     // ответа плюс, при моргнувшем DNS, молчаливый выброс задач из очереди.
-    private function is_valid_url($url, bool $checkNetwork = true)
+    // static, чтобы ту же проверку могла звать проба плейлиста (PlaylistProbe) -
+    // $this здесь и не использовался. Существующие вызовы через $this-> законны.
+    private static function is_valid_url($url, bool $checkNetwork = true)
     {
         if (filter_var($url, FILTER_VALIDATE_URL) === false) {
             return false;
@@ -2087,15 +2604,7 @@ class Downloader
 
     private function isDirectAccessDomain($url)
     {
-        $hostname = $this->getHost($url);
-
-        foreach (self::DIRECT_ACCESS_DOMAINS as $domain) {
-            if ($hostname === $domain || str_ends_with($hostname, '.' . $domain)) {
-                return true;
-            }
-        }
-
-        return false;
+        return self::isDirectAccessHost($this->getHost($url));
     }
 
     private function sanitizeAudioFormat($format)
@@ -2226,7 +2735,8 @@ class Downloader
             $cmd .= " -S " . escapeshellarg("res:{$maxRes}") . " -f " . escapeshellarg('bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b');
         }
 
-        // Параллельные фрагменты (--concurrent-fragments 4 --http-chunk-size 5M) убраны: Google начал помечать трафик как подозрительный - несколько одновременных Range-соединений к CDN с одного IP выглядят как бот. Стандартное одно соединение на файл.
+        // Ускорение закачки (aria2c и параллельные фрагменты) собирается ниже, после
+        // того как известны $isYoutube и $startSeconds - от них зависят обе развилки.
 
         if ($useProxy && !empty($this->config['socks5'])) {
             // no_proxy для localhost - запрос к серверу PO-токенов (bgutil, 127.0.0.1:4416) не должен уходить в SOCKS5.
@@ -2240,8 +2750,20 @@ class Downloader
             if (!empty($sanitizedAudio)) {
                 $cmd .= " " . $sanitizedAudio;
             }
+            if (!$directMedia) {
+                // У сырого аудиофайла ни обложки, ни метаданных источника нет - вшивать нечего
+                $cmd .= " --embed-thumbnail --embed-metadata";
+            }
             $suffix = "_a";
-        } elseif (!$directMedia) {
+        } elseif ($directMedia) {
+            // Прямая ссылка на видеофайл. Сливать нечего (формат один), ffmpeg
+            // файл не тянет - поэтому из блока ниже берём ровно ремукс. Это
+            // "ffmpeg -c copy": процессор не греется, качество бит-в-бит, а
+            // yt-dlp шаг и вовсе пропускает, когда файл уже mp4.
+            if (self::allDirectVideo($urls)) {
+                $cmd .= " --remux-video mp4";
+            }
+        } else {
             $cmd .= " --merge-output-format mp4";
             $cmd .= " --remux-video mp4";
             // Трансляции (Twitch и прочий live-HLS) yt-dlp тянет через ffmpeg, а обычный mp4 без moov-атома
@@ -2254,11 +2776,27 @@ class Downloader
             // это ВХОДНЫЕ аргументы (относятся к чтению потока), а голый "ffmpeg:"
             // выше yt-dlp кладёт в выходные, где они молча ничего не делают.
             $cmd .= " --downloader-args " . escapeshellarg("ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5");
+            // Видео: превью пишется отдельным .webp ДО вшивания - если сама загрузка сорвётся
+            // (напр. 403 на протухшем URL CDN), файл останется мусорным сиротой, которого не
+            // чистит ни cleanupPartialFiles (не суффикс Destination-цели), ни сайт (webp не в
+            // списке расширений FileHandler). Обложка у видео не так нужна, как у трека - не вшиваем.
         }
 
-        if (!$directMedia) {
-            // У сырого файла ни обложки, ни метаданных источника нет - вшивать нечего
-            $cmd .= " --embed-thumbnail --embed-metadata";
+        // Контейнер mp4 - ещё не гарантия воспроизведения: VP9 и Opus кладутся в
+        // него законно, но Safari, iOS и QuickTime такой файл не откроют, а у нас
+        // и встроенный плеер, и забор по QR на телефон. Скрипт смотрит ffprobe'ом,
+        // что внутри, и перекодирует ТОЛЬКО несовместимую дорожку - в типичном
+        // случае он стоит одного вызова ffprobe. Через --exec, а не отдельным
+        // шагом: задача запускается одним фоновым exec(), вклинить второй процесс
+        // некуда, а --exec держит yt-dlp живым до конца скрипта, поэтому pid-файл,
+        // статус, verifyPlayable() и finalize_job_log() продолжают работать без
+        // единой правки. Имя файла скрипт сохраняет (подмена на месте), так что
+        // разбор Destination: и пары "ссылка - файл" на фронте тоже целы.
+        if (empty($onedownload['audio_only']) && ($this->config['mp4Compat'] ?? true)) {
+            // after_move, а НЕ after_video: у after_video поле %(filepath)q ещё не
+            // заполнено, yt-dlp подставляет туда "NA", и скрипт получал вместо
+            // пути двухбуквенную заглушку. Ловилось живьём.
+            $cmd .= " --exec " . escapeshellarg('after_move:/etc/Scripts/ensure_mp4.sh %(filepath)q');
         }
 
         $isYoutube = false;
@@ -2278,6 +2816,41 @@ class Downloader
         $startSeconds = (count($urls) === 1) ? self::startTimeSeconds($urls[0]) : null;
         if ($startSeconds !== null) {
             $cmd .= " --download-sections " . escapeshellarg('*' . $startSeconds . '-');
+        }
+
+        // Ширина канала. Паузы --sleep-* ниже решают другую задачу - частоту
+        // запросов, а не их одновременность, поэтому остаются как были.
+        $budget = self::connectionBudget($this->getHost($urls[0]));
+        $externalDownloader = self::canUseExternalDownloader($urls, $useProxy, $startSeconds);
+
+        if ($externalDownloader) {
+            // --min-split-size=4M - короткие ролики качаются одним соединением
+            //   независимо от бюджета: кусок мельче этого дальше не делится.
+            // --file-allocation=none - дефолтный prealloc сначала выделяет весь
+            //   объём, и гигабайтное видео заметное время просто стоит.
+            // --auto-file-renaming=false - иначе повтор создаст file.1.mp4, и
+            //   jobProducedFile()/verifyPlayable() не найдут его по Destination:.
+            // --lowest-speed-limit - замена --throttled-rate, который при внешнем
+            //   загрузчике молчит. Тут соединение обрывается, а не переизвлекается
+            //   ссылка, но упавшую задачу подхватит autoRetryIfNeeded().
+            $cmd .= " --downloader aria2c";
+            $cmd .= " --downloader-args " . escapeshellarg(
+                "aria2c:--max-connection-per-server={$budget} --split={$budget} --min-split-size=4M"
+                . " --lowest-speed-limit=20K --console-log-level=warn --summary-interval=1"
+                . " --auto-file-renaming=false --allow-overwrite=true --file-allocation=none"
+            );
+        }
+
+        // Параллельные фрагменты. Ключ уже стоял глобально и был снят из-за
+        // бот-чека Google - теперь исключён только виновник. $isYoutubeMulti
+        // избыточен при !$isYoutube, но оставлен явно: расширят белый список -
+        // залп не должен вернуться молча.
+        $fragments = (int) ($this->config['concurrentFragments'] ?? 0);
+        if ($fragments > 1 && !$isYoutube && !$isYoutubeMulti && !$externalDownloader) {
+            $n = min($fragments, 4, $budget * 2);
+            if ($n > 1) {
+                $cmd .= " --concurrent-fragments " . escapeshellarg((string) $n);
+            }
         }
 
         if ($isYoutube) {
@@ -2356,7 +2929,11 @@ class Downloader
         // быть заведомо ниже honest-скорости через SOCKS5: на 100K загрузка,
         // идущая нормальные 100-150 КБ/с, считалась задушенной и перезапускалась
         // по кругу. 20K - это уже точно не работа, а стоящее соединение.
-        $cmd .= " --throttled-rate 20K";
+        // С внешним загрузчиком передачей занят не yt-dlp, и порог тут молчит -
+        // его роль играет --lowest-speed-limit в аргументах aria2c выше.
+        if (!$externalDownloader) {
+            $cmd .= " --throttled-rate 20K";
+        }
 
         $fno = $this->getUniqueFileName("job_", $suffix, $this->config['logPath'] . "/");
         $fnp = str_replace("job_", "pid_", $fno);
@@ -2408,7 +2985,7 @@ class Downloader
         $logcmd = $cmd;
 
         // Одна из двух разрешённых точек backgrounding'а (вторая - restart_download). setsid делает процесс лидером группы - без этого group-kill не достаёт детей translate-ветки (vot-cli/ffmpeg). Новая точка запуска ОБЯЗАНА пройти через setsid, иначе group-kill для неё тихо сломается. $logcmd (без "setsid") пишется в pid-файл и сверяется в restart_download - остаётся чистым.
-        $cmd = "setsid " . $cmd;
+        $cmd = "setsid " . self::NICE_PREFIX . $cmd;
         $cmd .= " > " . escapeshellarg($this->config['logPath'] . "/" . $fno) . " 2>&1 & echo $! > " . escapeshellarg($this->config['logPath'] . "/" . $fnp);
 
         // putenv не меняет команду/лог - передаёт IP плагину LogPluginPP через окружение, не задевая restart-парсинг

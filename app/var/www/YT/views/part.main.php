@@ -397,6 +397,13 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                 </tbody>
             </table>
             </div>
+            <div class="selection-toolbar" id="video-select-bar" data-select-type="v" hidden>
+                <button type="button" class="selection-btn selection-btn-icon selection-toolbar-cancel" title="Выйти из выбора" aria-label="Выйти из выбора">&times;</button>
+                <span class="selection-toolbar-count">Выбрано: 0</span>
+                <span class="selection-toolbar-break" aria-hidden="true"></span>
+                <button type="button" class="selection-btn selection-toolbar-all">Выбрать всё</button>
+                <button type="button" class="selection-btn selection-btn-primary selection-toolbar-download">Скачать</button>
+            </div>
             <br />
         </div>
         <div class="tab-pane fade" id="music">
@@ -422,6 +429,13 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                     </tr>
                 </tbody>
             </table>
+            </div>
+            <div class="selection-toolbar" id="music-select-bar" data-select-type="m" hidden>
+                <button type="button" class="selection-btn selection-btn-icon selection-toolbar-cancel" title="Выйти из выбора" aria-label="Выйти из выбора">&times;</button>
+                <span class="selection-toolbar-count">Выбрано: 0</span>
+                <span class="selection-toolbar-break" aria-hidden="true"></span>
+                <button type="button" class="selection-btn selection-toolbar-all">Выбрать всё</button>
+                <button type="button" class="selection-btn selection-btn-primary selection-toolbar-download">Скачать</button>
             </div>
             <br />
         </div>

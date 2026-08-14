@@ -98,6 +98,41 @@ if (isset($_GET['theme'])) {
 require_once 'class/Downloader.php';
 require_once 'class/FileHandler.php';
 require_once 'class/ProxyStatus.php';
+require_once 'class/PlaylistProbe.php';
+require_once 'class/Markdown.php';
+require_once 'class/Feedback.php';
+
+// X-Forwarded-For/X-Real-IP подделываются любым клиентом, достучавшимся до контейнера
+// напрямую (порт открыт в compose) - доверяем только запросам с приватного/служебного адреса.
+//
+// ПОРЯДОК ЗАГОЛОВКОВ ВАЖЕН. X-Real-IP идёт ПЕРВЫМ, потому что обратный прокси
+// выставляет его как $remote_addr, то есть значение целиком его собственное.
+// X-Forwarded-For в стандартном Debian-овском proxy_params собирается через
+// $proxy_add_x_forwarded_for - он ДОПИСЫВАЕТ адрес к тому, что прислал клиент.
+// Раньше XFF читался первым и брался первый элемент списка, поэтому запрос с
+// подставленным в этот заголовок доверенным адресом выдавал себя за него - а с
+// появлением доверенных сетей администратора это стало прямым обходом пароля.
+// Из XFF теперь берётся ПОСЛЕДНИЙ элемент (его дописал сам прокси), а не первый.
+function clientIp(): string {
+    $remote_addr = $_SERVER['REMOTE_ADDR'] ?? '';
+    $is_valid_remote = filter_var($remote_addr, FILTER_VALIDATE_IP) !== false;
+    $is_public_remote = filter_var($remote_addr, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    $is_trusted_proxy = $is_valid_remote && !$is_public_remote;
+
+    $raw_ip = $remote_addr;
+    if ($is_trusted_proxy) {
+        if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
+            $raw_ip = (string) $_SERVER['HTTP_X_REAL_IP'];
+        } elseif (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            $chain = explode(',', (string) $_SERVER['HTTP_X_FORWARDED_FOR']);
+            $raw_ip = trim(end($chain));
+        }
+    }
+    if (strpos($raw_ip, ',') !== false) {
+        $raw_ip = trim(explode(',', $raw_ip)[0]);
+    }
+    return filter_var($raw_ip, FILTER_VALIDATE_IP) ?: 'unknown';
+}
 
 session_start();
 $file = new FileHandler;
@@ -123,6 +158,14 @@ if (!$config['disableQueue']) {
         $logPathFileList = Downloader::scanLogPath();
     }
 }
+
+// Гасит задачи, залипшие на --wait-for-video из-за закрытого контента (18+, приватное,
+// бот-чек): сами они не завершатся никогда, а значит и авторетрей с куками не сработает.
+Downloader::abortHopelessWaiters($logPathFileList);
+
+// Запускает авторетреи, чья отложенная задержка (RETRY_SCHEDULE_DELAY) уже истекла - см.
+// Downloader::processScheduledRetries(). На каждом GET, включая ?jobs, как и process_queue() выше.
+Downloader::processScheduledRetries($logPathFileList);
 
 function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
     // Данные в data-атрибуты, обработчик вешается делегированием в JS - без inline onclick,
@@ -153,6 +196,7 @@ function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
         'downloadurl'      => $downloadurl,
         'kind'             => ($type === 'v') ? 'video' : 'audio',
         'size'             => $f["size"],
+        'size_bytes'       => (int)($f["size_bytes"] ?? 0),
         'deleteurl'        => $deleteurl,
         'pinned'           => (bool)($f["pinned"] ?? false),
         'age_minutes'      => (int)($f["age_minutes"] ?? 0),
@@ -164,8 +208,18 @@ function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
 // и в POST-обработчиках ниже) - закрываем сессию пораньше, иначе file-based session handler
 // держит эксклюзивный lock на весь ?jobs (частый опрос, 1.5с) и блокирует параллельные запросы
 // с той же cookie: вторую вкладку или клик "Стоп"/"Удалить" во время идущего опроса.
-if (isset($_GET['jobs'])) {
+if (isset($_GET['jobs']) || isset($_GET['playlist'])) {
     session_write_close();
+}
+
+// Опрос результата разбора плейлиста. Только чтение кэша по непрозрачному ключу,
+// который сам же сервер и выдал на POST - сети эта ветка не касается, поэтому CSRF
+// ей не нужен. Сырую ссылку на GET не принимаем намеренно: GET, дёргающий внешнюю
+// выборку, это CSRF-усилитель SSRF даже при живой проверке pointsToInternalHost().
+if (isset($_GET['playlist'])) {
+    header('Content-Type: application/json');
+    echo json_encode(PlaylistProbe::read((string) $_GET['playlist']));
+    die();
 }
 
 if(isset($_GET['jobs'])) {
@@ -223,8 +277,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         || isset($_POST['reorderQueue'])
         || (isset($_POST['kill']) && !empty($_POST['kill']))
         || (isset($_POST['clear']) && !empty($_POST['clear']))
-        || (isset($_POST['restart']) && !empty($_POST['restart']));
-    
+        || (isset($_POST['restart']) && !empty($_POST['restart']))
+        // Проба плейлиста не разрушительна, но поднимает процесс и ходит в сеть
+        // от имени пользователя - в чужие руки такую кнопку давать незачем.
+        || isset($_POST['playlist'])
+        // Обратная связь пишет на диск и публикует текст от имени посетителя -
+        // отправка с чужой страницы недопустима ровно так же.
+        || isset($_POST['feedback_new'])
+        || isset($_POST['feedback_reply'])
+        || isset($_POST['feedback_delete_message'])
+        || isset($_POST['feedback_delete_dialog']);
+
     if ($isDestructive && !validateCsrfToken()) {
         showCsrfErrorPage();
     }
@@ -238,6 +301,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Content-Type: application/json');
         echo json_encode(['ok' => empty($_SESSION['errors']), 'errors' => $_SESSION['errors'] ?? []]);
         unset($_SESSION['errors']);
+        die();
+    }
+
+    // Запуск разбора плейлиста. Отвечает сразу: 'ready' из тёплого кэша, иначе
+    // 'pending' и ключ, по которому фронт добирает результат через GET ?playlist.
+    if(isset($_POST['playlist']) && !empty($_POST['playlist'])) {
+        header('Content-Type: application/json');
+        echo json_encode(PlaylistProbe::start((string) $_POST['playlist'], clientIp()));
         die();
     }
 
@@ -306,6 +377,119 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if(isset($_POST['restart']) && !empty($_POST['restart'])) {
         jsonActionResponse(fn() => Downloader::restart_download($_POST['restart']));
     }
+
+    // Действия администратора обратной связи: удаление сообщения и обращения.
+    // Права проверяет сам Feedback (доверенная сеть либо пароль на КАЖДОЕ
+    // действие - метки в сессии нет намеренно, см. checkAdmin()).
+    if (isset($_POST['feedback_delete_message']) || isset($_POST['feedback_delete_dialog'])) {
+        if (!Feedback::enabled()) {
+            showNotFoundPage();
+        }
+
+        $dialogId = (int) ($_POST['dialog'] ?? 0);
+        // Права проверяются РОВНО ОДИН раз на запрос: каждая проверка двигает
+        // счётчик неудачных попыток пароля (см. Feedback::authorize()).
+        $auth = Feedback::authorize(clientIp(), (string) ($_POST['admin_password'] ?? ''));
+
+        if (!$auth['ok']) {
+            $result = ['ok' => false, 'error' => $auth['error']];
+        } elseif (isset($_POST['feedback_delete_dialog'])) {
+            $result = Feedback::deleteDialog($dialogId, true, clientIp());
+        } else {
+            $result = Feedback::deleteMessage($dialogId, (int) $_POST['feedback_delete_message'], true, clientIp());
+        }
+
+        $_SESSION['feedback_flash'] = $result['ok']
+            ? ['ok' => true, 'text' => !empty($result['dialogDeleted']) ? 'Обращение удалено.' : 'Сообщение удалено.']
+            : ['ok' => false, 'text' => (string) $result['error']];
+
+        // Удалённый диалог показывать негде - возвращаемся к списку.
+        $back = (!$result['ok'] || empty($result['dialogDeleted'])) && $dialogId > 0
+            ? '=' . $dialogId
+            : '';
+        header('Location: index.php?feedback' . $back);
+        die();
+    }
+
+    // Обратная связь. Ответ - всегда редирект на страницу (обычная форма, работает
+    // без JS), результат едет через сессию. Цель редиректа собирается из своей же
+    // строки и целого числа, поэтому увести его пользовательским вводом нельзя.
+    if (isset($_POST['feedback_new']) || isset($_POST['feedback_reply'])) {
+        if (!Feedback::enabled()) {
+            showNotFoundPage();
+        }
+
+        $isNew = isset($_POST['feedback_new']);
+        $body = (string) ($_POST['message'] ?? '');
+        $title = (string) ($_POST['title'] ?? '');
+        $dialogId = (int) ($_POST['dialog'] ?? 0);
+        // Ответ (или обращение) от имени администратора. Сама галочка ничего не
+        // даёт: права проверяются здесь, один раз на запрос, и дальше едут
+        // готовым флагом. Подтверждённый администратор освобождается от ВСЕХ
+        // ограничений - приманки, минимальной задержки, лимитов частоты, потолков
+        // длины и числа сообщений (см. Feedback::validate()/addMessage()).
+        $wantsAdmin = !empty($_POST['as_admin']);
+        $asAdmin = false;
+        $adminError = null;
+        if ($wantsAdmin) {
+            $auth = Feedback::authorize(clientIp(), (string) ($_POST['admin_password'] ?? ''));
+            $asAdmin = $auth['ok'];
+            $adminError = $auth['ok'] ? null : (string) $auth['error'];
+        }
+
+        if ($adminError !== null) {
+            $_SESSION['feedback_flash'] = ['ok' => false, 'text' => $adminError];
+            $_SESSION['feedback_draft'] = ['title' => $title, 'message' => $body];
+            header('Location: index.php?feedback' . ($isNew ? '' : '=' . $dialogId));
+            die();
+        }
+
+        // Приманка и минимальная задержка. Отсутствие поля или отметки времени -
+        // это ОТКАЗ, а не пропуск проверки: бот, не берущий куки и не разбирающий
+        // форму, иначе обходил бы обе разом.
+        $trapFilled = trim((string) ($_POST['website'] ?? 'нет поля')) !== '';
+        $openedAt = (int) ($_SESSION['feedback_form_ts'] ?? 0);
+        $tooFast = $openedAt <= 0 || (time() - $openedAt) < (int) ($config['feedbackMinDelay'] ?? 3);
+
+        // Приманка не касается подтверждённого администратора: браузер умеет
+        // подставить что угодно в скрытое поле (автозаполнение), и терять из-за
+        // этого ответ, права на который уже проверены, незачем.
+        if ($trapFilled && !$asAdmin) {
+            // Молча делаем вид, что приняли: явный отказ подсказал бы боту, на чём
+            // он попался, и следующая попытка пришла бы уже без приманки.
+            $_SESSION['feedback_flash'] = ['ok' => true, 'text' => 'Спасибо, отправлено.'];
+            header('Location: index.php?feedback');
+            die();
+        }
+
+        // Минимальная задержка - мера против ботов, а не против человека с правами.
+        if ($tooFast && !$asAdmin) {
+            $_SESSION['feedback_flash'] = ['ok' => false, 'text' => 'Слишком быстро. Перечитай написанное и отправь ещё раз.'];
+            $_SESSION['feedback_draft'] = ['title' => $title, 'message' => $body];
+            header('Location: index.php?feedback' . ($isNew ? '' : '=' . $dialogId));
+            die();
+        }
+
+        $result = $isNew
+            ? Feedback::createDialog($title, $body, clientIp(), $asAdmin)
+            : Feedback::addMessage($dialogId, $body, clientIp(), $asAdmin);
+
+        if ($result['ok']) {
+            unset($_SESSION['feedback_draft'], $_SESSION['feedback_form_ts']);
+            $_SESSION['feedback_flash'] = ['ok' => true, 'text' => 'Отправлено.'];
+            header('Location: index.php?feedback=' . (int) $result['id'] . '#end');
+            die();
+        }
+
+        $_SESSION['feedback_flash'] = [
+            'ok' => false,
+            'text' => (string) $result['error'],
+            'limited' => !empty($result['limited']),
+        ];
+        $_SESSION['feedback_draft'] = ['title' => $title, 'message' => $body];
+        header('Location: index.php?feedback' . ($isNew ? '' : '=' . $dialogId));
+        die();
+    }
 }
 
 if(isset($_POST['urls']) && !empty($_POST['urls'])) {
@@ -346,19 +530,7 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     // Перевод озвучки через Яндекс-VOT - только для видео, для аудио бессмысленно
     $translate = !$audio_only && !empty($_POST['translate']);
 
-    // X-Forwarded-For/X-Real-IP подделываются любым клиентом, достучавшимся до контейнера
-    // напрямую (порт открыт в compose) - доверяем только запросам с приватного/служебного адреса.
-    $remote_addr = $_SERVER['REMOTE_ADDR'] ?? '';
-    $is_valid_remote = filter_var($remote_addr, FILTER_VALIDATE_IP) !== false;
-    $is_public_remote = filter_var($remote_addr, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
-    $is_trusted_proxy = $is_valid_remote && !$is_public_remote;
-    $raw_ip = $is_trusted_proxy
-        ? ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['HTTP_X_REAL_IP'] ?? $remote_addr)
-        : $remote_addr;
-    if (strpos($raw_ip, ',') !== false) {
-        $raw_ip = trim(explode(',', $raw_ip)[0]);
-    }
-    $client_ip = filter_var($raw_ip, FILTER_VALIDATE_IP) ?: 'unknown';
+    $client_ip = clientIp();
 
     $dl_list = [[
         'url' => $_POST['urls'],
@@ -373,8 +545,16 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
     $min_free_bytes = 100 * 1024 * 1024; // 100 МБ
     $free_bytes = $fh->get_free_space_bytes();
 
+    // Потолок на пачку. Выбор целого плейлиста иначе дописал бы в dl_queue три сотни
+    // строк одним махом - очередь после такого разгребается часами, а отменять её
+    // придётся по одной задаче.
+    $max_urls_per_submit = 50;
+    $submitted_count = count(array_filter(array_map('trim', explode('||', $_POST['urls'])), 'strlen'));
+
     if ($free_bytes < $min_free_bytes) {
         $_SESSION['errors'] = ["Ой, еей! Диск почти полный, приберись"];
+    } elseif ($submitted_count > $max_urls_per_submit) {
+        $_SESSION['errors'] = ["Многовато за раз: " . $submitted_count . " ссылок, можно до " . $max_urls_per_submit . ". Отправь частями"];
     } else {
         $downloader = new Downloader($dl_list);
     }
@@ -463,6 +643,42 @@ if (@$_GET["audio"]=="true" && !$config['disableExtraction']) {
 // доходим уже после process_queue, то есть после finalize_job_log со спасателем -
 // спасённая запись к этому моменту .part уже не называется.
 Downloader::sweepOrphanPartFiles();
+
+// Страница обратной связи. Стоит перед чтением списков доменов и сборкой формы
+// загрузки: ей не нужно ни то, ни другое, а $pageMode гасит в шапке и опрос ?jobs.
+if (isset($_GET['feedback'])) {
+    if (!Feedback::enabled()) {
+        showNotFoundPage('Обратная связь на этом сервере выключена.');
+    }
+
+    $pageMode = 'feedback';
+    $feedbackRaw = (string) $_GET['feedback'];
+    $feedbackId = ctype_digit($feedbackRaw) ? (int) $feedbackRaw : 0;
+    $feedbackDialog = $feedbackId > 0 ? Feedback::read($feedbackId) : null;
+    $feedbackList = $feedbackId > 0
+        ? null
+        : Feedback::listDialogs((int) ($_GET['page'] ?? 1), (int) ($config['feedbackPerPage'] ?? 20));
+
+    // Одноразовые: показали - забыли, иначе всплывут на следующей странице.
+    $feedbackFlash = $_SESSION['feedback_flash'] ?? null;
+    $feedbackDraft = $_SESSION['feedback_draft'] ?? ['title' => '', 'message' => ''];
+    unset($_SESSION['feedback_flash'], $_SESSION['feedback_draft']);
+
+    // Отметка времени открытия формы живёт в сессии, а не в скрытом поле: подделать
+    // нечего, подписывать нечего (см. проверку $tooFast в POST-обработчике).
+    $_SESSION['feedback_form_ts'] = time();
+
+    // Доверенный адрес - поле пароля не рисуем вовсе; снаружи оно нужно на каждое
+    // действие. Признак влияет ТОЛЬКО на разметку: настоящую проверку делает
+    // Feedback::checkAdmin() на каждый POST, подделка разметки прав не даёт.
+    $feedbackAdminTrusted = Feedback::isTrustedAdminNetwork(clientIp());
+    $feedbackAdminAvailable = $feedbackAdminTrusted || Feedback::adminPasswordConfigured();
+
+    require_once 'views/part.header.php';
+    require_once 'views/part.feedback.php';
+    require_once 'views/part.footer.php';
+    die();
+}
 
 $faviconDomainsJson = file_get_contents(__DIR__ . '/config/favicon_domains.json');
 $faviconDomains = json_decode($faviconDomainsJson, true) ?: [];

@@ -28,11 +28,17 @@ $staticVersionQuery = $staticVersion !== '' ? ('?v=' . rawurlencode($staticVersi
          baskerstyle идёт после темы - это переопределения поверх неё. -->
     <link rel="stylesheet" href="<?= htmlspecialchars($themeCss . $staticVersionQuery, ENT_QUOTES) ?>" fetchpriority="high">
     <link rel="stylesheet" href="<?= htmlspecialchars('css/baskerstyle.min.css' . $staticVersionQuery, ENT_QUOTES) ?>" fetchpriority="high">
+<?php if (($pageMode ?? 'home') === 'feedback'): ?>
+    <!-- Обратной связи не нужны ни списки сервисов, ни опрос ?jobs: главный скрипт
+         на этой странице только зря стучался бы в index.php?jobs полтора раза в секунду. -->
+    <script defer src="<?= htmlspecialchars('js/feedback.min.js' . $staticVersionQuery, ENT_QUOTES) ?>"></script>
+<?php else: ?>
     <script nonce="<?= htmlspecialchars($cspNonce ?? '', ENT_QUOTES) ?>">const KNOWN_SERVICES = <?= json_encode($knownServices ?? [], JSON_UNESCAPED_SLASHES) ?>;
     const AUDIO_ONLY_SERVICES = <?= json_encode($audioServices ?? [], JSON_UNESCAPED_SLASHES) ?>;
     const DIRECT_ACCESS_DOMAINS = <?= json_encode($directDomains ?? [], JSON_UNESCAPED_SLASHES) ?>;
     const MASCOT_IMG = <?= json_encode($mascotImg ?? 'img/snej.webp', JSON_UNESCAPED_SLASHES) ?>;
     const STATIC_VERSION = <?= json_encode($staticVersion, JSON_UNESCAPED_SLASHES) ?>;</script>
     <script defer src="<?= htmlspecialchars('js/youtubedlwebui.min.js' . $staticVersionQuery, ENT_QUOTES) ?>" fetchpriority="high"></script>
+<?php endif; ?>
 </head>
 <body<?= !empty($isWinterMascot) ? ' class="winter"' : '' ?>>

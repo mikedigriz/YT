@@ -3,3 +3,5 @@
 .env.*
 !.env.example
 app/var/www/YT/config/youtube_cookies.txt
+app/var/www/YT/config/instagram_cookies.txt
+

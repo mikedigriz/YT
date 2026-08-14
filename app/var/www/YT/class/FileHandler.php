@@ -58,6 +58,7 @@ class FileHandler
             $entry = [
                 "name" => $file,
                 "size" => $this->to_human_filesize($filesize),
+                "size_bytes" => $filesize,
                 "age_minutes" => $age_minutes,
                 // Закреплённый файл не тикает - таймер всегда полный.
                 "lifetime_percent" => $pinned ? 100 : $lifetime_percent,

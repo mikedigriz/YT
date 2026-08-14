@@ -29,7 +29,7 @@ docker exec yt /.yt_env/bin/yt-dlp --plugin-dirs default -v --simulate 'https://
 В большинстве случаев помогает пересборка образа - она подтягивает актуальные версии сразу и плагина, и сервера токенов:
 
 ```bash
-docker build --no-cache -t yt . && docker-compose up -d
+docker build --no-cache -t yt . && docker compose up -d
 ```
 
 ## Подключить куки аккаунта (запасной путь)
@@ -94,6 +94,20 @@ Instagram - отдельный случай: там нет аналога `bguti
 ### Когда куки протухнут
 
 Так же, как и с YouTube: признак - `Куки Instagram протухли` в списке загрузок. Лечится перезаходом под тем же аккаунтом и повторным экспортом `cookies.txt`.
+
+## Куки для TikTok
+
+Тот же случай, что Instagram: TikTok часто блокирует запросы без авторизации, и в логе видно `Your IP address is blocked from accessing this post`. Куки подключаются сразу, с первой попытки.
+
+Настраивается один в один: отдельный одноразовый аккаунт, экспорт `cookies.txt` тем же расширением, файл на сервере, владелец `www-data`, права `600`.
+
+```bash
+cp cookies.txt /path/to/repo/app/var/www/YT/config/tiktok_cookies.txt
+chown www-data:www-data /path/to/repo/app/var/www/YT/config/tiktok_cookies.txt
+chmod 600 /path/to/repo/app/var/www/YT/config/tiktok_cookies.txt
+```
+
+Путь задаётся ключом `tiktokCookiesFile`. Файла нет - загрузка идёт без кук, как раньше.
 
 ## Если не помогло
 

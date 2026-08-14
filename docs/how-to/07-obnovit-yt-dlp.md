@@ -21,7 +21,7 @@ docker exec -u root yt /etc/Scripts/update-ytdlp.sh
 Более радикальный способ - собрать образ заново, что заодно подтянет свежие версии всех остальных инструментов (bgutil, vot-cli):
 
 ```bash
-docker build --no-cache -t yt . && docker-compose up -d
+docker build --no-cache -t yt . && docker compose up -d
 ```
 
 ## Если после обновления пропали имена файлов или появились странные символы

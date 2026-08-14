@@ -1214,3 +1214,517 @@
         transform: none;
     }
 }
+
+/* Массовый выбор файлов (Видео/Музыка) - long-press select, без чекбоксов */
+tbody.selection-mode tr[data-row-key^="file:"] {
+    cursor: pointer;
+}
+/* Фон вешаем на <td>, не на <tr>: у строк таблицы border/фон рендерятся
+   нестабильно при border-collapse, а table-striped красит именно td с высокой
+   специфичностью - без !important тон выбора терялся под чередованием полос. */
+/* Заливки строки нет намеренно: любой фон дерётся с чередованием полос
+   table-striped и пачкает таблицу. Признак выбора один - краешек слева.
+   Синий взят как единственный холодный тон на тёплой странице: он не спорит
+   ни с коралловым (действие), ни с золотом (волна нового файла), и читается
+   как пометка, а не как тревога. */
+tr.row-selected > td:first-child {
+    position: relative;
+    padding-left: 18px !important;
+}
+tr.row-selected > td:first-child::before {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 6px;
+    bottom: 6px;
+    width: 5px;
+    border-radius: 99px;
+    /* Желейность собрана из трёх слоёв: мягкий градиент тела, белый блик
+       сверху-внутри и размытое свечение наружу - капля, а не полоска. */
+    background: linear-gradient(160deg, #7fb0f5 0%, #5a8fe0 55%, #4d7fd0 100%);
+    box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.75),
+        inset 0 -1px 2px rgba(40, 80, 150, 0.35),
+        0 0 6px rgba(90, 143, 224, 0.45),
+        0 0 0 3px rgba(90, 143, 224, 0.10);
+    transform-origin: center;
+    animation: selectEdgeIn 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes selectEdgeIn {
+    from { transform: scaleY(0.2); opacity: 0; }
+    to   { transform: scaleY(1); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    tr.row-selected > td:first-child::before { animation: none; }
+}
+
+/* Панель выбора. Намеренно НЕ на .btn/.btn-xs/.btn-success: у темы для них
+   пачка !important-правил (в т.ч. с :not(.btn-success)-исключениями), из-за
+   которых надпись "Скачать" обрезалась до "АЧА". Свои классы - свои размеры. */
+.selection-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    margin-top: 10px;
+    /* Подвал сайта - position:fixed с z-index:1000, поэтому на коротких списках
+       он наезжает на панель. Панель в потоке, но со своим слоем: при наложении
+       поверх оказывается она, а не подвал. */
+    position: relative;
+    z-index: 1001;
+    background: var(--color-bg-glass, rgba(245, 245, 247, 0.85));
+    backdrop-filter: var(--blur-md, blur(8px)) var(--saturate, saturate(140%));
+    -webkit-backdrop-filter: var(--blur-md, blur(8px)) var(--saturate, saturate(140%));
+    border: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+    border-radius: var(--control-radius, 12px);
+    box-shadow: var(--shadow-md, 0 4px 14px rgba(0, 0, 0, 0.04)), var(--shadow-glass-inset, inset 0 1px 0 rgba(255, 255, 255, 0.7));
+    animation: selectBarIn 0.2s ease-out both;
+}
+@keyframes selectBarIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.selection-toolbar[hidden] {
+    display: none;
+}
+/* На десктопе всё живёт в одну строку - разрыв ряда не нужен. */
+.selection-toolbar-break {
+    display: none;
+}
+.selection-toolbar-count {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text-secondary, #555);
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+}
+.selection-btn {
+    flex: 0 0 auto;
+    min-width: max-content;
+    min-height: 34px;
+    padding: 7px 16px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-transform: none;
+    border-radius: var(--btn-radius, 99px);
+    border: 1px solid var(--color-border, rgba(0, 0, 0, 0.08));
+    background: rgba(255, 255, 255, 0.75);
+    color: var(--color-text-primary, #262626);
+    cursor: pointer;
+    transition: background var(--transition-fast, 0.1s ease), box-shadow var(--transition-fast, 0.1s ease), transform var(--transition-bounce, 0.12s ease), opacity var(--transition-fast, 0.1s ease);
+}
+.selection-btn:hover:not(:disabled) {
+    background: #fff;
+    box-shadow: var(--shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.08));
+}
+.selection-btn:active:not(:disabled) {
+    transform: scale(0.97);
+}
+.selection-btn:focus-visible {
+    outline: 2px solid var(--color-danger, #e55a52);
+    outline-offset: 2px;
+}
+.selection-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+/* Главное действие - тем же коралловым градиентом, что и основная кнопка
+   "Скачать" на Домой (.btn-download-minimal.btn-primary): на сайте это цвет
+   действия, и повторять его здесь правильнее, чем изобретать третий. */
+.selection-btn-primary {
+    border-color: transparent;
+    background: linear-gradient(135deg, #f06058 0%, var(--color-danger, #e55a52) 100%);
+    color: #fff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    box-shadow: var(--shadow-btn, 0 4px 14px rgba(229, 90, 82, 0.3));
+}
+.selection-btn-primary:hover:not(:disabled) {
+    background: linear-gradient(135deg, #f57068 0%, var(--color-danger-hover, #eb655d) 100%);
+    box-shadow: 0 8px 24px rgba(229, 90, 82, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+.selection-btn-icon {
+    width: 34px;
+    min-width: 34px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    line-height: 1;
+    color: var(--color-text-secondary, #555);
+}
+@media (max-width: 767px) {
+    /* Раскладка флексом, а не сеткой: у сетки кнопка "Снять всё" попадала в
+       колонку крестика (44px) и надписью наползала на соседнюю. Здесь ширину
+       задаёт flex-basis, поэтому кнопка не может оказаться уже своего текста:
+       первый ряд - крестик и счётчик, дальше пара действий переносится сама и
+       делит ряд пополам. */
+    .selection-toolbar {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 1100;
+        margin-top: 0;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        border-radius: 16px 16px 0 0;
+        border-bottom: 0;
+        padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px));
+        box-shadow: 0 -6px 24px rgba(40, 30, 10, 0.14);
+    }
+    .selection-toolbar-count {
+        flex: 1 1 auto;
+    }
+    /* Явный разрыв ряда. Полагаться на то, что кнопки "не поместятся" и
+       перенесутся сами, нельзя: на широком телефоне они как раз помещаются, и
+       ряды расползаются по-разному от экрана к экрану. */
+    .selection-toolbar-break {
+        display: block;
+        flex: 0 0 100%;
+        width: 100%;
+        height: 0;
+        margin: 0;
+    }
+    .selection-btn {
+        min-height: 44px;
+        padding: 10px 16px;
+    }
+    .selection-toolbar-all,
+    .selection-toolbar-download {
+        flex: 1 1 calc(50% - 5px);
+    }
+    /* Кнопка ждёт следующего нажатия (ручной режим очереди, см. runBulkDownload):
+       пульсация отличает "жду тебя" от обычного итога. Только на телефоне -
+       на десктопе очередь идёт сама и звать некого. */
+    .selection-btn-waiting {
+        animation: selectBtnWaiting 0.75s ease-in-out infinite;
+    }
+    @keyframes selectBtnWaiting {
+        0%, 100% {
+            transform: scale(1);
+            box-shadow: var(--shadow-btn, 0 4px 14px rgba(229, 90, 82, 0.3));
+        }
+        50% {
+            transform: scale(1.035);
+            box-shadow: 0 6px 20px rgba(229, 90, 82, 0.5), 0 0 0 6px rgba(229, 90, 82, 0.14);
+        }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        /* Движение выключено системно - остаётся спокойное свечение, подсказка
+           не пропадает совсем. */
+        .selection-btn-waiting {
+            animation: none;
+            box-shadow: 0 4px 14px rgba(229, 90, 82, 0.4), 0 0 0 4px rgba(229, 90, 82, 0.16);
+        }
+    }
+    .selection-toolbar-cancel {
+        flex: 0 0 44px;
+        width: 44px;
+        min-width: 44px;
+        padding: 0;
+    }
+    body.selection-active {
+        padding-bottom: 130px;
+    }
+    /* Подвал тоже прижат к низу (position:fixed) и на телефоне оказался бы
+       ровно под панелью - две плашки друг на друге в самом узком месте экрана.
+       Пока идёт выбор, низ отдан панели целиком. */
+    body.selection-active .footer {
+        display: none;
+    }
+}
+
+.bulk-confirm-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 18px;
+}
+
+.bulk-download-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%) translateY(12px);
+    background: #1e180c;
+    color: #fffdf7;
+    padding: 10px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    z-index: 1300;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .2s ease, transform .2s ease, visibility .2s ease;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+.bulk-download-toast.is-visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* --- Плейлист: подсказка под полем и окно выбора роликов ------------------ */
+
+/* Карточка шире QR-шной: тут список, а не картинка. */
+.playlist-modal-card {
+    max-width: 620px;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    max-height: 82vh;
+}
+.playlist-modal-subtitle {
+    font-size: 13px;
+    color: #8a7c5f;
+    margin-bottom: 10px;
+    word-break: break-word;
+}
+.playlist-modal-body { flex: 1 1 auto; min-height: 0; }
+.playlist-modal-status {
+    padding: 24px 4px;
+    text-align: center;
+    color: #6b5c3d;
+}
+.playlist-modal-list {
+    overflow-y: auto;
+    max-height: 52vh;
+    margin: 0 -6px;
+}
+.playlist-modal-table { margin-bottom: 0; }
+.playlist-modal-table td { vertical-align: middle; }
+.playlist-modal-rows tr { cursor: pointer; }
+.playlist-row-num { width: 44px; color: #a2957a; font-variant-numeric: tabular-nums; }
+.playlist-row-title { word-break: break-word; }
+.playlist-row-time {
+    width: 68px;
+    text-align: right;
+    color: #a2957a;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.playlist-row-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 7px;
+    border-radius: 99px;
+    background: rgba(180, 60, 40, 0.12);
+    color: #9c3f28;
+    font-size: 11px;
+    white-space: nowrap;
+}
+/* Недоступные видны, но не выбираются: молча прятать их нельзя - расхождение
+   с числом роликов на самом сайте человеку объяснить будет нечем. */
+.playlist-modal-rows tr.playlist-row-unavailable {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.playlist-modal-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+    padding-top: 14px;
+    margin-top: 4px;
+    /* Не сплошная граница, а растворяющаяся к краям полоска: список внутри
+       карточки шире её текста (margin: 0 -6px), и линия от края до края читалась
+       грубой чертой поперёк окна, особенно на телефоне. */
+    border-top: 0;
+    background-image: linear-gradient(to right,
+        rgba(140, 120, 80, 0) 0%,
+        rgba(140, 120, 80, 0.16) 22%,
+        rgba(140, 120, 80, 0.16) 78%,
+        rgba(140, 120, 80, 0) 100%);
+    background-repeat: no-repeat;
+    background-size: 100% 1px;
+    background-position: left top;
+}
+.playlist-modal-bar[hidden] { display: none; }
+.playlist-modal-count { margin-right: auto; }
+
+@media (max-width: 767px) {
+    .playlist-modal-card { max-width: 100%; max-height: 90vh; padding: 20px 14px 16px; }
+    .playlist-modal-list { max-height: 58vh; }
+    /* Цель касания у строки списка - не меньше пальца. */
+    .playlist-modal-rows td { padding-top: 12px !important; padding-bottom: 12px !important; }
+    .playlist-modal-bar .selection-btn { flex: 1 1 calc(50% - 5px); }
+    .playlist-modal-count { flex: 1 1 100%; margin-right: 0; }
+    /* На узком экране полоска и без того короткая - гасим её сильнее, иначе
+       на фоне сжатой карточки она снова читается чертой. */
+    .playlist-modal-bar { background-image: linear-gradient(to right,
+        rgba(140, 120, 80, 0) 0%,
+        rgba(140, 120, 80, 0.1) 26%,
+        rgba(140, 120, 80, 0.1) 74%,
+        rgba(140, 120, 80, 0) 100%); }
+}
+
+/* ============ Обратная связь (index.php?feedback) ============
+   Отдельная страница, поэтому раскладка своя, а не поверх .nav-tabs.
+   Подсказки и мета намеренно на --color-text-secondary (#555, ~7.4:1 на белом),
+   а не на --color-text-muted (#9CA3AF, ~2.6:1) - последний по AA не проходит
+   для текста, он годится только для крупных надписей и рамок. */
+.fb-page { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+.fb-crumbs { font-size: 14px; margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+.fb-crumbs a { color: var(--color-brown); text-decoration: underline; }
+.fb-title { font-size: 26px; line-height: 1.25; margin: 0 0 16px; color: var(--color-text-primary); word-break: break-word; }
+.fb-lead { color: var(--color-text-secondary); line-height: 1.6; margin: 0 0 16px; }
+.fb-page h2 { font-size: 19px; margin: 0 0 12px; color: var(--color-text-primary); }
+
+/* Предупреждение о публичности. Смысл не передаётся одним цветом (WCAG 1.4.1):
+   несёт его текст, полоса слева лишь помогает найти блок глазами. */
+.fb-warn { border-left: 4px solid var(--color-gold-dark); background: rgba(212,175,55,0.1);
+           padding: 12px 14px; border-radius: 6px; margin: 0 0 20px; line-height: 1.55;
+           color: var(--color-text-primary); }
+
+.fb-alert { padding: 12px 14px; border-radius: 6px; margin: 0 0 18px; line-height: 1.5; }
+.fb-alert:focus { outline: 2px solid var(--color-brown); outline-offset: 2px; }
+.fb-alert-ok { background: rgba(60,140,80,0.12); border-left: 4px solid #2f7d46; color: #1d5c31; }
+.fb-alert-error { background: var(--color-danger-light); border-left: 4px solid var(--color-danger); color: #8a2b25; }
+.fb-alert-wait { background: rgba(212,175,55,0.16); border-left: 4px solid var(--color-gold-dark); color: #6b5405; }
+
+.fb-form-section, .fb-list-section { margin-bottom: 36px; }
+.fb-field { margin-bottom: 18px; }
+.fb-field label { display: block; font-weight: 600; margin-bottom: 6px; color: var(--color-text-primary); }
+.fb-field input[type=text], .fb-field textarea {
+    width: 100%; padding: 10px 12px; border: 1px solid #767676; border-radius: 6px;
+    font: inherit; color: var(--color-text-primary); background: #fff; }
+.fb-field textarea { resize: vertical; min-height: 120px; font-family: inherit; line-height: 1.55; }
+.fb-field input[type=text]:focus, .fb-field textarea:focus {
+    outline: 2px solid var(--color-brown); outline-offset: 1px; border-color: var(--color-brown); }
+.fb-field [aria-invalid=true] { border-color: var(--color-danger); }
+.fb-hint { font-size: 13px; color: var(--color-text-secondary); margin: 6px 0 0; line-height: 1.5; }
+.fb-hint code { background: rgba(0,0,0,0.06); padding: 1px 4px; border-radius: 3px; }
+.fb-counter { float: right; font-variant-numeric: tabular-nums; }
+.fb-counter-over { color: var(--color-danger); font-weight: 600; }
+.fb-field-error { color: #8a2b25; font-size: 14px; margin: 6px 0 0; font-weight: 600; }
+
+/* Приманка для ботов. Не display:none - часть заполнялок такие поля пропускает. */
+.fb-trap { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+
+.fb-submit { background: var(--color-brown); color: #fff; border: none; border-radius: 6px;
+             padding: 11px 22px; font-size: 16px; font-weight: 600; cursor: pointer; }
+.fb-submit:hover { background: #56361c; }
+.fb-submit:focus-visible { outline: 3px solid var(--color-gold-dark); outline-offset: 2px; }
+.fb-submit[disabled], .fb-submit-busy { opacity: 0.65; cursor: progress; }
+
+.fb-empty { color: var(--color-text-secondary); line-height: 1.6; padding: 14px 0; }
+.fb-list { list-style: none; margin: 0; padding: 0; }
+.fb-list-item { padding: 12px 0; border-bottom: 1px solid var(--color-border); }
+.fb-list-item a { display: flex; gap: 10px; align-items: baseline; text-decoration: none;
+                  color: var(--color-text-primary); font-weight: 600; }
+.fb-list-item a:hover .fb-list-title { text-decoration: underline; }
+.fb-list-item a:focus-visible { outline: 2px solid var(--color-brown); outline-offset: 3px; }
+.fb-list-num { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.fb-list-title { word-break: break-word; }
+.fb-list-meta { display: block; font-size: 13px; color: var(--color-text-secondary); margin-top: 4px; }
+.fb-badge-open { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 10px;
+                 background: rgba(212,175,55,0.22); color: #6b5405; font-weight: 600; }
+.fb-pager { display: flex; gap: 16px; align-items: center; margin-top: 18px;
+            font-size: 14px; color: var(--color-text-secondary); flex-wrap: wrap; }
+.fb-pager a { color: var(--color-brown); text-decoration: underline; }
+
+.fb-dialog-meta { color: var(--color-text-secondary); font-size: 14px; margin: 0 0 20px; }
+.fb-messages { list-style: none; margin: 0 0 32px; padding: 0; }
+.fb-message { border: 1px solid var(--color-border); border-radius: 8px; padding: 14px 16px;
+              margin-bottom: 14px; background: var(--color-bg-glass); }
+/* Перенос обязателен: номер, метка "Администратор" и дата в одну строку не
+   влезают на узком экране, и шапка выпихивала страницу в горизонтальную
+   прокрутку (поймано на 212px). */
+.fb-message-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+                   margin-bottom: 8px; font-size: 13px; color: var(--color-text-secondary); }
+.fb-message-num { font-weight: 700; color: var(--color-brown); text-decoration: none; }
+.fb-message-num:hover { text-decoration: underline; }
+.fb-message-body { line-height: 1.65; word-break: break-word; }
+
+/* Разметка сообщений (вывод Markdown.php). Список тегов закрытый - тут ровно то,
+   что умеет отдать парсер, ничего иного в этом контейнере появиться не может. */
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 {
+    margin: 18px 0 8px; line-height: 1.3; color: var(--color-text-primary); }
+.md-body h1 { font-size: 22px; } .md-body h2 { font-size: 20px; } .md-body h3 { font-size: 18px; }
+.md-body h4, .md-body h5, .md-body h6 { font-size: 16px; }
+.md-body p { margin: 0 0 12px; white-space: pre-wrap; }
+.md-body ul, .md-body ol { margin: 0 0 12px; padding-left: 24px; }
+.md-body li { margin-bottom: 4px; }
+.md-body blockquote { margin: 0 0 12px; padding: 6px 14px; border-left: 3px solid var(--color-gold-dark);
+                      background: rgba(0,0,0,0.03); color: var(--color-text-secondary); }
+.md-body hr { border: none; border-top: 1px solid var(--color-border); margin: 18px 0; }
+.md-body a { color: var(--color-brown); text-decoration: underline; word-break: break-all; }
+.md-body code { background: rgba(0,0,0,0.07); padding: 1px 5px; border-radius: 3px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
+.md-fallback { white-space: pre-wrap; word-break: break-word; font-family: inherit;
+               background: none; border: none; padding: 0; }
+
+/* Блок кода и таблица прокручиваются внутри себя - страница по горизонтали
+   не едет даже от длинной строки без пробелов. */
+.md-code { position: relative; margin: 0 0 12px; }
+.md-code pre { margin: 0; padding: 12px 14px; overflow-x: auto; background: #1f2430; border-radius: 6px; }
+.md-code code { background: none; padding: 0; color: #e6e6e6; font-size: 13px; line-height: 1.5; }
+.md-code-lang { position: absolute; top: 0; right: 0; font-size: 11px; padding: 2px 8px;
+                background: rgba(255,255,255,0.14); color: #e6e6e6; border-radius: 0 6px 0 6px;
+                text-transform: uppercase; letter-spacing: 0.5px; }
+.hl-keyword { color: #c792ea; } .hl-string { color: #c3e88d; }
+.hl-comment { color: #9aa5b1; font-style: italic; } .hl-number { color: #f78c6c; }
+
+.md-table-wrap { overflow-x: auto; margin: 0 0 12px; }
+.md-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.md-table th, .md-table td { border: 1px solid var(--color-border); padding: 7px 10px; text-align: left; }
+.md-table th { background: rgba(0,0,0,0.05); font-weight: 700; }
+
+/* Значок в подвале: число несёт смысл само, цвет только помогает его заметить. */
+.fb-footer-badge { display: inline-flex; align-items: center; justify-content: center;
+                   min-width: 18px; height: 18px; padding: 0 5px; margin-left: 6px;
+                   border-radius: 9px; background: var(--color-danger); color: #fff;
+                   font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+@media (max-width: 600px) {
+    .fb-page { padding: 16px 12px 48px; }
+    .fb-title { font-size: 22px; }
+    .fb-submit { width: 100%; }
+    .fb-counter { float: none; display: block; margin-top: 4px; }
+}
+
+/* Панель администратора обратной связи. Заметно отделена от обычной формы:
+   кнопки тут разрушительные, и путать их с "Отправить" нельзя. */
+.fb-admin { border: 1px solid var(--color-border); border-radius: 8px; padding: 10px 14px;
+            margin: 0 0 28px; background: rgba(0,0,0,0.02); }
+.fb-admin > summary { cursor: pointer; font-weight: 600; color: var(--color-text-primary);
+                      padding: 4px 0; }
+.fb-admin > summary:focus-visible { outline: 2px solid var(--color-brown); outline-offset: 2px; }
+.fb-admin-form { margin-top: 12px; }
+.fb-admin-form input[type=password] { width: 100%; max-width: 320px; padding: 9px 12px;
+                                      border: 1px solid #767676; border-radius: 6px; font: inherit;
+                                      color: var(--color-text-primary); background: #fff; }
+.fb-admin-form input[type=password]:focus { outline: 2px solid var(--color-brown); outline-offset: 1px; }
+.fb-admin-label { font-size: 14px; font-weight: 600; margin: 6px 0; color: var(--color-text-primary); }
+.fb-admin-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.fb-admin-btn { background: #fff; color: #8a2b25; border: 1px solid var(--color-danger);
+                border-radius: 6px; padding: 6px 12px; font: inherit; font-weight: 600; cursor: pointer;
+                font-variant-numeric: tabular-nums; }
+.fb-admin-btn:hover { background: var(--color-danger); color: #fff; }
+.fb-admin-btn:focus-visible { outline: 3px solid var(--color-gold-dark); outline-offset: 2px; }
+.fb-admin-btn-danger { background: var(--color-danger); color: #fff; border-color: var(--color-danger); }
+.fb-admin-btn-danger:hover { background: var(--color-danger-hover); }
+
+.fb-admin-reply { border-top: 1px solid var(--color-border); padding-top: 12px; }
+.fb-checkbox { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 8px; }
+.fb-checkbox input { width: 18px; height: 18px; }
+.fb-admin-reply input[type=password] { width: 100%; max-width: 320px; padding: 9px 12px;
+                                       border: 1px solid #767676; border-radius: 6px; font: inherit; }
+
+/* Ответ администратора выделен рамкой и подписью, а не только цветом (WCAG 1.4.1):
+   слово "Администратор" стоит в шапке сообщения и читается вслух. */
+.fb-message-admin { border-color: var(--color-gold-dark); border-left-width: 4px;
+                    background: rgba(212,175,55,0.08); }
+.fb-admin-tag { display: inline-block; padding: 1px 8px; border-radius: 10px;
+                background: var(--color-brown); color: #fff; font-size: 12px; font-weight: 700; }

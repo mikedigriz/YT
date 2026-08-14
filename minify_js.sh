@@ -16,7 +16,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/app/var/www/YT/js"
 
-declare -a SOURCES=("youtubedlwebui.js")
+declare -a SOURCES=("youtubedlwebui.js" "feedback.js")
 
 for src in "${SOURCES[@]}"; do
     out="${src%.js}.min.js"
