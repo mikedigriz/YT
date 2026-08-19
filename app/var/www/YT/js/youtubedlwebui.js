@@ -3352,6 +3352,8 @@ const playlistState = {
     contentType: null,
     title: '',
     total: 0,
+    // Сколько строк сервер скрыл (недоступные и дубли) - для подзаголовка.
+    hidden: 0,
     truncated: false,
     frozenItems: [],
     selectedIds: new Set(),
@@ -3366,8 +3368,12 @@ const playlistState = {
 
 let playlistModalEl = null;
 
-function playlistItemKey(item) {
-    return 'pl:' + (item.id || item.url);
+// Ключ строки. Индекс в нём обязателен: один ролик попадает в плейлист дважды
+// (обычное дело для YouTube Mix), и ключ из одного id совпал бы у двух строк -
+// клик по одной подсвечивал бы обе, а Set схлопывал бы их в один элемент, из-за
+// чего "выбрано" никогда не догоняло число строк и кнопка залипала на "Выбрать всё".
+function playlistItemKey(item, idx) {
+    return 'pl:' + idx + ':' + (item.id || item.url);
 }
 
 function resetPlaylistState() {
@@ -3383,6 +3389,7 @@ function resetPlaylistState() {
     playlistState.contentType = null;
     playlistState.title = '';
     playlistState.total = 0;
+    playlistState.hidden = 0;
     playlistState.truncated = false;
     playlistState.frozenItems = [];
     playlistState.selectedIds.clear();
@@ -3433,16 +3440,7 @@ function ensurePlaylistModal() {
     overlay.querySelector('.playlist-modal-close').addEventListener('click', closePlaylistPicker);
     overlay.querySelector('.playlist-modal-cancel').addEventListener('click', closePlaylistPicker);
 
-    overlay.querySelector('.playlist-modal-all').addEventListener('click', () => {
-        const selectable = playlistState.frozenItems.filter(i => i.available);
-        if (playlistState.selectedIds.size >= selectable.length) {
-            playlistState.selectedIds.clear();
-        } else {
-            selectable.forEach(i => playlistState.selectedIds.add(playlistItemKey(i)));
-        }
-        reapplyPlaylistSelection();
-        updatePlaylistBar();
-    });
+    overlay.querySelector('.playlist-modal-all').addEventListener('click', togglePlaylistAll);
 
     overlay.querySelector('.playlist-modal-submit').addEventListener('click', submitPlaylistSelection);
 
@@ -3456,15 +3454,15 @@ function ensurePlaylistModal() {
 
     const rows = overlay.querySelector('.playlist-modal-rows');
     rows.addEventListener('click', (e) => {
-        const row = e.target.closest('tr[data-row-key]');
-        if (row) togglePlaylistRow(row.dataset.rowKey);
+        const row = e.target.closest('tr[data-row-idx]');
+        if (row) togglePlaylistRow(row.dataset.rowIdx);
     });
     rows.addEventListener('keydown', (e) => {
-        const row = e.target.closest('tr[data-row-key]');
+        const row = e.target.closest('tr[data-row-idx]');
         if (!row) return;
         if (e.key === ' ' || e.key === 'Enter') {
             e.preventDefault();
-            togglePlaylistRow(row.dataset.rowKey);
+            togglePlaylistRow(row.dataset.rowIdx);
         } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             const all = Array.from(rows.querySelectorAll('tr[tabindex="0"]'));
@@ -3481,10 +3479,7 @@ function ensurePlaylistModal() {
         } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
             if (playlistState.parsing !== 'ready') return;
             e.preventDefault();
-            playlistState.frozenItems.filter(i => i.available)
-                .forEach(i => playlistState.selectedIds.add(playlistItemKey(i)));
-            reapplyPlaylistSelection();
-            updatePlaylistBar();
+            togglePlaylistAll();
         }
     });
 
@@ -3561,12 +3556,15 @@ function applyPlaylistResponse(data) {
 
     playlistState.parsing = 'ready';
     playlistState.title = data.title || '';
-    playlistState.total = data.count || items.length;
+    playlistState.total = data.total || data.count || items.length;
+    playlistState.hidden = data.hidden || 0;
     playlistState.truncated = !!data.truncated;
     // Снимок: рисуем только его, что бы дальше ни приехало с сервера.
     playlistState.frozenItems = items;
+    // Недоступное сервер уже отсеял, фильтр здесь - страховка на старый кэш.
     playlistState.selectedIds = new Set(
-        items.filter(i => i.available).map(playlistItemKey)
+        items.map((i, idx) => (i.available === false ? null : playlistItemKey(i, idx)))
+             .filter(k => k !== null)
     );
     renderPlaylistModal();
 }
@@ -3627,6 +3625,9 @@ function renderPlaylistModal() {
         sub += (sub ? ' - ' : '') + 'показаны первые ' + playlistState.frozenItems.length +
             ' из ' + playlistState.total;
     }
+    if (playlistState.hidden > 0) {
+        sub += (sub ? ', ' : '') + playlistState.hidden + ' недоступных скрыто';
+    }
     subtitle.textContent = sub;
 
     renderPlaylistRows();
@@ -3636,15 +3637,18 @@ function renderPlaylistModal() {
 function renderPlaylistRows() {
     const rows = ensurePlaylistModal().querySelector('.playlist-modal-rows');
     rows.innerHTML = playlistState.frozenItems.map((item, idx) => {
-        const key = playlistItemKey(item);
+        const key = playlistItemKey(item, idx);
         const duration = item.duration > 0 ? formatClock(item.duration) : '';
-        const badge = item.available
-            ? ''
-            : '<span class="playlist-row-badge">' + escapeHtml(item.reason || 'Недоступен') + '</span>';
-        return '<tr data-row-key="' + escapeHtml(key) + '"' +
+        const badge = item.available === false
+            ? '<span class="playlist-row-badge">' + escapeHtml(item.reason || 'Недоступен') + '</span>'
+            : '';
+        // Номер - позиция ролика в плейлисте, а не в показанном списке: со
+        // скрытыми строками нумерация подряд разъехалась бы с сайтом.
+        const num = item.position > 0 ? item.position : (idx + 1);
+        return '<tr data-row-key="' + escapeHtml(key) + '" data-row-idx="' + idx + '"' +
             ' role="option" aria-selected="false"' +
-            (item.available ? ' tabindex="0"' : ' aria-disabled="true" class="playlist-row-unavailable"') +
-            '><td class="playlist-row-num">' + (idx + 1) + '</td>' +
+            (item.available === false ? ' aria-disabled="true" class="playlist-row-unavailable"' : ' tabindex="0"') +
+            '><td class="playlist-row-num">' + num + '</td>' +
             '<td class="playlist-row-title">' + escapeHtml(item.title) + badge + '</td>' +
             '<td class="playlist-row-time">' + escapeHtml(duration) + '</td></tr>';
     }).join('');
@@ -3662,9 +3666,11 @@ function reapplyPlaylistSelection() {
     });
 }
 
-function togglePlaylistRow(key) {
-    const item = playlistState.frozenItems.find(i => playlistItemKey(i) === key);
-    if (!item || !item.available) return;
+function togglePlaylistRow(rowIdx) {
+    const idx = parseInt(rowIdx, 10);
+    const item = playlistState.frozenItems[idx];
+    if (!item || item.available === false) return;
+    const key = playlistItemKey(item, idx);
     if (playlistState.selectedIds.has(key)) {
         playlistState.selectedIds.delete(key);
     } else {
@@ -3675,13 +3681,30 @@ function togglePlaylistRow(key) {
     haptic('tick');
 }
 
+// Кнопка и Ctrl/Cmd+A делают одно и то же - иначе они расходятся в состоянии:
+// раньше сочетание клавиш только добавляло и снять им выбор было нельзя.
+function togglePlaylistAll() {
+    const keys = playlistState.frozenItems
+        .map((i, idx) => (i.available === false ? null : playlistItemKey(i, idx)))
+        .filter(k => k !== null);
+    if (playlistState.selectedIds.size >= keys.length) {
+        playlistState.selectedIds.clear();
+    } else {
+        keys.forEach(k => playlistState.selectedIds.add(k));
+    }
+    reapplyPlaylistSelection();
+    updatePlaylistBar();
+}
+
 function updatePlaylistBar() {
     const overlay = ensurePlaylistModal();
     const count = playlistState.selectedIds.size;
-    const selectable = playlistState.frozenItems.filter(i => i.available).length;
+    // Знаменатель один и тот же у счётчика и у подписи кнопки. Пока они
+    // расходились (все строки против доступных), "Снять всё" было недостижимо.
+    const selectable = playlistState.frozenItems.filter(i => i.available !== false).length;
 
     overlay.querySelector('.playlist-modal-count').textContent =
-        'Выбрано: ' + count + ' из ' + playlistState.frozenItems.length;
+        'Выбрано: ' + count + ' из ' + selectable;
 
     overlay.querySelector('.playlist-modal-all').textContent =
         count >= selectable ? 'Снять всё' : 'Выбрать всё';
@@ -3693,9 +3716,13 @@ function updatePlaylistBar() {
 }
 
 function submitPlaylistSelection() {
-    const urls = playlistState.frozenItems
-        .filter(i => playlistState.selectedIds.has(playlistItemKey(i)))
-        .map(i => i.url);
+    // Set - на случай, если один и тот же ролик всё-таки попал в список дважды:
+    // вторая задача упёрлась бы в "Уже загружено" и только мусорила в очереди.
+    const urls = Array.from(new Set(
+        playlistState.frozenItems
+            .filter((i, idx) => playlistState.selectedIds.has(playlistItemKey(i, idx)))
+            .map(i => i.url)
+    ));
 
     if (!urls.length) return;
 

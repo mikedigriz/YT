@@ -1,2 +1,7 @@
 *.md
 */*.gif
+# Куки в образ не пекутся намеренно: prod монтируют их с хоста,
+# а COPY читает контекст от хостового пользователя и на 0600-файле
+# положил бы внутрь пустышку (см. CLAUDE.md, раздел про cookies)
+app/var/www/YT/config/youtube_cookies.txt
+app/var/www/YT/config/instagram_cookies.txt

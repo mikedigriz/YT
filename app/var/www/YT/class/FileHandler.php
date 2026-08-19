@@ -4,6 +4,12 @@ class FileHandler
 {
     private $videos_ext = ['avi', 'mp4', 'flv', 'webm', '3gp', 'mkv'];
     private $musics_ext = ['mp3', 'ogg', 'm4a', 'wav', 'aac', 'vorbis', 'opus'];
+
+    // Промежуточные потоки yt-dlp ("<имя>.f137.mp4", "<имя>.f140-drc.m4a"). У
+    // здоровой задачи их удаляет склейка, у оборванной - Downloader. Здесь
+    // страховка на keepPartialFiles и на обрубки, пережившие уборку: человеку
+    // такой файл показывать нечего, это половина ролика без звука.
+    private const INTERMEDIATE_STREAM_RE = '/\.f[0-9]+(?:-[a-z0-9]+)?\.[a-z0-9]{2,4}$/i';
     private $config = [];
 
     public function __construct()
@@ -43,6 +49,7 @@ class FileHandler
             $isVideo = in_array($ext, $this->videos_ext, true);
             $isMusic = !$isVideo && in_array($ext, $this->musics_ext, true);
             if (!$isVideo && !$isMusic) continue;
+            if (preg_match(self::INTERMEDIATE_STREAM_RE, $file)) continue;
 
             $filepath = $folder . $file;
             // Файл мог исчезнуть между readdir и stat (крон-очистка) - пропускаем

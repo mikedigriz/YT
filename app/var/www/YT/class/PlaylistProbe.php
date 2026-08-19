@@ -47,6 +47,16 @@ class PlaylistProbe
         'geo restricted'  => 'Заблокирован в регионе',
     ];
 
+    // То же самое, но из честного поля yt-dlp, а не из заголовка: локализованный
+    // интерфейс отдаёт "[Приватное видео]", и разбор по английским приметам выше
+    // такую запись пропускает как обычную.
+    const UNAVAILABLE_AVAILABILITY = [
+        'private'         => 'Приватный',
+        'needs_auth'      => 'Нужна авторизация',
+        'subscriber_only' => 'Только для подписчиков',
+        'premium_only'    => 'Только для Premium',
+    ];
+
     private static function dir(): string
     {
         return rtrim($GLOBALS['config']['logPath'], '/');
@@ -213,6 +223,17 @@ class PlaylistProbe
         if ($cookiesFile !== '') {
             $cmd .= ' --cookies ' . escapeshellarg($cookiesFile);
         }
+        // Без этого проба ходит клиентом по умолчанию (web), который ловит бот-чек
+        // на странице ровно как обычная загрузка (см. Downloader::executeDownload).
+        // На Mix/Radio-плейлистах (id начинается с "RD") 429 на странице вдобавок
+        // не даёт yt-dlp пройти собственную проверку авторизации, и вместо списка
+        // приходит только предупреждение "Playlists that require authentication...".
+        // skip=authcheck - её же собственная рекомендация; проба ничего не
+        // авторизует и не решает вопросов доступа, ей нужен только список роликов.
+        if (Downloader::isYoutubeUrl($url)) {
+            $cmd .= ' --extractor-args ' . escapeshellarg('youtube:player_client=' . Downloader::YOUTUBE_PLAYER_CLIENTS)
+                . ' --extractor-args ' . escapeshellarg('youtubetab:skip=authcheck');
+        }
         $cmd .= ' ' . escapeshellarg($url);
 
         if ($useProxy && !empty($GLOBALS['config']['socks5'])) {
@@ -355,6 +376,8 @@ class PlaylistProbe
             'contentType' => $type,
             'title'       => (string) ($data['title'] ?? ''),
             'count'       => 0,
+            'total'       => 0,
+            'hidden'      => 0,
             'truncated'   => false,
             'entries'     => [],
         ];
@@ -364,32 +387,61 @@ class PlaylistProbe
         }
 
         $entries = isset($data['entries']) && is_array($data['entries']) ? $data['entries'] : [];
+
+        // Позицию считаем по сырому массиву, до любой фильтрации: номер строки в
+        // окне обязан совпадать с номером ролика на сайте. Иначе выброшенная
+        // запись сдвигает всю нумерацию ниже, и выбранный "38-й" оказывается 43-м.
+        $position = 0;
+        $hidden   = 0;
+        $seenIds  = [];
+
         foreach ($entries as $entry) {
+            $position++;
+            // yt-dlp кладёт null на месте роликов, которых уже нет.
             if (!is_array($entry)) {
+                $hidden++;
                 continue;
             }
-            $parsed = self::parseEntry($entry);
-            if ($parsed !== null) {
-                $result['entries'][] = $parsed;
+
+            $parsed = self::parseEntry($entry, $position);
+            // Запись без пригодной ссылки показывать нечем.
+            if ($parsed === null) {
+                $hidden++;
+                continue;
             }
+            // Недоступное в окне не показываем вовсе: выбрать его нельзя, а место
+            // и внимание оно занимает.
+            if (!$parsed['available']) {
+                $hidden++;
+                continue;
+            }
+            // Один ролик дважды в списке (обычное дело для YouTube Mix) - вторая
+            // строка ничего не добавляет, а на фронте ломала бы выбор по ключу.
+            if (isset($seenIds[$parsed['id']])) {
+                $hidden++;
+                continue;
+            }
+            $seenIds[$parsed['id']] = true;
+            $result['entries'][] = $parsed;
         }
 
-        $result['count'] = count($result['entries']);
+        $result['count']  = count($result['entries']);
+        $result['hidden'] = $hidden;
         // playlist_count - сколько роликов в списке на самом деле, до нашего среза.
         $total = (int) ($data['playlist_count'] ?? 0);
-        if ($total > $result['count']) {
-            $result['count'] = $total;
-            $result['truncated'] = true;
-        } elseif ($result['count'] >= self::MAX_ENTRIES) {
-            $result['truncated'] = true;
-        }
+        $result['total'] = $total > 0 ? $total : $position;
+        // Обрезкой считаем только то, что до нас не доехало: потолок разбора или
+        // недосчёт самого yt-dlp. Скрытые строки сюда не входят - иначе
+        // "показаны первые N" врало бы на каждом плейлисте с приватным роликом.
+        $result['truncated'] = ($position >= self::MAX_ENTRIES) || ($result['total'] > $position);
 
         return $result;
     }
 
     // Одна запись списка. Ссылку собирает сервер: фронт URL-ы не конструирует,
     // чтобы правила сборки не разъехались между двумя реализациями.
-    private static function parseEntry(array $entry): ?array
+    // $position - номер ролика в плейлисте, считанный до фильтрации.
+    private static function parseEntry(array $entry, int $position): ?array
     {
         $id = (string) ($entry['id'] ?? '');
         $url = (string) ($entry['url'] ?? $entry['webpage_url'] ?? '');
@@ -420,6 +472,13 @@ class PlaylistProbe
                 break;
             }
         }
+        if ($available) {
+            $availability = strtolower((string) ($entry['availability'] ?? ''));
+            if (isset(self::UNAVAILABLE_AVAILABILITY[$availability])) {
+                $available = false;
+                $reason = self::UNAVAILABLE_AVAILABILITY[$availability];
+            }
+        }
         // Живой эфир, который ещё не начался, качать нечего.
         if ($available && ($entry['live_status'] ?? '') === 'is_upcoming') {
             $available = false;
@@ -429,6 +488,7 @@ class PlaylistProbe
         return [
             'id'        => $id !== '' ? $id : $url,
             'url'       => $url,
+            'position'  => $position,
             // Сырой текст: экранирует фронт при вставке в DOM, как с именами файлов.
             'title'     => $title !== '' ? $title : $url,
             'duration'  => (int) ($entry['duration'] ?? 0),

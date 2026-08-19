@@ -273,7 +273,12 @@ class Downloader
     // (см. autoRetryWithCookiesIfNeeded(), "18+ контент" у него в списке) никогда не
     // сработает. Список намеренно уже, чем COOKIES_RETRY_KEYWORDS: тут сырой лог yt-dlp,
     // а не разобранный статус.
-    private const HOPELESS_WAIT_PATTERNS = '/Sign in to confirm your age|age-restricted|This video is private|members-only|Join this channel|Sign in to confirm you.re not a bot/i';
+    //
+    // /u обязателен: "." без него матчит один БАЙТ, а апостроф в "you're" у
+    // yt-dlp реально приходит curly - "'" (U+2019, 3 байта в UTF-8). Без /u
+    // точка съедала первый байт кавычки, "re" дальше не совпадало, и вся
+    // альтернатива не матчилась никогда - сторож молчал на живом бот-чеке.
+    private const HOPELESS_WAIT_PATTERNS = '/Sign in to confirm your age|age-restricted|This video is private|members-only|Join this channel|Sign in to confirm you.re not a bot/iu';
 
     // Сколько раз примета должна повториться, чтобы задачу признать безнадёжной. Одного
     // раза мало: yt-dlp перебирает клиентов (см. --extractor-args player_client), и первый
@@ -390,6 +395,9 @@ class Downloader
                     // Сбрасываем кэш счётчика - иначе canSpawnRetry() увидит устаревшее число и ретрей упрётся в max_dl из-за уже мёртвой задачи.
                     self::$bg_jobs_cache = null;
                     self::finalize_job_log($outfile, $completefile, $ytcmd, $urltext, $clientip);
+                    // Уборка до авторетреев: они судят об успехе по файлам задачи,
+                    // и обрубок недокачанного плеча сбивал бы им проверку.
+                    self::cleanupPartialFiles($completefile);
                     if ($fileList !== null) {
                         $fileList['ytdl'][] = $completefile;
                     }
@@ -584,6 +592,9 @@ class Downloader
         'HTTP Error 429', 'Too Many Requests', 'HTTP Error 503', 'Service Unavailable',
         'Service temporarily unavailable', 'DNS не резолвил', "couldn't resolve host",
         'Failed to resolve', 'DNS error', 'Name or service not known', 'Temporary failure',
+        // Немое видео чинится обычным повтором: дорожка пропадает от разового
+        // отказа CDN на втором плече, а не от свойств самого ролика.
+        'Звук не докачался',
     ];
 
     private static ?string $retryablePattern = null;
@@ -614,7 +625,7 @@ class Downloader
     // Файл-отметка вместо общего хранилища состояния: пауза живёт минуты, а
     // logPath чистится по возрасту в часах - переживать пересборку тут нечему.
     // Само время берём из mtime, содержимое не нужно.
-    private static function cooldownFile(string $host): ?string
+    private static function hostMarkerFile(string $prefix, string $host): ?string
     {
         $logPath = $GLOBALS['config']['logPath'] ?? '';
         if ($logPath === '' || $host === '') {
@@ -622,18 +633,42 @@ class Downloader
         }
         // Хост в имени файла - только буквы, цифры, точки и дефисы
         $safeHost = preg_replace('/[^a-z0-9.\-]/', '_', $host);
-        return $logPath . '/cooldown_' . $safeHost;
+        return $logPath . '/' . $prefix . $safeHost;
     }
 
-    // Хост ответил 429 - запоминаем время. Ставится при завершении задачи, там же,
-    // где разбирается её лог.
+    private static function cooldownFile(string $host): ?string
+    {
+        return self::hostMarkerFile('cooldown_', $host);
+    }
+
+    // Когда к этому хосту в последний раз стартовала задача. Отдельная отметка, а
+    // не cooldown_: кулдаун - это наказание после отказа, а это обычный интервал
+    // между стартами, он действует и когда всё хорошо.
+    private static function spawnFile(string $host): ?string
+    {
+        return self::hostMarkerFile('lastspawn_', $host);
+    }
+
+    // 429 на СТРАНИЦЕ - обычный первый шаг для YouTube: yt-dlp сам откатывается на
+    // API и почти всегда докачивает ролик, WARNING в логе есть у каждой второй
+    // здоровой задачи. Кулдаун ставим только на настоящий отказ - хост не пустил
+    // и yt-dlp сдался (ERROR:, файла нет). Без этого различия cooldown_<host>
+    // трогался бы на каждом завершении и очередь/проба плейлиста стояли бы почти
+    // не переставая, пока задачи продолжают выполняться.
+    private const HOST_REFUSAL_PATTERN = '/^ERROR:.*(?:HTTP Error 429|Too Many Requests)/mi';
+
+    // Хост ответил 429 и мы сдались - запоминаем время. Ставится при завершении
+    // задачи, там же, где разбирается её лог.
     private static function rememberHostRefusal($completefile, string $urltext): void
     {
         if ($urltext === '') {
             return;
         }
+        if (self::jobProducedFile($completefile)) {
+            return;
+        }
         $log = @file_get_contents($completefile);
-        if ($log === false || !preg_match('/HTTP Error 429|Too Many Requests/i', $log)) {
+        if ($log === false || !preg_match(self::HOST_REFUSAL_PATTERN, $log)) {
             return;
         }
         $file = self::cooldownFile(self::getHostStatic(explode(',', $urltext)[0]));
@@ -657,6 +692,49 @@ class Downloader
         return $left > 0 ? $left : 0;
     }
 
+    // Минимальный интервал между стартами задач к одному хосту. Только YouTube:
+    // остальные площадки залпа не замечают, а тут три extraction-запроса подряд с
+    // одного IP прокси дают 429 и следом бот-чек.
+    //
+    // Нужен именно барьер на спавне, а не паузы внутри процесса: признак "это
+    // пачка" ($isYoutubeMulti в executeDownload(), --sleep-interval) не переживает
+    // очередь. download() пускает первую ссылку группы без пауз, остаток уходит в
+    // dl_queue, а process_queue() прогоняет каждую строку через download() заново -
+    // и каждая снова оказывается "первой", то есть непаузированной.
+    private const YOUTUBE_SPAWN_GAP = 20;
+
+    // Задача стартовала - отмечаем время для следующей. Зовётся из обеих точек
+    // backgrounding'а (executeDownload() и restart_download()): авторетрей - такой
+    // же запрос к хосту, ему тоже нельзя лезть в след предыдущему.
+    private static function rememberHostSpawn(string $urltext): void
+    {
+        if ($urltext === '') {
+            return;
+        }
+        $file = self::spawnFile(self::getHostStatic(explode(',', $urltext)[0]));
+        if ($file !== null) {
+            @file_put_contents($file, '');
+        }
+    }
+
+    // Сколько секунд ещё ждать до следующего старта к этому хосту, 0 - можно.
+    public static function hostSpawnGapLeft(string $host): int
+    {
+        if ($host === '' || !self::isYoutubeUrl($host)) {
+            return 0;
+        }
+        $file = self::spawnFile($host);
+        if ($file === null || !file_exists($file)) {
+            return 0;
+        }
+        $at = @filemtime($file);
+        if ($at === false) {
+            return 0;
+        }
+        $left = $at + self::YOUTUBE_SPAWN_GAP - time();
+        return $left > 0 ? $left : 0;
+    }
+
     // getHost() - метод экземпляра, а очередь разбирается и статически
     private static function getHostStatic(string $url): string
     {
@@ -671,6 +749,43 @@ class Downloader
     {
         return self::is_valid_url($url, true);
     }
+
+    // Тот же паттерн, что у executeDownload() - проба обязана видеть YouTube
+    // ровно так же, как загрузка, иначе список клиентов у них разъедется.
+    private const YOUTUBE_HOST_PATTERN = '/(youtube\.com|youtu\.be)/i';
+
+    public static function isYoutubeUrl(string $url): bool
+    {
+        return (bool) preg_match(self::YOUTUBE_HOST_PATTERN, $url);
+    }
+
+    // Порядок клиентов YouTube. Один на всех: проба плейлиста (PlaylistProbe) обязана
+    // видеть ровно те же форматы, что и загрузка, иначе пикер покажет ролики, которые
+    // качалка не осилит.
+    //   mweb        - официально рекомендованная связка с PO-токен провайдером (у нас
+    //                 bgutil, см. app/start.sh) - https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide.
+    //                 При живом провайдере даёт полный набор форматов. web/web_safari
+    //                 туда же, но именно на них ловили бот-чек - исключены.
+    //   web_embedded- GVS PO-токен не требует вовсе, то есть переживает и падение
+    //                 bgutil, и бот-чек по IP. Цена: ролики с запретом встраивания и
+    //                 возрастным гейтом через него не идут - их подхватывает авторетрей
+    //                 с куками (autoRetryWithCookiesIfNeeded()).
+    // Список короткий намеренно: yt-dlp опрашивает КАЖДОГО клиента из него, а не
+    // останавливается на первом удачном - лишний клиент это лишний extraction-запрос
+    // на каждый ролик, то есть прямая дорога обратно в 429.
+    //
+    // Замер через тот же SOCKS5 (август 2026, yt-dlp -F по одному клиенту):
+    //   android_vr - бот-чек, форматов ноль. Раньше был аварийным fallback'ом "без
+    //                токена", но с августа 2026 GVS-токен требуется и ему
+    //                (https://github.com/yt-dlp/yt-dlp/issues/17348), а на практике
+    //                не отдаёт даже формат 18. Выкинут.
+    //   web_safari - "Missing required Visitor Data", только картинки.
+    //   tv         - "The page needs to be reloaded" (yt-dlp#17389). Проверен и с
+    //                подключёнными куками - тот же отказ, так что в ретрей с куками
+    //                его тоже не ставим. Без кук вдобавок все форматы DRM (#12563).
+    //   tv_simply  - бот-чек, куки не поддерживает вовсе.
+    // Замер повторить, если YouTube снова всё поломает: команда в docs.
+    public const YOUTUBE_PLAYER_CLIENTS = 'mweb,web_embedded';
 
     public static function probeRouting(string $url): array
     {
@@ -762,6 +877,71 @@ class Downloader
         return self::CONNECTION_BUDGET;
     }
 
+    // Промежуточные потоки yt-dlp: "<имя>.f137.mp4", "<имя>.f399-sr.mp4",
+    // "<имя>.f140-drc.m4a". После склейки yt-dlp убирает их сам, но если второе
+    // плечо отвалилось (403 на аудио - обычное дело на бот-детекте YouTube),
+    // первое остаётся на диске законченным файлом. Считать его результатом
+    // нельзя: задача показывалась "Готово", авторетреи молчали, а в списке
+    // висело видео без звука.
+    private const INTERMEDIATE_STREAM_RE = '/\.f[0-9]+(?:-[a-z0-9]+)?\.[a-z0-9]{2,4}$/i';
+
+    // Что задача писала на диск, по её же логу. Раньше лог разбирали три места
+    // (проверка результата, уборка и ffprobe), каждое по-своему - правила
+    // расходились.
+    //   final        - итоговые файлы, по ним судим об успехе;
+    //   intermediate - промежуточные потоки, см. INTERMEDIATE_STREAM_RE;
+    //   viaFfmpeg    - запись шла через ffmpeg (обрывается на полуслове);
+    //   mergePlanned - выбирались отдельные видео и аудио, то есть в итоговом
+    //                  файле обязана быть звуковая дорожка.
+    private static function collectLogTargets(string $logFile): array
+    {
+        $res = ['final' => [], 'intermediate' => [], 'viaFfmpeg' => false, 'mergePlanned' => false];
+
+        $handle = @fopen($logFile, 'r');
+        if (!$handle) {
+            return $res;
+        }
+
+        $final = [];
+        $intermediate = [];
+        while (($line = fgets($handle)) !== false) {
+            if (!$res['viaFfmpeg'] && strpos($line, 'frame=') !== false && strpos($line, 'size=') !== false) {
+                $res['viaFfmpeg'] = true;
+            }
+            if (!$res['mergePlanned'] && preg_match('/Downloading \d+ format\(s\):\s*\S+\+\S+/', $line)) {
+                $res['mergePlanned'] = true;
+            }
+            // "Destination:" - обычная загрузка, "Merging formats into" - склейка
+            // видео и звука, у неё имя итогового файла только в этой строке.
+            if (($pos = strpos($line, 'Destination:')) !== false) {
+                $target = trim(substr($line, $pos + 12));
+                if ($target === '') continue;
+                if (preg_match(self::INTERMEDIATE_STREAM_RE, $target)) {
+                    $intermediate[$target] = true;
+                } else {
+                    $final[$target] = true;
+                }
+            } elseif (preg_match('/Merging formats into "([^"]+)"/', $line, $m)) {
+                $final[$m[1]] = true;
+            }
+        }
+        fclose($handle);
+
+        $res['final'] = array_keys($final);
+        $res['intermediate'] = array_keys($intermediate);
+        return $res;
+    }
+
+    // Путь внутри outputFolder и файл существует. false - и то, и другое неправда.
+    private static function realTargetPath(string $target, string $realFolder)
+    {
+        $real = realpath($target);
+        if ($real === false || strpos($real, $realFolder . '/') !== 0 || !is_file($real)) {
+            return false;
+        }
+        return $real;
+    }
+
     // Файл на диске есть - значит задача сделала своё дело, что бы ни мелькало в
     // логе по дороге. Без этой проверки успешная загрузка, во время которой
     // yt-dlp сам пережил 503 или тайм-аут фрагмента и докачал файл, считалась
@@ -774,27 +954,8 @@ class Downloader
             return false;
         }
 
-        $handle = @fopen($logFile, 'r');
-        if (!$handle) {
-            return false;
-        }
-
-        $targets = [];
-        while (($line = fgets($handle)) !== false) {
-            // "Destination:" - обычная загрузка, "Merging formats into" - склейка
-            // видео и звука, у неё имя итогового файла только в этой строке.
-            if (($pos = strpos($line, 'Destination:')) !== false) {
-                $target = trim(substr($line, $pos + 12));
-                if ($target !== '') $targets[$target] = true;
-            } elseif (preg_match('/Merging formats into "([^"]+)"/', $line, $m)) {
-                $targets[$m[1]] = true;
-            }
-        }
-        fclose($handle);
-
-        foreach (array_keys($targets) as $target) {
-            $real = realpath($target);
-            if ($real !== false && strpos($real, $realFolder . '/') === 0 && is_file($real)) {
+        foreach (self::collectLogTargets($logFile)['final'] as $target) {
+            if (self::realTargetPath($target, $realFolder) !== false) {
                 return true;
             }
         }
@@ -823,7 +984,13 @@ class Downloader
 
         // Сама эта задача уже была автоповтором (метка живёт в [ytcmd], см. restart_download()) -
         // повтор не помог, вторую попытку не даём, чтобы детерминированная ошибка не зациклилась.
-        if (strpos($log_content, 'YTDL_AUTORETRIED=1') !== false) {
+        // escapeshellarg() оборачивает значение в кавычки ('1' на Linux) - искать
+        // нужно без "=1" на конце, иначе гвард никогда не совпадёт с тем, что
+        // реально пишет restart_download(), и одна и та же задача ретраится
+        // раз за разом, накапливая противоречащие друг другу флаги (см. случай
+        // "--cookies" + "player_client=android_vr" одновременно: второй клиент
+        // кук не поддерживает и yt-dlp отказывается от всех клиентов разом).
+        if (strpos($log_content, 'YTDL_AUTORETRIED') !== false) {
             return null;
         }
 
@@ -1029,7 +1196,8 @@ class Downloader
 
         // Сама эта задача уже была автоповтором (метка живёт в [ytcmd], см. restart_download()) -
         // повтор не помог, вторую попытку не даём, чтобы детерминированная ошибка не зациклилась.
-        if (strpos($log_content, 'YTDL_AUTORETRIED=1') !== false) {
+        // Без "=1": escapeshellarg() кавычит значение, см. подробный комментарий в autoRetryIfNeeded().
+        if (strpos($log_content, 'YTDL_AUTORETRIED') !== false) {
             return null;
         }
 
@@ -1052,14 +1220,21 @@ class Downloader
         return null;
     }
 
-    // Клиент, который встаёт вместо mweb при "video data 403" - без PO-токена вовсе (см. restart_download()).
-    private const YOUTUBE_RETRY_CLIENT = 'android_vr';
+    // Клиент, который встаёт вместо mweb при "video data 403": смысл ретрея - уйти
+    // с клиента, чей PO-токен отбил CDN, на тот, которому GVS-токен не нужен вовсе.
+    // Раньше тут стоял android_vr - см. YOUTUBE_PLAYER_CLIENTS, почему он больше
+    // на эту роль не годится. Один клиент, не список: подмена в restart_download()
+    // должна быть однозначной, иначе yt-dlp снова начнёт с mweb.
+    private const YOUTUBE_RETRY_CLIENT = 'web_embedded';
 
     // "unable to download video data: ... HTTP Error 403" - НЕ страница/метаданные (те уже получены), а сам
     // CDN отбил ссылку на конкретный клиентский PO-токен. Детерминированная ошибка (GitHub issues yt-dlp
     // #16144, #14421 - токен привязан к video ID/клиенту): повтор той же команды не помогает и раньше
     // зацикливался (см. YTDL_AUTORETRIED). Вместо повтора - другой клиент без PO-токена вовсе.
-    private const VIDEO_DATA_403_PATTERN = '/unable to download video data.*HTTP Error 403/i';
+    // "Got error: HTTP Error 403" - тот же отказ, но пойманный на фрагменте уже
+    // начавшейся закачки. Предупреждение "Unable to download webpage: HTTP Error 403"
+    // сюда намеренно не попадает: страницу yt-dlp добирает через API и едет дальше.
+    private const VIDEO_DATA_403_PATTERN = '/unable to download video data.*HTTP Error 403|Got error: HTTP Error 403/i';
 
     private static function autoRetryWithAltClientIfNeeded($completefile)
     {
@@ -1080,7 +1255,8 @@ class Downloader
             return null;
         }
 
-        if (strpos($log_content, 'YTDL_AUTORETRIED=1') !== false) {
+        // Без "=1": escapeshellarg() кавычит значение, см. подробный комментарий в autoRetryIfNeeded().
+        if (strpos($log_content, 'YTDL_AUTORETRIED') !== false) {
             return null;
         }
 
@@ -1275,31 +1451,29 @@ class Downloader
             return;
         }
 
-        $handle = @fopen($logFile, 'r');
-        if (!$handle) {
-            return;
-        }
+        $log = self::collectLogTargets($logFile);
+        $targets = array_merge($log['final'], $log['intermediate']);
 
-        $targets = [];
-        while (($line = fgets($handle)) !== false) {
-            $pos = strpos($line, 'Destination:');
-            if ($pos === false) {
-                continue;
-            }
-            $path = trim(substr($line, $pos + 12));
-            if ($path !== '') {
-                $targets[$path] = true;
-            }
-        }
-        fclose($handle);
-
-        foreach (array_keys($targets) as $target) {
+        foreach ($targets as $target) {
             foreach (self::PARTIAL_SUFFIXES as $suffix) {
                 $realPart = realpath($target . $suffix);
                 if ($realPart === false || strpos($realPart, $realFolder . '/') !== 0) {
                     continue;
                 }
                 @unlink($realPart);
+            }
+        }
+
+        // Промежуточные потоки убираем только у провалившейся задачи: у успешной
+        // их уже нет (склейка удалила сама), а после обрыва на втором плече
+        // "<имя>.f137.mp4" оставался на диске и попадал во вкладку "Видео"
+        // обычным файлом - видео без звука.
+        if (!self::jobProducedFile($logFile)) {
+            foreach ($log['intermediate'] as $target) {
+                $real = self::realTargetPath($target, $realFolder);
+                if ($real !== false) {
+                    @unlink($real);
+                }
             }
         }
     }
@@ -1317,36 +1491,32 @@ class Downloader
             return;
         }
 
-        $handle = @fopen($logFile, 'r');
-        if (!$handle) {
-            return;
-        }
+        // viaFfmpeg: запись трансляции идёт через ffmpeg и часто обрывается на
+        // полуслове - длительности в таком файле нет, зато кадры есть. Проверять
+        // его как обычный файл значило бы штамповать провал на только что
+        // спасённой записи.
+        $log = self::collectLogTargets($logFile);
 
-        // Запись трансляции идёт через ffmpeg и часто обрывается на полуслове:
-        // длительности в таком файле нет, зато кадры есть. Проверять его как
-        // обычный файл значило бы штамповать провал на только что спасённой записи.
-        $viaFfmpeg = false;
-        $targets = [];
-        while (($line = fgets($handle)) !== false) {
-            if (!$viaFfmpeg && strpos($line, 'frame=') !== false && strpos($line, 'size=') !== false) {
-                $viaFfmpeg = true;
-            }
-            $pos = strpos($line, 'Destination:');
-            if ($pos === false) continue;
-            $target = trim(substr($line, $pos + 12));
-            if ($target !== '') $targets[$target] = true;
-        }
-        fclose($handle);
-
-        foreach (array_keys($targets) as $target) {
-            $real = realpath($target);
-            if ($real === false || strpos($real, $realFolder . '/') !== 0) {
+        foreach ($log['final'] as $target) {
+            $real = self::realTargetPath($target, $realFolder);
+            if ($real === false) {
                 continue;
             }
-            $readable = self::probeReadable($real, $viaFfmpeg);
+            $readable = self::probeReadable($real, $log['viaFfmpeg']);
             // null - проверка не уложилась в отведённое время. Молчим: объявить файл
             // битым по таймауту хуже, чем не проверить его вовсе.
             if ($readable === null || $readable) {
+                // Файл читается, но склейка планировалась, а звука в нём нет:
+                // второе плечо не докачалось (403 на аудио), и yt-dlp оставил
+                // немое видео. Молчать нельзя - иначе это "Готово" без звука.
+                if ($readable && $log['mergePlanned'] && self::probeHasAudio($real) === false) {
+                    file_put_contents(
+                        $logFile,
+                        "ERROR: итоговый файл без аудиодорожки (второе плечо не докачалось)\n",
+                        FILE_APPEND
+                    );
+                    return;
+                }
                 continue;
             }
             file_put_contents(
@@ -1356,6 +1526,26 @@ class Downloader
             );
             return;
         }
+    }
+
+    // true - дорожка есть, false - нет, null - проверить не успели. Зовётся только
+    // когда звук обязан быть: yt-dlp выбрал отдельные видео и аудио
+    // ("Downloading 1 format(s): 137+140"), значит без склейки результат неполон.
+    private static function probeHasAudio(string $file): ?bool
+    {
+        if (!is_file($file)) {
+            return null;
+        }
+
+        $out = [];
+        $code = 0;
+        @exec('timeout ' . self::PROBE_TIMEOUT . ' ffprobe -v error -select_streams a:0 '
+            . '-show_entries stream=codec_type -of csv=p=0 ' . escapeshellarg($file) . ' 2>/dev/null', $out, $code);
+        if ($code === 124) {
+            return null;
+        }
+
+        return trim(implode('', $out)) !== '';
     }
 
     // Проверка идёт внутри запроса ?jobs, а у nginx стоит fastcgi_read_timeout 30s:
@@ -1922,8 +2112,14 @@ class Downloader
 
     // Правила «регексп -> сообщение», по приоритету: первое совпадение выигрывает (сетевые -> доступность -> форматы -> постобработка -> системные).
     private const ERROR_RULES = [
+        // === Наш собственный вердикт по файлу на диске (выше всех: он про
+        // результат, а не про шум в логе, который задача могла пережить) ===
+        ['/итоговый файл без аудиодорожки/u', "Звук не докачался 🔇\nYouTube отдал только видео - попробуй ещё раз"],
+
         // === Бот-детект (выше всех - часто идёт с 429, но причина именно бот-чек) ===
-        ['/not a bot|Sign in to confirm you.re not a bot/i', "YouTube принял нас за бота 🤖\nIP PROXY засвечен - лучше подождать"],
+        // "not a bot" без апострофа матчится всегда и одна тянет всё правило;
+        // /u на второй альтернативе - та же причина, что у HOPELESS_WAIT_PATTERNS.
+        ['/not a bot|Sign in to confirm you.re not a bot/iu', "YouTube принял нас за бота 🤖\nIP PROXY засвечен - лучше подождать"],
 
         // === Сетевые ошибки ===
         ['/Name or service not known|Could not resolve host|No address associated with hostname/i', "DNS не резолвил хост 🌐\nПроверь ссылку или интернет"],
@@ -2241,9 +2437,9 @@ class Downloader
 
         // Подмена клиента YouTube при авторетрее на "video data 403" (см. autoRetryWithAltClientIfNeeded()):
         // ссылка на CDN, выданная mweb, привязана к его PO-токену и после провала не спасается повтором той
-        // же команды (PO-токен привязан к video ID/клиенту - GitHub issues yt-dlp #16144, #14421). android_vr
-        // токена не требует вовсе и уже в основном наборе (см. executeDownload()) - форсируем только его,
-        // чтобы CDN-ссылка выдавалась без PO-токена с самого начала.
+        // же команды (PO-токен привязан к video ID/клиенту - GitHub issues yt-dlp #16144, #14421).
+        // YOUTUBE_RETRY_CLIENT токена не требует вовсе и уже в основном наборе (см. YOUTUBE_PLAYER_CLIENTS) -
+        // форсируем только его, чтобы CDN-ссылка выдавалась без PO-токена с самого начала.
         if ($forceAltClient && !$isBashWrapped) {
             $ytcmd = preg_replace(
                 '/(--extractor-args\s+)\'youtube:player_client=[^\']*\'/',
@@ -2296,6 +2492,7 @@ class Downloader
         );
 
         exec($cmd);
+        self::rememberHostSpawn($urltext);
 
         if (self::$bg_jobs_cache !== null) {
             self::$bg_jobs_cache++;
@@ -2667,6 +2864,18 @@ class Downloader
     // Гейт max_dl на уровне группы-хоста, а не всего сабмита - раньше проверка была одна на весь $onedownload, и сабмит с несколькими хостами реально обходил max_dl.
     private function dispatchGroup($onedownload, $groupUrls, $useProxy, $paceRequests)
     {
+        // Предыдущая задача к этому хосту стартовала только что - откладываем, не
+        // отказываем. Проверка выше лимита: она не про слоты, а про интервал, и
+        // при max_dl = -1 (лимита нет) нужна тем более. disableQueue отложить
+        // некуда - там пускаем как есть, залп меньшее зло, чем потерянная задача.
+        if (!$this->config["disableQueue"] && self::hostSpawnGapLeft(self::getHostStatic($groupUrls[0])) > 0) {
+            $groupDownload = $onedownload;
+            $groupDownload['url'] = implode('||', $groupUrls);
+            $this->addToQueue($groupDownload);
+            $this->queuedUrls = array_merge($this->queuedUrls, $groupUrls);
+            return;
+        }
+
         if ($this->config["max_dl"] == -1) {
             $this->executeDownload($onedownload, $groupUrls, $useProxy, $paceRequests);
             $this->startedUrls = array_merge($this->startedUrls, $groupUrls);
@@ -2802,7 +3011,7 @@ class Downloader
         $isYoutube = false;
         $isYoutubeMulti = false;
         foreach ($urls as $url) {
-            if (preg_match('/(youtube\.com|youtu\.be)/i', $url)) {
+            if (self::isYoutubeUrl($url)) {
                 $isYoutube = true;
                 // Плейлист/канал разворачивается в десятки роликов - нужен сон и между загрузками, не только между HTTP-запросами.
                 if (preg_match('#[?&]list=|/playlist|/channel/|/@|/c/|/user/#i', $url)) {
@@ -2858,13 +3067,7 @@ class Downloader
             // вместе с отрезком по таймкоду это дало бы не то место. Когда отрезок
             // задан - только помечаем главы, ничего не вырезаем.
             $cmd .= $startSeconds !== null ? " --sponsorblock-mark sponsor" : " --sponsorblock-remove sponsor";
-            // mweb - официально рекомендованный yt-dlp клиент для связки с PO-токен провайдером (у нас bgutil,
-            // см. app/start.sh) - https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide. web/web_safari туда же
-            // требуют GVS PO-токен, но именно на них ловили бот-чек - исключены. android_vr токен для GVS не
-            // требует вовсе, аварийный fallback: с марта 2026 клиент нестабилен (иногда только 360p,
-            // https://github.com/yt-dlp/yt-dlp/issues/16150), поэтому не первым. tv токен тоже не требует, но без
-            // подключённых кук (на первую попытку куки не даём, см. ниже) у него все форматы DRM - бесполезен здесь.
-            $cmd .= " --extractor-args " . escapeshellarg("youtube:player_client=mweb,android_vr");
+            $cmd .= " --extractor-args " . escapeshellarg("youtube:player_client=" . self::YOUTUBE_PLAYER_CLIENTS);
 
             // Подключились к трансляции на середине - без этого ключа всё, что было
             // до подключения, теряется навсегда. С ним запись идёт с начала эфира.
@@ -2914,7 +3117,7 @@ class Downloader
 
         // Пауза - защита от 429/бот-чека. Плейлист/канал YouTube разворачивается в десятки роликов (залп extraction-запросов) -
         // нужна пауза и между загрузками, не только между HTTP-запросами. Одиночный YouTube-ролик тоже получает лёгкую
-        // sleep-requests: 429 на самом первом webpage-запросе (см. android_vr/tv приоритет выше) бьёт по прогретости прокси
+        // sleep-requests: 429 на самом первом webpage-запросе (см. YOUTUBE_PLAYER_CLIENTS) бьёт по прогретости прокси
         // независимо от того, один ролик грузится или пачка - риск невелик, а пауза короткая.
         if ($isYoutubeMulti) {
             $cmd .= " --sleep-requests 1.5 --sleep-interval 3 --max-sleep-interval 8";
@@ -2991,6 +3194,7 @@ class Downloader
         // putenv не меняет команду/лог - передаёт IP плагину LogPluginPP через окружение, не задевая restart-парсинг
         putenv("CLIENT_IP=" . ($onedownload['client_ip'] ?? 'unknown'));
         exec($cmd);
+        self::rememberHostSpawn($urltext);
 
         // Учитываем в кэше сразу - pid-файл пишется асинхронно, ре-glob мог бы не увидеть
         if (self::$bg_jobs_cache !== null) {
@@ -3052,6 +3256,8 @@ class Downloader
         $corrupt_queue = $read['corrupt'];
 
         $currently_running = self::background_jobs($fileList);
+        // Хосты, уже получившие слот в этом же проходе - см. $spawnGapLeft ниже.
+        $grantedHosts = [];
         $remaining_urls = [];
         $remainingParsed = [];
         $newDownloads = [];
@@ -3071,10 +3277,20 @@ class Downloader
             // держим: строка остаётся на месте, а слот забирает следующая задача
             // другого хоста. Строгий FIFO тут сознательно нарушен - при max_dl = 1
             // один придержанный хост иначе останавливал бы вообще всё.
-            $cooldownLeft = self::hostCooldownLeft(self::getHostStatic($parsed['url']));
+            $host = self::getHostStatic($parsed['url']);
+            $cooldownLeft = self::hostCooldownLeft($host);
+
+            // Интервал между стартами к одному хосту (см. YOUTUBE_SPAWN_GAP). Отметка
+            // на диске обновится только после exec(), а весь этот цикл отбирает задачи
+            // ДО запуска - без $grantedHosts вся пачка одного хоста прошла бы гейт
+            // разом, ровно тем залпом, от которого интервал и защищает.
+            $spawnGapLeft = self::hostSpawnGapLeft($host);
+            if ($spawnGapLeft === 0 && isset($grantedHosts[$host]) && self::isYoutubeUrl($host)) {
+                $spawnGapLeft = self::YOUTUBE_SPAWN_GAP;
+            }
 
             // max_dl == -1 нужен отдельным условием - "$currently_running < -1" всегда false, задачи в очереди никогда бы не продвинулись, если лимит сменили на -1 постфактум.
-            if ($cooldownLeft === 0 && ($this->config["max_dl"] == -1 || $currently_running < $this->config["max_dl"])) {
+            if ($cooldownLeft === 0 && $spawnGapLeft === 0 && ($this->config["max_dl"] == -1 || $currently_running < $this->config["max_dl"])) {
                 $newDownloads[] = array(
                     'url' => $parsed['url'],
                     'dl_format' => $parsed['dl_format'],
@@ -3084,6 +3300,7 @@ class Downloader
                     'translate' => $parsed['translate']
                 );
                 $currently_running++;
+                $grantedHosts[$host] = true;
             } else {
                 $remaining_urls[] = $line;
                 $remainingParsed[] = array(
