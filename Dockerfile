@@ -7,6 +7,12 @@
 # говорят по своему протоколу и на расхождении ругаются в лог.
 FROM brainicism/bgutil-ytdlp-pot-provider:1.3.2-node AS potprovider
 
+# Node для yt-dlp (EJS-решатели JS-загадок YouTube требуют >= 22) и для npm,
+# которым ставится vot-cli. Берём образом с Docker Hub, а не apt-репозиторием
+# NodeSource: в apt-репо Debian лежит 20.x, а NodeSource из некоторых сетей
+# отвечает медленно, и его пакеты ехали дольше всей остальной сборки.
+FROM node:22-bookworm-slim AS noderuntime
+
 FROM debian:trixie-slim
 
 ARG ENVIRONMENT=prod
@@ -38,18 +44,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     ffmpeg nginx patch tzdata aria2 \
     python3.13 python3-pip python3-venv \
     php8.4 php8.4-fpm php8.4-opcache \
-    ca-certificates curl gnupg \
+    ca-certificates curl \
     libcairo2 libpango-1.0-0 libjpeg62-turbo libgif7 librsvg2-2 \
     $( [ "$ENVIRONMENT" = "dev" ] && echo "vim mc htop" )
 
-# Debian trixie's apt-репо тащит nodejs 20.x, а yt-dlp для решения
-# JS-загадок YouTube (EJS) требует Node >= 22 - ставим из NodeSource
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    mkdir -p /etc/apt/keyrings && \
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
-    apt update && apt install -y nodejs
+# /usr/local целиком: там и node, и npm с npx (нужен для установки vot-cli ниже).
+# Debian свой /usr/local держит пустым, перетирать нечего.
+COPY --from=noderuntime /usr/local /usr/local
 
 # vot-cli - CLI-обёртка над Яндекс-VOT (закадровый перевод видео). Тянет
 # готовую переведённую аудиодорожку по URL ролика; ffmpeg вклеивает её в видео.

@@ -48,8 +48,8 @@
 ## Node.js
 - Сайт: https://nodejs.org
 - Лицензия: **MIT** (с компонентами под другими permissive-лицензиями)
-- Использование: устанавливается из NodeSource, требуется для vot-cli и
-  сборки bgutil-ytdlp-pot-provider
+- Использование: берётся без изменений из официального образа `node` и требуется
+  для vot-cli и для решателей JS-загадок YouTube (yt-dlp-ejs)
 
 ## qrcode-generator
 - Репозиторий: https://github.com/kazuhikoarase/qrcode-generator
