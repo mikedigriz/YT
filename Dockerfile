@@ -1,19 +1,29 @@
+# Готовый сервер PO-токенов. Собирать его у себя значит компилировать canvas из
+# исходников: готовый бинарник prebuild-install тянет с GitHub-релизов, и когда
+# туда не дозвониться, сборка уходит в node-gyp - минуты процессора на каждый
+# образ. Апстрим публикует ровно то же самое собранным.
+#
+# Версия прибита и обязана совпадать с версией pip-плагина ниже: сервер и плагин
+# говорят по своему протоколу и на расхождении ругаются в лог.
+FROM brainicism/bgutil-ytdlp-pot-provider:1.3.2-node AS potprovider
+
 FROM debian:trixie-slim
 
 ARG ENVIRONMENT=prod
 ENV VIRTUAL_ENV=/.yt_env
 ENV TZ=Europe/Moscow
 
-# build-essential/pkg-config/lib*-dev - для сборки canvas из исходников (npm-зависимость
-# bgutil), если prebuild-install не смог скачать готовый бинарник
+# libcairo2/libpango/libjpeg/libgif/librsvg - рантайм для canvas, который приезжает
+# готовым в составе провайдера (стадия potprovider). Собирать его нечем и незачем,
+# но системные библиотеки он всё равно подгружает.
 # vim/mc/htop - только для dev-контейнера
 RUN echo 'APT::Install-Recommends "false";' > /etc/apt/apt.conf.d/00recommends && \
     apt update && apt install -y \
     ffmpeg nginx patch tzdata aria2 \
     python3.13 python3-pip python3-venv \
     php8.4 php8.4-fpm php8.4-opcache \
-    ca-certificates curl gnupg git \
-    build-essential pkg-config libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
+    ca-certificates curl gnupg \
+    libcairo2 libpango-1.0-0 libjpeg62-turbo libgif7 librsvg2-2 \
     $( [ "$ENVIRONMENT" = "dev" ] && echo "vim mc htop" ) \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,31 +45,32 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # без них Node 22 сам по себе ничего не разблокирует
 RUN pip install --no-cache-dir "yt-dlp[default]"
 
+# --- YouTube PO-token провайдер (bgutil) ---
+# Обход "Sign in to confirm you're not a bot" / HTTP 429. Две части:
+# 1) yt-dlp-плагин (pip) - yt-dlp сам находит его в site-packages (namespace
+#    yt_dlp_plugins), запрашивает PO-токен у сервера ниже на каждой youtube-загрузке.
+# 2) сервер-генератор токенов (Node/TypeScript) - берём собранным из образа апстрима,
+#    фоном запускается в start.sh, слушает 127.0.0.1:4416. Токен решается локально
+#    (BotGuard в JS-песочнице, без браузера), прокси ему не нужен.
+#
+# Своей сборки нет намеренно: зависимость canvas компилировалась бы из исходников,
+# и это стоило минут процессора на КАЖДОЙ сборке - вместе с build-essential и всей
+# обвязкой lib*-dev в образе.
+#
+# Node из того же образа копируется не для красоты: canvas там собран под ABI Node 26,
+# а системный Node у нас 22 и трогать его нельзя - на нём держатся EJS-решатели yt-dlp.
+COPY --from=potprovider /app /opt/bgutil/server
+COPY --from=potprovider /usr/local/bin/node /opt/bgutil/node
+
+# Версия прибита к версии образа выше: сервер и плагин говорят по своему протоколу.
+RUN pip install --no-cache-dir "bgutil-ytdlp-pot-provider==1.3.2"
+
 # Без WORKDIR содержимое кладётся прямо в корень контейнера
 # (app/var/www/YT -> /var/www/YT, app/etc/... -> /etc/... и т.д.)
 COPY ./app .
 
 # Применить патч для более либеральных правил filename sanitizing
 RUN cd /.yt_env/lib/python3.13/site-packages && patch -p0 --fuzz=0 < /patches/replace_insane.patch
-
-# --- YouTube PO-token провайдер (bgutil) ---
-# Обход "Sign in to confirm you're not a bot" / HTTP 429. Две части:
-# 1) yt-dlp-плагин (pip) - yt-dlp сам находит его в site-packages (namespace
-#    yt_dlp_plugins), запрашивает PO-токен у сервера ниже на каждой youtube-загрузке.
-# 2) сервер-генератор токенов (Node/TypeScript) - собираем здесь, фоном
-#    запускается в start.sh, слушает 127.0.0.1:4416. Токен решается локально
-#    (BotGuard в JS-песочнице, без браузера), прокси ему не нужен.
-# npm prune --omit=dev убирает tsc и прочие devDependencies после сборки - в том же
-# RUN, что install/tsc, иначе слой уже закоммитится с ними
-RUN npm config set fetch-timeout 120000 && \
-    npm config set fetch-retry-mintimeout 20000 && \
-    npm config set fetch-retry-maxtimeout 120000 && \
-    pip install --no-cache-dir bgutil-ytdlp-pot-provider && \
-    git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /opt/bgutil && \
-    cd /opt/bgutil/server && \
-    npm install && npx tsc && \
-    npm prune --omit=dev && \
-    npm cache clean --force
 
 RUN sed -i 's/^user www-data;/#user www-data;/' /etc/nginx/nginx.conf
 

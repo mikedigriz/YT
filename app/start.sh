@@ -6,8 +6,12 @@ yt-dlp --version > /var/www/YT/yt_dlp_version
 # Сервер PO-токенов (bgutil) для обхода бот-чека YouTube. Слушает 127.0.0.1:4416,
 # yt-dlp-плагин ходит к нему на каждой youtube-загрузке. Падение сервера не роняет
 # контейнер - просто вернётся прежняя ошибка "confirm you're not a bot".
+#
+# Свой node, а не системный: сервер приезжает собранным из образа апстрима, и
+# нативный canvas в нём собран под ABI Node 26. Системный у нас 22 - он нужен
+# EJS-решателям yt-dlp, и подменять его нельзя.
 if [ -f /opt/bgutil/server/build/main.js ]; then
-    node /opt/bgutil/server/build/main.js > /var/www/YT/tmp/bgutil.log 2>&1 &
+    /opt/bgutil/node /opt/bgutil/server/build/main.js > /var/www/YT/tmp/bgutil.log 2>&1 &
 fi
 
 php-fpm8.4 -F &
