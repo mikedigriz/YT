@@ -10,30 +10,46 @@ FROM brainicism/bgutil-ytdlp-pot-provider:1.3.2-node AS potprovider
 FROM debian:trixie-slim
 
 ARG ENVIRONMENT=prod
+
+# Зеркало Debian. По умолчанию официальное; в .env можно указать близкое
+# (APT_MIRROR=mirror.yandex.ru) и не тащить сотню мегабайт пакетов через полмира.
+ARG APT_MIRROR=deb.debian.org
 ENV VIRTUAL_ENV=/.yt_env
 ENV TZ=Europe/Moscow
+
+# Скачанные пакеты не выбрасываем: вместе с кэш-маунтами ниже повторная сборка
+# не качает то же самое заново. В образ кэш не попадает - маунт живёт отдельно
+# от слоёв, поэтому и rm -rf /var/lib/apt/lists больше не нужен.
+RUN set -e; \
+    if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
+        sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/99keep-cache
 
 # libcairo2/libpango/libjpeg/libgif/librsvg - рантайм для canvas, который приезжает
 # готовым в составе провайдера (стадия potprovider). Собирать его нечем и незачем,
 # но системные библиотеки он всё равно подгружает.
 # vim/mc/htop - только для dev-контейнера
-RUN echo 'APT::Install-Recommends "false";' > /etc/apt/apt.conf.d/00recommends && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    echo 'APT::Install-Recommends "false";' > /etc/apt/apt.conf.d/00recommends && \
     apt update && apt install -y \
     ffmpeg nginx patch tzdata aria2 \
     python3.13 python3-pip python3-venv \
     php8.4 php8.4-fpm php8.4-opcache \
     ca-certificates curl gnupg \
     libcairo2 libpango-1.0-0 libjpeg62-turbo libgif7 librsvg2-2 \
-    $( [ "$ENVIRONMENT" = "dev" ] && echo "vim mc htop" ) \
-    && rm -rf /var/lib/apt/lists/*
+    $( [ "$ENVIRONMENT" = "dev" ] && echo "vim mc htop" )
 
 # Debian trixie's apt-репо тащит nodejs 20.x, а yt-dlp для решения
 # JS-загадок YouTube (EJS) требует Node >= 22 - ставим из NodeSource
-RUN mkdir -p /etc/apt/keyrings && \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
-    apt update && apt install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+    apt update && apt install -y nodejs
 
 # vot-cli - CLI-обёртка над Яндекс-VOT (закадровый перевод видео). Тянет
 # готовую переведённую аудиодорожку по URL ролика; ffmpeg вклеивает её в видео.
