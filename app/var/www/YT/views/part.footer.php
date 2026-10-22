@@ -99,8 +99,8 @@ https://site.ru/video2</pre>
             <h4 class="footer-card-title">Если не скачалось</h4>
             <ul class="footer-list">
               <li>Ссылка должна вести на само видео или плейлист</li>
-              <li>Возможно, уже скачано - смотри <a href="#downloads" data-goto="dl_link">историю</a></li>
-              <li>«В процессе» - конвертируется в mp4</li>
+              <li>Возможно, уже скачано - смотри <a href="#downloads" data-goto="dl_link">последние загрузки</a></li>
+              <li>Долго висит «Привожу к mp4» - перекодирую под iPhone, на больших файлах это небыстро</li>
             </ul>
           </section>
 
@@ -130,6 +130,7 @@ https://site.ru/video2</pre>
           </a>
           <?php endif; ?>
           <a class="footer-link-btn" target="_blank" rel="noopener noreferrer" href="https://ezgif.com/video-to-gif">Видео в гиф</a>
+          <button type="button" class="footer-link-btn" data-ui="confetti">Не нажимать</button>
          </div>
         </div>
 

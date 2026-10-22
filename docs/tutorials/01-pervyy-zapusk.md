@@ -9,7 +9,7 @@
 Собирать ничего не нужно - готовый образ уже лежит на [Docker Hub](https://hub.docker.com/r/mikedigriz/yt):
 
 ```bash
-docker run -it -p 8000:80 mikedigriz/yt
+docker run -it --name yt -p 8000:80 mikedigriz/yt
 ```
 
 Команда скачает образ (если его ещё нет на компьютере), запустит контейнер и пробросит порт 8000 наружу. Готово: сайт уже работает.

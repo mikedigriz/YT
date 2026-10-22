@@ -34,11 +34,11 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
 </script>
 <div class="container" style="margin-bottom: 50px;">
     <ul id="mainnav" class="nav nav-tabs ">
-        <li class="active"><a id="home_link" href="#home" aria-expanded="true">Домой</a></li>
-        <li><a id="dl_link" href="#downloads" aria-expanded="false">Загрузки</a></li>
-        <li><a id="vid_link" href="#videos" aria-expanded="false">Видео<span class="tab-badge"
+        <li class="active"><a id="home_link" draggable="false" href="#home" aria-expanded="true">Домой</a></li>
+        <li><a id="dl_link" draggable="false" href="#downloads" aria-expanded="false">Загрузки</a></li>
+        <li><a id="vid_link" draggable="false" href="#videos" aria-expanded="false">Видео<span class="tab-badge"
                     id="video-badge"></span></a></li>
-        <li><a id="music_link" href="#music" aria-expanded="false">Музыка<span class="tab-badge"
+        <li><a id="music_link" draggable="false" href="#music" aria-expanded="false">Музыка<span class="tab-badge"
                     id="music-badge"></span></a></li>
     </ul>
     <?php if (!empty($_SESSION['errors'])) : ?>
@@ -48,7 +48,9 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
     <?php endif; ?>
     <div id="myTabContent" class="tab-content">
             <div class="tab-pane fade active in" id="home">
-                <div id="snej" class="snej-animation" style="pointer-events: none">
+                <?php if (empty($fxOff)): ?>
+                <!-- Снежик не любит, когда его тыкают. Особенно тридцать раз подряд. -->
+                <div id="snej"class="snej-animation" style="pointer-events: none">
                     <div class="snej-eye-wrap">
                         <input type="image" src="<?= htmlspecialchars($mascotImg ?? 'img/snej.webp', ENT_QUOTES, 'UTF-8') ?>" alt="" title="Снежик" tabindex="-1" fetchpriority="high" draggable="false" style="pointer-events: none; -webkit-user-drag: none; user-select: none;">
                         <span class="snej-eye-glow"></span>
@@ -67,6 +69,7 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                         <span class="snej-hit-area" style="visibility: visible; pointer-events: auto; cursor: pointer;" tabindex="0" role="button" aria-label="Снежик"></span>
                     </div>
                 </div>
+                <?php endif; ?>
             <div class="row">
                 <br />
                 <h1 style="text-align: center;"><?php echo($config['siteName']); ?></h1>
@@ -178,9 +181,8 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                     <div class="form-group">
                         <div class="col-md-12">
                             <div class="url-input-wrapper">
-                                <input class="form-control url-input-animation" id="url" name="urls"
-                                    value="<?php echo htmlspecialchars($sharedUrl ?? $formUrls ?? '', ENT_QUOTES, 'UTF-8'); ?>"
-                                    placeholder="Ссылка на видео..." type="text">
+                                <textarea class="form-control url-input-animation" id="url" name="urls"
+                                    rows="1" placeholder="Ссылка на видео..."><?php echo htmlspecialchars($sharedUrl ?: $formUrls, ENT_QUOTES, 'UTF-8'); ?></textarea>
                                 <div id="url-clear" class="url-clear-btn" title="Очистить поле">
                                     <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor"
                                         stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -314,26 +316,26 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
-                            <th style="width: 10%; height:35px; white-space:nowrap;">Сайт/Тип</th>
-                            <th>Файл</th>
+                            <th style="height:35px;">Файл</th>
                             <th style="width: 25%;">Статус</th>
                             <th style="width: 120px;">Действия</th>
                         </tr>
                     </thead>
                     <tbody id="dlprogress">
                         <tr>
-                            <td colspan="4">Буп-Буп понеслась! Жди...</td>
+                            <td colspan="3">Буп-Буп понеслась! Жди...</td>
                         </tr>
                     </tbody>
                 </table>
                 </div>
                 <br />
                 <?php if(!$config['disableQueue']) : ?>
+                <?php // Пустые "Очередь" и "Последние загрузки" прячет loadList - см. toggleSection ?>
+                <section id="queue-section">
                 <h4>Очередь</h4>
                 <p id="queue-hint" class="queue-hint is-hidden">
-                    Очередь двигается, пока эта вкладка на виду. Свернёшь окно, уйдёшь на
-                    другую вкладку или закроешь - запущенное доработает, а следующее дождётся
-                    твоего возвращения (ничего не теряется).
+                    Очередь идёт сама: можно свернуть окно или закрыть вкладку - задачи
+                    стартуют по порядку, а готовое будет ждать во вкладках «Видео» и «Музыка».
                 </p>
                 <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
@@ -352,25 +354,26 @@ var allowFileDelete = <?php echo $config['allowFileDelete'] ? 'true' : 'false'; 
                 </table>
                 </div>
                 <br />
+                </section>
                 <?php endif; ?>
+                <section id="recent-section">
                 <h4>Последние Загрузки</h4>
                 <div class="table-responsive">
                 <table style="text-align: left;" class="table table-striped table-hover ">
                     <thead>
                         <tr>
-                            <th style="width: 10%; height:35px; white-space:nowrap;">Сайт/Тип</th>
-                            <th>Файл/Плейлист</th>
-                            <th style="width: 25%;">Статус</th>
-                            <th style="width: 180px;">Действия</th>
+                            <th style="height:35px;">Файл/Плейлист</th>
+                            <th style="width: 200px;">Действия</th>
                         </tr>
                     </thead>
                     <tbody id="dlcompleted">
                         <tr>
-                            <td colspan="4" class="skeleton-shimmer">Получаю загрузки...</td>
+                            <td colspan="2" class="skeleton-shimmer">Получаю загрузки...</td>
                         </tr>
                     </tbody>
                 </table>
                 </div>
+                </section>
             </div>
         </div>
         <div class="tab-pane fade" id="videos">
@@ -490,5 +493,17 @@ document.addEventListener('DOMContentLoaded', function() {
             showTab(initialLink);
         }
     }
+
+    // Клик по вкладке кладёт в историю новый хэш, поэтому "Назад" на телефоне
+    // возвращает на прошлую вкладку, а не уводит со страницы. Пустой хэш - "Домой".
+    window.addEventListener('hashchange', function () {
+        var hash = window.location.hash || '#home';
+        var link = Array.prototype.find.call(document.querySelectorAll('#mainnav a'), function (a) {
+            return a.getAttribute('href') === hash;
+        });
+        if (link && !link.closest('li').classList.contains('active')) {
+            showTab(link);
+        }
+    });
 });
 </script>

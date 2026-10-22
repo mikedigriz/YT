@@ -2,18 +2,13 @@
 set -e
 
 # Скрипт для применения patch к функции replace_insane() в yt-dlp
+# Может работать в двух режимах:
+#   patch_replace_insane.sh dev    - выполнить pip install и патч в контейнере dev
+#   patch_replace_insane.sh local  - применить патч к локальному file system
 
-# Режимы:
-#   patch_replace_insane_remote.sh container [имя_контейнера]
-#       обновить yt-dlp и переналожить патч внутри запущенного контейнера,
-#       собранного из ../YT (по умолчанию ищет контейнер по образу mikedigriz/yt)
-#   patch_replace_insane_remote.sh repo
-#       применить патч прямо к файлам соседнего репозитория ../YT на хосте
-
-MODE=${1:-repo}
+MODE=${1:-local}
 PATCH_FILE="$(cd "$(dirname "$0")" && pwd)/app/patches/replace_insane.patch"
 TARGET_PATH="/.yt_env/lib/python3.13/site-packages"
-REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)/YT"
 
 if [ ! -f "$PATCH_FILE" ]; then
     echo "❌ Файл патча не найден: $PATCH_FILE"
@@ -21,55 +16,47 @@ if [ ! -f "$PATCH_FILE" ]; then
 fi
 
 case "$MODE" in
-    container)
-        CONTAINER=${2:-}
-        if [ -z "$CONTAINER" ]; then
-            CONTAINER=$(docker ps --filter "ancestor=mikedigriz/yt:latest" --format "{{.Names}}" | head -n1)
-        fi
+    dev)
+        echo "🐳 Применяем патч в dev контейнере..."
 
-        if [ -z "$CONTAINER" ]; then
-            echo "❌ Не найден запущенный контейнер из образа mikedigriz/yt"
-            echo "Укажите имя явно: $0 container <имя_контейнера>"
+        if ! docker ps --format "{{.Names}}" | grep -q "^yt-prod_dev$"; then
+            echo "❌ Контейнер yt-prod_dev не запущен"
+            echo "Запустите его с: ./build.sh start dev -d"
             exit 1
         fi
 
-        echo "🐳 Обновляем yt-dlp и переналагаем патч в контейнере ${CONTAINER}..."
-
-        # patch и pip уже есть в образе - apt install patch выполнен ещё при
-        # сборке, USER www-data действует только для CMD, поэтому root доступен через exec.
-        # [default] обязателен - без него не обновится yt-dlp-ejs (JS-решатель),
-        # тем самым расходясь с Dockerfile/update-ytdlp.sh, которые везде
-        # используют именно "yt-dlp[default]".
+        # [default] обязателен - без него не обновится yt-dlp-ejs (JS-решатель)
         echo "📦 Обновляем yt-dlp в контейнере..."
-        docker exec -u root "$CONTAINER" bash -c "pip install --upgrade pip && pip install --upgrade 'yt-dlp[default]'"
+        docker exec -u root yt-prod_dev bash -c "pip install --upgrade pip && pip install --upgrade 'yt-dlp[default]'" || true
 
-        docker cp "$PATCH_FILE" "$CONTAINER":/tmp/replace_insane.patch
+        docker cp "$PATCH_FILE" yt-prod_dev:/tmp/replace_insane.patch
 
         echo "📝 Применяем патч в контейнере..."
-        docker exec -u root "$CONTAINER" bash -c "cd $TARGET_PATH && patch -p0 --fuzz=0 < /tmp/replace_insane.patch && echo '✅ Патч применён успешно'"
+        docker exec -u root yt-prod_dev bash -c "cd $TARGET_PATH && patch -p0 --fuzz=0 < /tmp/replace_insane.patch && echo '✅ Патч применён успешно'"
 
-        # Скопировать патченный файл в соседний репозиторий ../YT, чтобы он попал
-        # в следующую сборку build_for_git.sh
-        mkdir -p "$REPO_DIR/app/.yt_env/lib/python3.13/site-packages/yt_dlp/utils"
-        docker cp "$CONTAINER":$TARGET_PATH/yt_dlp/utils/_utils.py "$REPO_DIR/app/.yt_env/lib/python3.13/site-packages/yt_dlp/utils/"
-        echo "✅ Patched файл скопирован в $REPO_DIR"
+        docker cp yt-prod_dev:$TARGET_PATH/yt_dlp/utils/_utils.py app/.yt_env/lib/python3.13/site-packages/yt_dlp/utils/
+        echo "✅ Patched файл скопирован обратно на хост"
         ;;
 
-    repo)
-        echo "💻 Применяем патч прямо к репозиторию $REPO_DIR..."
+    local)
+        echo "💻 Применяем патч локально..."
 
-        TARGET_FILE="$REPO_DIR/app/.yt_env/lib/python3.13/site-packages/yt_dlp/utils/_utils.py"
-        LOCAL_TARGET="$(dirname "$(dirname "$TARGET_FILE")")"
+        PYTHON_SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+        LOCAL_TARGET="$PYTHON_SITE"
 
-        if [ ! -f "$TARGET_FILE" ]; then
-            echo "❌ Файл не найден: $TARGET_FILE"
-            echo "Сначала установите yt-dlp в venv репозитория ../YT"
+        if [ ! -d "$LOCAL_TARGET" ]; then
+            echo "❌ Не найдена папка site-packages: $LOCAL_TARGET"
             exit 1
         fi
 
-        BACKUP_FILE="$TARGET_FILE.backup"
+        if [ ! -f "$LOCAL_TARGET/yt_dlp/utils/_utils.py" ]; then
+            echo "❌ Файл не найден: $LOCAL_TARGET/yt_dlp/utils/_utils.py"
+            exit 1
+        fi
+
+        BACKUP_FILE="$LOCAL_TARGET/yt_dlp/utils/_utils.py.backup"
         if [ ! -f "$BACKUP_FILE" ]; then
-            cp "$TARGET_FILE" "$BACKUP_FILE"
+            cp "$LOCAL_TARGET/yt_dlp/utils/_utils.py" "$BACKUP_FILE"
             echo "💾 Backup создан: $BACKUP_FILE"
         fi
 
@@ -81,8 +68,8 @@ case "$MODE" in
         echo "❌ Неизвестный режим: $MODE"
         echo ""
         echo "Использование:"
-        echo "  $0 container [имя]  - обновить yt-dlp и переналожить патч в контейнере mikedigriz/yt"
-        echo "  $0 repo              - применить патч прямо к файлам ../YT на хосте"
+        echo "  $0 dev      - применить патч в dev контейнере (требует запущенный контейнер)"
+        echo "  $0 local    - применить патч к локальной установке yt-dlp"
         echo ""
         exit 1
         ;;

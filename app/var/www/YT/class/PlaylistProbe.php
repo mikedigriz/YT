@@ -304,7 +304,11 @@ class PlaylistProbe
         $result['key'] = $key;
 
         @file_put_contents($paths['json'], json_encode($result), LOCK_EX);
-        foreach (['raw', 'err', 'done'] as $tmp) {
+        // Маркер 'at' убираем вместе с остальным черновым хламом: он означает
+        // "проба идёт", а она кончилась. Оставленный, он ещё PROBE_TIMEOUT + 10
+        // секунд считается в concurrentProbes() - и три быстрых разбора подряд
+        // отвечают четвёртому человеку, что мест нет.
+        foreach (['raw', 'err', 'done', 'at'] as $tmp) {
             @unlink($paths[$tmp]);
         }
 

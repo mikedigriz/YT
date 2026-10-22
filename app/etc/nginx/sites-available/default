@@ -28,7 +28,20 @@ server {
         internal;
     }
 
-    location ~* ^/(tmp|class|config|data)/ {
+    # Снапшот ?jobs (пишет bin/worker.php): опрос идёт мимо PHP. ETag nginx
+    # строит из mtime и размера, mtime воркер держит строго растущим. no-cache -
+    # браузер перепроверяет каждый раз, и обычный ответ опроса - 304 без тела.
+    # open_file_cache выключен: воркер подменяет файл rename(), закэшированный
+    # дескриптор показывал бы старый снапшот до минуты.
+    location = /state/jobs.json {
+        alias /dev/shm/kachalka/jobs.json;
+        open_file_cache off;
+        etag on;
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
+    location ~* ^/(tmp|class|config|data|bin)/ {
         deny all;
     }
 
@@ -65,7 +78,7 @@ server {
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+        fastcgi_pass unix:/run/php/php-fpm.sock;
 
         # process_queue() на каждом GET - не ждём долго, лучше быстрая ошибка
         fastcgi_read_timeout 30s;

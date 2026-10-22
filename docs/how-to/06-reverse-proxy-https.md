@@ -206,7 +206,7 @@ server {
         include /etc/nginx/snippets/security-headers.conf;
     }
 
-    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
+    location ~* \.(jpg|jpeg|png|gif|ico|webp|mp3|css|js|svg|woff|woff2|ttf|eot)$ {
         proxy_pass http://app;
         proxy_cache app_cache;
         proxy_cache_valid 200 365d;

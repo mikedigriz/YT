@@ -30,12 +30,12 @@
 Проверить вручную (подставь реальный id видео):
 
 ```bash
-docker exec yt vot-cli --reslang=ru 'https://www.youtube.com/watch?v=<id>'
+docker exec yt vot-cli --reslang=ru --preview 'https://www.youtube.com/watch?v=<id>'
 ```
 
 Если команда тоже не находит перевод - дело не в Качалке, а в самом сервисе.
 
-Починить: пересобрать образ, чтобы подтянуть свежую версию инструмента:
+Починить: пересобрать образ, чтобы подтянуть свежую версию инструмента. В `Dockerfile` прибит только мажор (`vot-cli@2`): при смене мажора меняются ключи командной строки, и команду в `Downloader::executeDownload()` придётся править вместе с ним.
 
 ```bash
 docker build --no-cache -t yt . && docker compose up -d
@@ -44,7 +44,7 @@ docker build --no-cache -t yt . && docker compose up -d
 Либо на горячую, без пересборки образа:
 
 ```bash
-docker exec -u root yt npm install -g vot-cli
+docker exec -u root yt npm install -g vot-cli@2
 ```
 
 Как устроен пайплайн перевода изнутри - в [Как устроены перевод и обход бот-чека YouTube](../explanation/06-youtube-i-perevod-kak-eto-rabotaet.md).

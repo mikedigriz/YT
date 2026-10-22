@@ -38,3 +38,9 @@ find /var/www/YT/download/ -type f -mmin "+$RETENTION" ! -name '*.keep' -print |
     [ -e "${f}.keep" ] && continue
     rm -f -- "$f"
 done
+
+# Маркеры без хозяина. Файл могли удалить кнопкой или руками, а закреп остаётся
+# лежать вечно - и достаётся следующей загрузке, у которой совпало имя.
+find /var/www/YT/download/ -type f -name '*.keep' -print | while IFS= read -r m; do
+    [ -e "${m%.keep}" ] || rm -f -- "$m"
+done

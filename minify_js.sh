@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
 # Регенерирует минифицированные копии JS из читаемых исходников.
 #
-# В проекте нет сборки: отдаётся ровно то, что лежит в js/. Чтобы не править
-# минифицированный код руками, исходник youtubedlwebui.js остаётся читаемым, а
-# в HTML (part.header.php) подключается youtubedlwebui.min.js. После любой правки
-# исходника прогони этот скрипт, иначе на сайте поедет старая версия.
-#
-# Зависит от rjsmin (pip install rjsmin) - инструмент только для разработки,
-# в рантайме/образе не нужен. rjsmin корректно держит ES6 template literals и
-# регэкспы (проверено), при этом не переименовывает идентификаторы, так что
-# минификат поведенчески идентичен исходнику.
+# Подключаются .min.js, поэтому прогонять после любой правки исходников.
+# Нужен rjsmin (pip install rjsmin), только для разработки.
 #
 # qrcode.min.js не трогаем - это вендоренная либа, её "исходник" живёт в upstream.
 set -euo pipefail
 
 cd "$(dirname "$0")/app/var/www/YT/js"
 
-declare -a SOURCES=("youtubedlwebui.js" "feedback.js")
+declare -a SOURCES=("youtubedlwebui.js" "feedback.js" "eggs.js")
 
 for src in "${SOURCES[@]}"; do
     out="${src%.js}.min.js"

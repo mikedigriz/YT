@@ -17,13 +17,6 @@ class FileHandler
           $this->config = $GLOBALS['config'];
     }
 
-    // База для lifetime_percent и таймера UI. Синхронизировать вручную с host-cron (2hourcleanup.sh, find -mmin +N).
-    private function retention_minutes()
-    {
-        $m = (int) ($this->config['retentionMinutes'] ?? 120);
-        return $m > 0 ? $m : 120;
-    }
-
     // Один проход readdir() вместо старых отдельных listVideos()/listMusics() (экономит проход на ?jobs).
     public function listMedia(): array
     {
@@ -36,8 +29,6 @@ class FileHandler
         if ($dir_handle === false) {
             return $result;
         }
-
-        $retention = $this->retention_minutes();
 
         while (($file = readdir($dir_handle)) !== false) {
             if ($file === "." || $file === "..") continue;
@@ -58,17 +49,15 @@ class FileHandler
             $filesize = @filesize($filepath);
             if ($filesize === false) continue;
 
-            $age_minutes = max(0, floor((time() - $filemtime) / 60));
-            $lifetime_percent = max(0, min(100, round((($retention - $age_minutes) / $retention) * 100)));
             $pinned = file_exists($filepath . '.keep');
 
             $entry = [
                 "name" => $file,
                 "size" => $this->to_human_filesize($filesize),
                 "size_bytes" => $filesize,
-                "age_minutes" => $age_minutes,
-                // Закреплённый файл не тикает - таймер всегда полный.
-                "lifetime_percent" => $pinned ? 100 : $lifetime_percent,
+                // Возраст и остаток жизни считает фронт: готовые минуты менялись бы
+                // раз в минуту и переписывали снапшот опроса без всякой перемены.
+                "mtime" => $filemtime,
                 "pinned" => $pinned
             ];
 
@@ -125,6 +114,10 @@ class FileHandler
         $real_file = realpath($file);
         if ($real_file && $real_folder && strpos($real_file, $real_folder . '/') === 0 && file_exists($file)) {
             unlink($file);
+            // Маркер уходит вместе с файлом. Осиротев, он переживает и чистку по
+            // времени, и "Очистить всё", а следующая загрузка с тем же именем
+            // подбирает его и рождается закреплённой.
+            @unlink($real_file . '.keep');
             return true;
         }
         return false;

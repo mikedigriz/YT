@@ -42,14 +42,19 @@ function validateCsrfToken(): bool {
         $origin = null;
     }
 
-    // parse_url() отдаёт host/port раздельно - HTTP_HOST порт содержит, голый ['host'] нет.
-    // Пересобираем "host[:port]" вручную, иначе сравнение мимо на dev/prod портах (25567/8000).
+    // Хост и порт приходят раздельно, а HTTP_HOST порт содержит - пересобираем
+    // "host[:port]", иначе сравнение мимо на dev/prod портах (25567/8000).
+    // WHATWG-парсер, как в браузере: порт по умолчанию он отбрасывает, и в
+    // HTTP_HOST его тоже нет.
     $checkUrl = $origin ?? $referer;
     if ($checkUrl !== null) {
-        $parsed = parse_url($checkUrl);
-        $authority = strtolower($parsed['host'] ?? '');
-        if (isset($parsed['port'])) {
-            $authority .= ':' . $parsed['port'];
+        $parsed = Uri\WhatWg\Url::parse($checkUrl);
+        if ($parsed === null) {
+            return false;
+        }
+        $authority = $parsed->getAsciiHost() ?? '';
+        if ($parsed->getPort() !== null) {
+            $authority .= ':' . $parsed->getPort();
         }
         if ($authority !== $host) {
             return false;
@@ -74,6 +79,18 @@ header("Content-Security-Policy: default-src 'self'; script-src 'self' 'nonce-{$
 // COOP/CORP - защита от Spectre-класса side-channel и window.opener-атак.
 header("Cross-Origin-Opener-Policy: same-origin");
 header("Cross-Origin-Resource-Policy: same-origin");
+// Пасхалка для тех, кто смотрит заголовки. Не X-Powered-By: его режет хостовый
+// прокси (ops/host-nginx/.../proxy-common.conf).
+header("X-Snezhik: powered by tea and yt-dlp");
+
+// RFC 2324: на просьбу о кофе чайник отвечает 418. Ссылок сюда нет нигде.
+if (isset($_GET['coffee'])) {
+    http_response_code(418);
+    header('Content-Type: text/plain; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo "418 I'm a teapot\n\nКофе не варю. Только видео качаю.\n";
+    exit;
+}
 
 if ($isSecure) {
     header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
@@ -90,17 +107,87 @@ if ($config['debug']) {
     error_reporting(0);
 }
 
-$siteTheme = $config['siteTheme'];
-if (isset($_GET['theme'])) {
-    $siteTheme = $_GET['theme'];
-}
-
 require_once 'class/Downloader.php';
 require_once 'class/FileHandler.php';
 require_once 'class/ProxyStatus.php';
 require_once 'class/PlaylistProbe.php';
 require_once 'class/Markdown.php';
 require_once 'class/Feedback.php';
+require_once 'class/JobsSnapshot.php';
+
+// Состояние двигает фоновый воркер (bin/worker.php), см. JobsSnapshot. Пока он жив,
+// запросы его не трогают: опрос отдаёт снапшот, а пролог ниже пропускается.
+// Воркер умер - всё как раньше, пролог идёт прямо в запросе.
+$workerAlive = JobsSnapshot::workerAlive();
+
+// Опрос ?jobs при живом воркере: пинок, короткое ожидание его прохода - и готовый
+// снапшот. Ни сессии, ни сканов tmp/ в этом запросе.
+if (isset($_GET['jobs']) && $workerAlive) {
+    JobsSnapshot::kickAndWait();
+    $snapshot = JobsSnapshot::readWithNow();
+    if ($snapshot !== null) {
+        if (!isset($_GET['cron'])) {
+            header('Content-Type: application/json');
+            echo $snapshot;
+        }
+        die();
+    }
+    // Снапшота ещё нет (воркер только стартовал) - отвечаем по-старому
+}
+
+// Сколько ссылок принимает одна отправка. Выбор целого плейлиста иначе дописал бы в
+// dl_queue три сотни строк одним махом - очередь после такого разгребается часами,
+// а отменять её придётся по одной задаче.
+const MAX_URLS_PER_SUBMIT = 50;
+
+// Отказы, которые не зависят от самих ссылок. Общие для отправки (POST) и проверки
+// до неё (QUERY), чтобы подсказка под полем и ответ на отправку не разошлись.
+function submitGuardError(int $count): ?string {
+    if ((new FileHandler())->get_free_space_bytes() < 100 * 1024 * 1024) {
+        return "Ой, еей! Диск почти полный, приберись";
+    }
+    if ($count > MAX_URLS_PER_SUBMIT) {
+        return "Многовато за раз: " . $count . " ссылок, можно до " . MAX_URLS_PER_SUBMIT . ". Отправь частями";
+    }
+    return null;
+}
+
+// Проверка ссылок до отправки - HTTP QUERY (RFC 10008): безопасный метод с телом.
+// GET со списком ссылок в строке запроса упёрся бы в длину URL и осел бы в логах,
+// а POST означал бы действие. Состояние не меняется, поэтому ни сессии, ни CSRF:
+// чужая страница QUERY без CORS-preflight не отправит, а ответ не прочитает.
+if ($_SERVER['REQUEST_METHOD'] === 'QUERY' && isset($_GET['preflight'])) {
+    header('Accept-Query: application/json');
+    $contentType = strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'] ?? '')[0]));
+    if ($contentType !== 'application/json') {
+        http_response_code(415);
+        die();
+    }
+    $limit = 64 * 1024;
+    $raw = file_get_contents('php://input', false, null, 0, $limit + 1);
+    if ($raw === false || strlen($raw) > $limit) {
+        http_response_code(413);
+        die();
+    }
+    $body = json_decode($raw, true);
+    if (!is_array($body) || !is_array($body['urls'] ?? null)) {
+        http_response_code(400);
+        die();
+    }
+    $urls = array_values(array_filter(array_map('trim', array_filter($body['urls'], 'is_string')), 'strlen'));
+
+    header('Content-Type: application/json');
+    $guard = submitGuardError(count($urls));
+    if ($guard !== null) {
+        $result = ['level' => 'error', 'message' => $guard];
+    } elseif (!$urls) {
+        $result = ['level' => '', 'message' => ''];
+    } else {
+        $result = Downloader::preflight($urls);
+    }
+    echo json_encode($result, JSON_INVALID_UTF8_SUBSTITUTE);
+    die();
+}
 
 // X-Forwarded-For/X-Real-IP подделываются любым клиентом, достучавшимся до контейнера
 // напрямую (порт открыт в compose) - доверяем только запросам с приватного/служебного адреса.
@@ -135,81 +222,56 @@ function clientIp(): string {
 }
 
 session_start();
+
+// Свежий CSRF-токен для страницы, чья сессия пропала: сессии живут в контейнере
+// и не переживают его пересоздание. Фронт берёт токен на 403 и повторяет
+// действие сам, без перезагрузки. Чужой origin ответ не прочитает - CORS нет.
+if (isset($_GET['token'])) {
+    header('Content-Type: application/json');
+    header('Cache-Control: no-store');
+    echo json_encode(['token' => generateCsrfToken()]);
+    die();
+}
+
+// Опрос (?jobs раз в полторы секунды, ?playlist) отпускает блокировку сессии сразу,
+// а не после пролога ниже. Пролог - скан tmp/, продвижение очереди с запуском
+// yt-dlp, уборка, ретраи - под нагрузкой на диск (склейка больших файлов) идёт
+// секундами, и всё это время любой клик того же браузера ("Стоп", крестик,
+// "Скачать") ждал своей очереди на сессию: сайт казался подвисшим.
+$isPoll = isset($_GET['jobs']) || isset($_GET['playlist']);
+if ($isPoll) {
+    $pollErrorsBefore = $_SESSION['errors'] ?? null;
+    session_write_close();
+}
+
 $file = new FileHandler;
 $allowFileDelete = $config['allowFileDelete'] ?? false;
 
-// Фоновый замер прокси (сам по себе троттлится, лишнего не дёргает)
-ProxyStatus::maybe_check();
-
-// Единый скан tmp/ на весь запрос - раньше process_queue()/get_current_background_jobs()/
-// get_finished_background_jobs() сканировали logPath отдельно (до 3-4 проходов на ?jobs).
-$logPathFileList = Downloader::scanLogPath();
-
-// Продвигаем очередь на каждом GET (включая ?jobs), иначе задачи стартуют только
-// вручную. Возврат - распарсенный остаток очереди, переиспользуется ниже на ?jobs.
+// Пролог (уборка мёртвых задач, очередь, ретраи) - только без живого воркера,
+// иначе это его работа. Порядок шагов и причины - в JobsSnapshot::advance().
+$logPathFileList = null;
 $queuedJobsAfterProcessing = [];
-if (!$config['disableQueue']) {
-    $downloader = new Downloader([]);
-    $queuedJobsAfterProcessing = $downloader->process_queue($logPathFileList);
-    // Поднятая из очереди задача уже удалена из dl_queue, но её pid_-файл создан
-    // ПОСЛЕ скана выше - без повторного скана она пропадает разом из обоих списков
-    // (в очереди нет, среди активных не видно) до следующего опроса.
-    if ($downloader->getStartedUrls()) {
-        $logPathFileList = Downloader::scanLogPath();
-    }
+if (!$workerAlive) {
+    // Воркер может подняться посреди запроса - лок не даёт им разбирать задачи вдвоём
+    JobsSnapshot::holdState();
+    $advanced = JobsSnapshot::advance();
+    JobsSnapshot::releaseState();
+    $logPathFileList = $advanced['fileList'];
+    $queuedJobsAfterProcessing = $advanced['queued'];
 }
 
-// Гасит задачи, залипшие на --wait-for-video из-за закрытого контента (18+, приватное,
-// бот-чек): сами они не завершатся никогда, а значит и авторетрей с куками не сработает.
-Downloader::abortHopelessWaiters($logPathFileList);
-
-// Запускает авторетреи, чья отложенная задержка (RETRY_SCHEDULE_DELAY) уже истекла - см.
-// Downloader::processScheduledRetries(). На каждом GET, включая ?jobs, как и process_queue() выше.
-Downloader::processScheduledRetries($logPathFileList);
-
-function generateFileRow($f, $config, $file, $allowFileDelete, $type) {
-    // Данные в data-атрибуты, обработчик вешается делегированием в JS - без inline onclick,
-    // CSP без unsafe-inline. htmlspecialchars(ENT_QUOTES) достаточно для чистого атрибутного контекста.
-    $attrName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-    $attrType = htmlspecialchars($type, ENT_QUOTES, 'UTF-8');
-
-    $deleteurl = "";
-    if ($allowFileDelete) {
-        $deleteurl = '<button type="button" data-action="delete" data-value="' . $attrName . '" data-type="' . $attrType . '" class="btn btn-danger btn-xs">Удалить</button>';
+// Сессия опроса закрыта ещё до пролога (см. $isPoll выше), но пролог мог положить
+// в $_SESSION['errors'] ошибки очереди или ретрая - для следующей полной отрисовки.
+// Сохраняем их коротким повторным открытием: блокировка берётся на миг, а не на
+// весь пролог. Повторный session_start() перечитывает сессию с диска, поэтому
+// значение запоминаем до него.
+if ($isPoll) {
+    $pollErrorsAfter = $_SESSION['errors'] ?? null;
+    if ($pollErrorsAfter !== $pollErrorsBefore) {
+        session_start();
+        $_SESSION['errors'] = $pollErrorsAfter;
+        session_write_close();
     }
-    
-    // Экранируем даже на случай пустого downloadPath (ссылка не строится) - иначе
-    // на фронте (renderFileRow()) имя шло бы в DOM без экранирования.
-    $fileurl = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-    $downloadurl = "";
-    if ($config['downloadPath'] != "") {
-        $safeName = htmlspecialchars($f["name"], ENT_QUOTES, 'UTF-8');
-        $encodedName = rawurlencode($f["name"]);
-        // Относительная ссылка - фронт делает её абсолютной через window.location для QR-кода.
-        $downloadurl = $file->get_downloads_link().'/'.$encodedName;
-        $fileurl = '<a href="'.$downloadurl.'" download>'.$safeName.'</a>';
-    }
-
-    return [
-        'file'             => $fileurl,
-        'name'             => $attrName,
-        'downloadurl'      => $downloadurl,
-        'kind'             => ($type === 'v') ? 'video' : 'audio',
-        'size'             => $f["size"],
-        'size_bytes'       => (int)($f["size_bytes"] ?? 0),
-        'deleteurl'        => $deleteurl,
-        'pinned'           => (bool)($f["pinned"] ?? false),
-        'age_minutes'      => (int)($f["age_minutes"] ?? 0),
-        'lifetime_percent' => (int)($f["lifetime_percent"] ?? 100)
-    ];
-}
-
-// $_SESSION дальше в этой ветке не трогается (только в part.main.php при полном рендере
-// и в POST-обработчиках ниже) - закрываем сессию пораньше, иначе file-based session handler
-// держит эксклюзивный lock на весь ?jobs (частый опрос, 1.5с) и блокирует параллельные запросы
-// с той же cookie: вторую вкладку или клик "Стоп"/"Удалить" во время идущего опроса.
-if (isset($_GET['jobs']) || isset($_GET['playlist'])) {
-    session_write_close();
 }
 
 // Опрос результата разбора плейлиста. Только чтение кэша по непрозрачному ключу,
@@ -218,58 +280,40 @@ if (isset($_GET['jobs']) || isset($_GET['playlist'])) {
 // выборку, это CSRF-усилитель SSRF даже при живой проверке pointsToInternalHost().
 if (isset($_GET['playlist'])) {
     header('Content-Type: application/json');
-    echo json_encode(PlaylistProbe::read((string) $_GET['playlist']));
+    // Названия роликов приходят от yt-dlp - см. JSON_INVALID_UTF8_SUBSTITUTE в ?jobs
+    echo json_encode(PlaylistProbe::read((string) $_GET['playlist']), JSON_INVALID_UTF8_SUBSTITUTE);
     die();
 }
 
+// Сюда опрос доходит, только если воркер не жив или снапшота ещё нет
 if(isset($_GET['jobs'])) {
-    $response = [
-        'jobs'     => Downloader::get_current_background_jobs($logPathFileList),
-        'queue'    => [],
-        'finished' => Downloader::get_finished_background_jobs($logPathFileList),
-        'videos'   => [],
-        'music'    => [],
-        'logURL'   => $config['logURL'] ?? '',
-        'proxy'    => ProxyStatus::payload()
-    ];
-
-    if (!$config['disableQueue']) {
-        foreach($queuedJobsAfterProcessing as $key) {
-            $dl_type = "video";
-            $formatLabels = ['worst' => 'Булшит', '4K' => '4K', '1440p' => '2K', '1080p' => 'Full HD'];
-            $dl_format = $formatLabels[$key['dl_format']] ?? "Топ";
-            if ($key['audio_only']) {
-                $dl_type = "audio";
-                $dl_format = str_replace("--audio-format ", "", $key['audio_format']);
-                $dl_format = str_replace(" --audio-quality 0", " HQ", $dl_format);
-            }
-            $response['queue'][] = [
-                'pid'       => $key['pid'],
-                'url'       => $key['url'],
-                'dl_format' => $dl_format,
-                'type'      => $dl_type
-            ];
-        }
+    if (!$workerAlive) {
+        $response = JobsSnapshot::build($logPathFileList, $queuedJobsAfterProcessing);
+    } else {
+        // Воркер жив, но первого снапшота ещё нет - окно в секунду после его старта.
+        // Очередь не двигаем (это его работа), остальное собираем как раньше.
+        // build() финализирует мёртвые задачи - под тем же локом, что и воркер.
+        JobsSnapshot::holdState();
+        $response = JobsSnapshot::build(Downloader::scanLogPath(), []);
     }
-
-    $media = $file->listMedia();
-
-    foreach($media['videos'] as $f) {
-        $response['videos'][] = generateFileRow($f, $config, $file, $allowFileDelete, 'v');
-    }
-
-    foreach($media['musics'] as $f) {
-        $response['music'][] = generateFileRow($f, $config, $file, $allowFileDelete, 'm');
-    }
+    // Часы сервера - отсчёт до старта в очереди (start_at) не должен зависеть
+    // от того, насколько врут часы телефона
+    $response = ['now' => time()] + $response;
 
     if(!isset($_GET['cron'])) {
         header('Content-Type: application/json');
-        echo json_encode($response);
+        echo JobsSnapshot::encode($response);
     }
     die();
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // Любое действие меняет состояние - воркер пересобирает снапшот сразу, а не на
+    // своём тике. В конце запроса, когда действие уже выполнено.
+    register_shutdown_function([JobsSnapshot::class, 'kick']);
+    // Действие и воркер не должны менять задачи одновременно (см. holdState()).
+    // Лок держится до конца запроса.
+    JobsSnapshot::holdState();
     $isDestructive = isset($_POST['removeQueued'])
         || isset($_POST['delete'])
         || isset($_POST['clearDownloads'])
@@ -308,7 +352,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // 'pending' и ключ, по которому фронт добирает результат через GET ?playlist.
     if(isset($_POST['playlist']) && !empty($_POST['playlist'])) {
         header('Content-Type: application/json');
-        echo json_encode(PlaylistProbe::start((string) $_POST['playlist'], clientIp()));
+        echo json_encode(PlaylistProbe::start((string) $_POST['playlist'], clientIp()), JSON_INVALID_UTF8_SUBSTITUTE);
         die();
     }
 
@@ -541,20 +585,11 @@ if(isset($_POST['urls']) && !empty($_POST['urls'])) {
         'translate' => $translate
     ]];
 
-    $fh = new FileHandler();
-    $min_free_bytes = 100 * 1024 * 1024; // 100 МБ
-    $free_bytes = $fh->get_free_space_bytes();
-
-    // Потолок на пачку. Выбор целого плейлиста иначе дописал бы в dl_queue три сотни
-    // строк одним махом - очередь после такого разгребается часами, а отменять её
-    // придётся по одной задаче.
-    $max_urls_per_submit = 50;
     $submitted_count = count(array_filter(array_map('trim', explode('||', $_POST['urls'])), 'strlen'));
 
-    if ($free_bytes < $min_free_bytes) {
-        $_SESSION['errors'] = ["Ой, еей! Диск почти полный, приберись"];
-    } elseif ($submitted_count > $max_urls_per_submit) {
-        $_SESSION['errors'] = ["Многовато за раз: " . $submitted_count . " ссылок, можно до " . $max_urls_per_submit . ". Отправь частями"];
+    $guard = submitGuardError($submitted_count);
+    if ($guard !== null) {
+        $_SESSION['errors'] = [$guard];
     } else {
         $downloader = new Downloader($dl_list);
     }
@@ -612,6 +647,11 @@ $winterOverride = $config['winterMascot'] ?? 'auto';
 if ($winterOverride === 'on') {
     $isWinterMascot = true;
 } elseif ($winterOverride === 'off') {
+    $isWinterMascot = false;
+}
+// Кнопка-снежинка в углу: с cookie не отдаём ни Снежика, ни снега, ни их скриптов
+$fxOff = ($_COOKIE['yt_fx_off'] ?? '') === '1';
+if ($fxOff) {
     $isWinterMascot = false;
 }
 $mascotImg = $isWinterMascot ? 'img/snej_new_year.webp' : 'img/snej.webp';

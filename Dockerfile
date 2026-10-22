@@ -1,116 +1,112 @@
-# Готовый сервер PO-токенов. Собирать его у себя значит компилировать canvas из
-# исходников: готовый бинарник prebuild-install тянет с GitHub-релизов, и когда
-# туда не дозвониться, сборка уходит в node-gyp - минуты процессора на каждый
-# образ. Апстрим публикует ровно то же самое собранным.
-#
-# Версия прибита и обязана совпадать с версией pip-плагина ниже: сервер и плагин
-# говорят по своему протоколу и на расхождении ругаются в лог.
+# Готовый сервер PO-токенов: своя сборка компилирует canvas из исходников.
+# Версия обязана совпадать с pip-плагином bgutil-ytdlp-pot-provider ниже.
 FROM brainicism/bgutil-ytdlp-pot-provider:1.3.2-node AS potprovider
 
-# Node для yt-dlp (EJS-решатели JS-загадок YouTube требуют >= 22) и для npm,
-# которым ставится vot-cli. Берём образом с Docker Hub, а не apt-репозиторием
-# NodeSource: в apt-репо Debian лежит 20.x, а NodeSource из некоторых сетей
-# отвечает медленно, и его пакеты ехали дольше всей остальной сборки.
-FROM node:22-bookworm-slim AS noderuntime
+# Node для yt-dlp (EJS), vot-cli и сервера PO-токенов. Мажор должен совпадать
+# с ABI, под который собран canvas в образе potprovider.
+FROM node:26-trixie-slim AS noderuntime
 
-FROM debian:trixie-slim
+# vot-cli - закадровый перевод видео (Яндекс-VOT). Мажор прибит: ключи CLI
+# между мажорами меняются, а Downloader::executeDownload() на них завязан.
+# Отдельная стадия собирается параллельно с apt и не зависит от его слоя.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm_config_proxy="$all_proxy" npm_config_https_proxy="$all_proxy" \
+    env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    npm install -g --prefer-offline --no-audit --no-fund vot-cli@2
+
+FROM php:8.5.12-fpm-trixie
+
+WORKDIR /
+
+# PID 1 тут nginx: SIGQUIT базового образа держал бы docker stop до таймаута.
+STOPSIGNAL SIGTERM
 
 ARG ENVIRONMENT=prod
 
-# Зеркало Debian. По умолчанию официальное; в .env можно указать близкое
-# (APT_MIRROR=mirror.yandex.ru) и не тащить сотню мегабайт пакетов через полмира.
+# Зеркало Debian, переопределяется через APT_MIRROR в .env.
 ARG APT_MIRROR=deb.debian.org
+
+# Прокси сборки приходит предопределёнными build-args (build.sh), они не
+# оседают в слоях. npm и pip падают на socks5h в http_proxy, поэтому на их
+# шагах переменные снимаются через "env -u"; npm получает SOCKS через
+# npm_config_proxy, pip идёт напрямую.
 ENV VIRTUAL_ENV=/.yt_env
 ENV TZ=Europe/Moscow
 
-# Скачанные пакеты не выбрасываем: вместе с кэш-маунтами ниже повторная сборка
-# не качает то же самое заново. В образ кэш не попадает - маунт живёт отдельно
-# от слоёв, поэтому и rm -rf /var/lib/apt/lists больше не нужен.
+# apt ходит к Debian напрямую, мимо прокси сборки. Скачанные пакеты остаются
+# в кэш-маунте и в слои не попадают.
 RUN set -e; \
     if [ "$APT_MIRROR" != "deb.debian.org" ]; then \
         sed -i "s|deb.debian.org|$APT_MIRROR|g" /etc/apt/sources.list.d/debian.sources; \
     fi; \
+    { echo "Acquire::http::Proxy::$APT_MIRROR \"DIRECT\";"; \
+      echo "Acquire::https::Proxy::$APT_MIRROR \"DIRECT\";"; \
+      echo 'Acquire::http::Proxy::deb.debian.org "DIRECT";'; \
+      echo 'Acquire::https::Proxy::deb.debian.org "DIRECT";'; \
+      echo 'Acquire::http::Proxy::security.debian.org "DIRECT";'; \
+      echo 'Acquire::https::Proxy::security.debian.org "DIRECT";'; \
+    } > /etc/apt/apt.conf.d/99direct-debian; \
     rm -f /etc/apt/apt.conf.d/docker-clean; \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/99keep-cache
 
-# libcairo2/libpango/libjpeg/libgif/librsvg - рантайм для canvas, который приезжает
-# готовым в составе провайдера (стадия potprovider). Собирать его нечем и незачем,
-# но системные библиотеки он всё равно подгружает.
-# vim/mc/htop - только для dev-контейнера
+# lib* - рантайм для canvas из стадии potprovider. vim/mc/htop - только dev.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     echo 'APT::Install-Recommends "false";' > /etc/apt/apt.conf.d/00recommends && \
     apt update && apt install -y \
     ffmpeg nginx patch tzdata aria2 \
     python3.13 python3-pip python3-venv \
-    php8.4 php8.4-fpm php8.4-opcache \
     ca-certificates curl \
     libcairo2 libpango-1.0-0 libjpeg62-turbo libgif7 librsvg2-2 \
     $( [ "$ENVIRONMENT" = "dev" ] && echo "vim mc htop" )
 
-# /usr/local целиком: там и node, и npm с npx (нужен для установки vot-cli ниже).
-# Debian свой /usr/local держит пустым, перетирать нечего.
-COPY --from=noderuntime /usr/local /usr/local
-
-# vot-cli - CLI-обёртка над Яндекс-VOT (закадровый перевод видео). Тянет
-# готовую переведённую аудиодорожку по URL ролика; ffmpeg вклеивает её в видео.
-RUN npm install -g vot-cli && npm cache clean --force
+# Только node, npm и vot-cli: /usr/local целиком перетёр бы PHP базового образа.
+COPY --from=noderuntime /usr/local/bin/node /usr/local/bin/node
+COPY --from=noderuntime /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=noderuntime /usr/local/include/node /usr/local/include/node
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    ln -s ../lib/node_modules/vot-cli/dist/index.js /usr/local/bin/vot-cli
 
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-# [default] тащит yt-dlp-ejs - сами скрипты-решатели JS-загадок,
-# без них Node 22 сам по себе ничего не разблокирует
-RUN pip install --no-cache-dir "yt-dlp[default]"
+# [default] тянет yt-dlp-ejs - решатели JS-загадок YouTube
+RUN env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    pip install --no-cache-dir "yt-dlp[default]"
 
-# --- YouTube PO-token провайдер (bgutil) ---
-# Обход "Sign in to confirm you're not a bot" / HTTP 429. Две части:
-# 1) yt-dlp-плагин (pip) - yt-dlp сам находит его в site-packages (namespace
-#    yt_dlp_plugins), запрашивает PO-токен у сервера ниже на каждой youtube-загрузке.
-# 2) сервер-генератор токенов (Node/TypeScript) - берём собранным из образа апстрима,
-#    фоном запускается в start.sh, слушает 127.0.0.1:4416. Токен решается локально
-#    (BotGuard в JS-песочнице, без браузера), прокси ему не нужен.
-#
-# Своей сборки нет намеренно: зависимость canvas компилировалась бы из исходников,
-# и это стоило минут процессора на КАЖДОЙ сборке - вместе с build-essential и всей
-# обвязкой lib*-dev в образе.
-#
-# Node из того же образа копируется не для красоты: canvas там собран под ABI Node 26,
-# а системный Node у нас 22 и трогать его нельзя - на нём держатся EJS-решатели yt-dlp.
+# PO-token провайдер (bgutil): обход бот-чека YouTube и HTTP 429.
+# Сервер запускается в start.sh на 127.0.0.1:4416, pip-плагин ходит к нему.
 COPY --from=potprovider /app /opt/bgutil/server
-COPY --from=potprovider /usr/local/bin/node /opt/bgutil/node
 
-# Версия прибита к версии образа выше: сервер и плагин говорят по своему протоколу.
-RUN pip install --no-cache-dir "bgutil-ytdlp-pot-provider==1.3.2"
+RUN env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+    pip install --no-cache-dir "bgutil-ytdlp-pot-provider==1.3.2"
 
-# Без WORKDIR содержимое кладётся прямо в корень контейнера
-# (app/var/www/YT -> /var/www/YT, app/etc/... -> /etc/... и т.д.)
+# app/var/www/YT -> /var/www/YT, app/etc/... -> /etc/...
 COPY ./app .
 
-# Применить патч для более либеральных правил filename sanitizing
+# Более либеральная санитизация имён файлов
 RUN cd /.yt_env/lib/python3.13/site-packages && patch -p0 --fuzz=0 < /patches/replace_insane.patch
 
 RUN sed -i 's/^user www-data;/#user www-data;/' /etc/nginx/nginx.conf
 
-# Разрешаем php-fpm пробрасывать переменные окружения контейнера (например,
-# SOCKS5_URL из .env через docker-compose env_file), чтобы их видел getenv() в config.php.
-RUN echo "clear_env = no" >> /etc/php/8.4/fpm/pool.d/www.conf
+# Пул php-fpm. Имя обязано идти по алфавиту после zz-docker.conf базового образа.
+# - error_log в файл: /proc/self/fd/2 не-root процессу недоступен;
+# - clear_env = no: config.php читает переменные из .env;
+# - 12 воркеров: при занятом диске дефолтные 5 выбираются целиком.
+RUN printf '[global]\nerror_log = /var/log/php-fpm.log\n\n[www]\nlisten = /run/php/php-fpm.sock\naccess.log = /dev/null\nclear_env = no\npm = dynamic\npm.max_children = 12\npm.start_servers = 3\npm.min_spare_servers = 2\npm.max_spare_servers = 6\nrequest_terminate_timeout = 60\n' \
+    > /usr/local/etc/php-fpm.d/zzz-app.conf
 
-# Дефолтных 5 воркеров мало: страницу опрашивает каждая открытая вкладка раз в
-# полторы секунды, и когда запросы притормаживают из-за занятого диска, пул
-# выбирается целиком - ложится весь сайт, а не отдельный опрос. Дублирующиеся
-# ключи в конце файла перебивают исходные (тот же приём, что с clear_env).
-# request_terminate_timeout - страховка от намертво залипшего воркера; nginx и
-# так сдаётся через 30с (fastcgi_read_timeout), так что живой запрос под него
-# не попадает.
-RUN printf 'pm = dynamic\npm.max_children = 12\npm.start_servers = 3\npm.min_spare_servers = 2\npm.max_spare_servers = 6\nrequest_terminate_timeout = 60\n' >> /etc/php/8.4/fpm/pool.d/www.conf
+# Без php.ini display_errors=On
+RUN cp "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
 
-# дефолт PHP (120с) короче 120-минутного retention-окна файлов в tmp/logPath -
-# без повышения TTL realpath() в destructive-операциях бил бы диск заново чаще, чем нужно
-RUN echo "realpath_cache_ttl=300" >> /etc/php/8.4/fpm/conf.d/99-realpath-cache.ini
+RUN echo "realpath_cache_ttl=300" > "$PHP_INI_DIR/conf.d/99-realpath-cache.ini"
 
-# validate_timestamps=1 не отключаем совсем - в dev код монтируется живым томом
-# и правится без ребилда, live-reload должен видеть изменения
-RUN printf 'opcache.enable=1\nopcache.memory_consumption=64\nopcache.max_accelerated_files=1000\nopcache.validate_timestamps=1\nopcache.revalidate_freq=2\n' >> /etc/php/8.4/fpm/conf.d/99-opcache.ini
+# Вкладка с CSRF-токеном может висеть открытой сутками, дефолтных 24 минут мало
+RUN echo "session.gc_maxlifetime=604800" > "$PHP_INI_DIR/conf.d/99-session.ini"
+
+# В dev код монтируется томом - проверяем mtime; в prod код меняется только с образом.
+RUN printf 'opcache.enable=1\nopcache.memory_consumption=64\nopcache.max_accelerated_files=1000\nopcache.validate_timestamps=%s\nopcache.revalidate_freq=2\n' \
+    "$( [ "$ENVIRONMENT" = "dev" ] && echo 1 || echo 0 )" > "$PHP_INI_DIR/conf.d/99-opcache.ini"
 
 RUN rm -f /etc/nginx/sites-enabled/default && \
     if [ "$ENVIRONMENT" = "dev" ]; then \
@@ -119,38 +115,29 @@ RUN rm -f /etc/nginx/sites-enabled/default && \
         ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default; \
     fi
 
-# Хэш содержимого CSS/JS - part.header.php подставляет его в статику как ?v=<хэш>,
-# чтобы держать nginx-кэш "immutable": URL сам меняется при пересборке образа
-RUN sha256sum /var/www/YT/js/youtubedlwebui.min.js /var/www/YT/css/*.min.css | sha256sum | cut -c1-12 > /var/www/YT/static_version
+# Версия статики (?v=<хэш>) для immutable-кэша, см. part.header.php
+RUN sha256sum /var/www/YT/js/youtubedlwebui.min.js /var/www/YT/js/eggs.min.js /var/www/YT/css/*.min.css | sha256sum | cut -c1-12 > /var/www/YT/static_version
 
-# Исполняемый бит скриптов не гарантирован на хосте (Windows-чекаут не хранит unix-права).
-# start.sh/logger.sh/mux_translated.sh всегда запускаются через явный `bash script.sh`
-# (см. CMD ниже, RUN bash /logger.sh выше, Downloader::executeDownload()) - им +x не нужен.
-# Только Scripts/*.sh запускаются как путь напрямую (docker exec ... /etc/Scripts/X.sh
-# из host-cron/вручную) - им бит нужен реально.
+# Чекаут может потерять +x. Нужен только скриптам, которые вызываются по пути
+# (docker exec из host-cron); остальные запускаются через bash.
 RUN chmod +x /etc/Scripts/update-ytdlp.sh /etc/Scripts/2hourcleanup.sh /etc/Scripts/cleanup.sh \
     /etc/Scripts/ensure_mp4.sh
 
-# Плагин-логгер yt-dlp и его config статичны - генерируем их при сборке от root
-# в системный каталог /etc/yt-dlp (read-only для www-data). yt-dlp находит их там
-# автоматически как системный конфиг, без переменных окружения.
+# Плагин-логгер yt-dlp в /etc/yt-dlp (read-only для www-data)
 RUN bash /logger.sh
 
-# download/ и tmp/ создаём здесь заранее (до chown) - в prod это именованные volume,
-# и если путь в образе не существует, Docker на первом монтировании создаёт точку
-# монтирования сам от root, www-data туда писать не сможет
-# YT_data лежит ВЫШЕ корня сайта (/var/www/YT) намеренно: диалоги обратной связи
-# нельзя отдать по HTTP в принципе, а не только правилом deny в nginx.
+# download/ и tmp/ создаются до chown: иначе Docker создаст точку монтирования
+# volume от root. YT_data лежит вне корня сайта, чтобы не отдаваться по HTTP.
 RUN mkdir -p /var/www/YT /var/www/YT/download /var/www/YT/tmp \
     /var/www/YT_data/feedback/d /var/www/YT_data/feedback/rl \
     /var/run/php /var/log/nginx /var/lib/nginx/body /var/cache/nginx && \
-    touch /var/www/YT/yt_dlp_version /var/log/php8.4-fpm.log /run/nginx.pid /var/log/feedback.log && \
-    chown -R www-data:www-data /var/www /var/log/yt_dlp.log /var/log/feedback.log /var/log/php8.4-fpm.log /run/nginx.pid \
+    touch /var/www/YT/yt_dlp_version /var/log/php-fpm.log /run/nginx.pid /var/log/feedback.log && \
+    chown -R www-data:www-data /var/www /var/log/yt_dlp.log /var/log/feedback.log /var/log/php-fpm.log /run/nginx.pid \
     /var/run/php /var/log/nginx /var/lib/nginx /var/cache/nginx && \
     chmod 750 /var/www/YT /var/www/YT/download /var/www/YT/tmp && \
     chmod 700 /var/www/YT_data /var/www/YT_data/feedback \
     /var/www/YT_data/feedback/d /var/www/YT_data/feedback/rl && \
-    chmod 644 /var/log/yt_dlp.log /var/log/feedback.log /var/www/YT/yt_dlp_version /var/log/php8.4-fpm.log && \
+    chmod 644 /var/log/yt_dlp.log /var/log/feedback.log /var/www/YT/yt_dlp_version /var/log/php-fpm.log && \
     setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx
 
 USER www-data
@@ -158,7 +145,6 @@ USER www-data
 CMD ["bash", "start.sh"]
 EXPOSE 80
 
-# Бьём в лёгкий health.php (только nginx+php-fpm), а не в ?jobs -
-# тот на каждый вызов сканирует tmp, крутит очередь и дёргает прокси
+# Лёгкий health.php вместо тяжёлого ?jobs
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD curl -fsS http://127.0.0.1/health.php >/dev/null || exit 1

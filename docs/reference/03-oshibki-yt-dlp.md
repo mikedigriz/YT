@@ -89,8 +89,6 @@ yt-dlp сам по себе выдаёт технические сообщени
 
 Отдельно от таблицы правил живёт проверка готового файла: yt-dlp умеет выйти с кодом 0 и оставить огрызок (сеть умерла на последних байтах, постпроцессор упал, диск кончился). Готовый файл прогоняется через `ffprobe`, и если он не читается, в лог дописывается строка `ERROR:` - задача честно становится неудачной вместо "Готово" поверх битого файла. Отменённые вручную задачи не проверяются: там файл обрезан намеренно.
 
-Ожидание анонсированного эфира ошибкой не считается вовсе: вместо "трансляция ещё не началась" в статусе пишется "Жду начала эфира, слот очереди не занимаю".
-
 ## Если ничего не подошло
 
 Если ни одно правило не сработало, пользователю показывается сырая строка `ERROR:` прямо из лога yt-dlp (уже прогнанная через санитизацию) - без перевода, но хоть что-то. А если в логе нет даже `ERROR:` - честное "ХЗ, что случилось. Смотри лог".
@@ -104,7 +102,7 @@ yt-dlp сам по себе выдаёт технические сообщени
 Замер идёт из контейнера, через тот же прокси, что и загрузки:
 
 ```bash
-docker exec yt-prod_dev bash -c 'V="${1:-mbGG_g8PIBY}"; for c in mweb web_embedded web_safari tv tv_simply android_vr; do echo "===== $c ====="; env all_proxy="$SOCKS5_URL" no_proxy=127.0.0.1,localhost /.yt_env/bin/yt-dlp -F --js-runtimes node --plugin-dirs default --plugin-dirs /etc/yt-dlp/plugins/log_plugin --extractor-args "youtube:player_client=$c" --sleep-requests 1 "https://www.youtube.com/watch?v=$V" 2>&1 | grep -Ei "^(140|18|137|136|299|ERROR|WARNING)|po token|not a bot|only images|sabr" | head -20; sleep 20; done' -- mbGG_g8PIBY
+docker exec yt bash -c 'V="${1:-mbGG_g8PIBY}"; for c in mweb web_embedded web_safari tv tv_simply android_vr; do echo "===== $c ====="; env all_proxy="$SOCKS5_URL" no_proxy=127.0.0.1,localhost /.yt_env/bin/yt-dlp -F --js-runtimes node --plugin-dirs default --plugin-dirs /etc/yt-dlp/plugins/log_plugin --extractor-args "youtube:player_client=$c" --sleep-requests 1 "https://www.youtube.com/watch?v=$V" 2>&1 | grep -Ei "^(140|18|137|136|299|ERROR|WARNING)|po token|not a bot|only images|sabr" | head -20; sleep 20; done' -- mbGG_g8PIBY
 ```
 
 Пауза между клиентами обязательна: шесть extraction-запросов подряд сами вызовут 429, и замер покажет ерунду. Прогонять на двух-трёх разных роликах - клиенты ведут себя по-разному на старом, свежем и музыкальном.

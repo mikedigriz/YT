@@ -92,13 +92,17 @@ function normalizeMediaUrl(raw) {
     return url.toString();
 }
 
-// Поле хранит ссылки через "||" (разделитель Downloader::addOneDownload()).
+// В поле ссылки идут по одной на строку, чтобы список было видно целиком.
+// "||" (разделитель Downloader::addOneDownload()) - только при отправке, но
+// на входе его тоже понимаем: так поле возвращает сервер после ошибки.
+const URL_FIELD_SEP = /\|\||\r?\n/;
+
 function normalizeUrlField(value) {
-    return String(value ?? '').split('||')
+    return String(value ?? '').split(URL_FIELD_SEP)
         .flatMap(chunk => extractUrlsFromText(chunk))
         .map(u => normalizeMediaUrl(u.trim()))
         .filter(Boolean)
-        .join('||');
+        .join('\n');
 }
 
 // Ссылка без схемы ("youtube.com/watch?v=x") валидна для человека, но не для
@@ -281,7 +285,7 @@ function looksLikeCollection(raw) {
 function validateUrlField(value) {
     const urls = [];
     const bad = [];
-    String(value ?? '').split('||')
+    String(value ?? '').split(URL_FIELD_SEP)
         .flatMap(chunk => extractUrlsFromText(chunk))
         .map(s => s.trim()).filter(Boolean).forEach(part => {
         const coerced = coerceUrl(part);
@@ -346,20 +350,45 @@ function getCsrfToken() {
     return meta ? meta.getAttribute('content') : '';
 }
 
+// Сессия живёт в контейнере и пропадает при его пересоздании: страница, открытая
+// до выкатки, получает 403 на первое же действие. Берём свежий токен (?token) и
+// повторяем запрос один раз - человек ничего не замечает.
+function refreshCsrfToken() {
+    return fetch('index.php?token', { cache: 'no-store' })
+        .then(resp => (resp.ok ? resp.json() : null))
+        .then(data => {
+            if (!data || typeof data.token !== 'string' || data.token === '') return false;
+            const meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) meta.setAttribute('content', data.token);
+            document.querySelectorAll('input[name="csrf_token"]').forEach(input => { input.value = data.token; });
+            return true;
+        })
+        .catch(() => false);
+}
+
+// POST в index.php с токеном. body - URLSearchParams или FormData: поле
+// csrf_token сервер читает раньше заголовка, поэтому на повторе меняем и его.
+function csrfFetch(body, headers = {}) {
+    const send = () => {
+        if (body.has('csrf_token')) body.set('csrf_token', getCsrfToken());
+        return fetch('index.php', {
+            method: 'POST',
+            body,
+            headers: { ...headers, 'X-CSRF-Token': getCsrfToken() },
+        });
+    };
+    return send().then(resp => (resp.status !== 403
+        ? resp
+        : refreshCsrfToken().then(ok => (ok ? send() : resp))));
+}
+
 // Общий fetch-сабмит для деструктивных/тумблерных действий - без full-reload формы, только диффовая перерисовка через loadList()/renderTable().
 function submitActionFetch(fields) {
-    return fetch('index.php', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-CSRF-Token': getCsrfToken()
-        },
-        body: new URLSearchParams(fields)
-    })
+    return csrfFetch(new URLSearchParams(fields))
         .then(resp => {
-            // Сервер перезапустился - сессия и CSRF-токен на странице устарели.
-            // Без этой проверки resp.json() падал в catch(() => null), и кнопка
-            // молча ничего не делала - пользователь не понимал, что случилось.
+            // 403 и после свежего токена - значит, дело не в сессии (чужой Origin,
+            // сломанные куки). Без этой проверки resp.json() падал в catch(() => null),
+            // и кнопка молча ничего не делала - пользователь не понимал, что случилось.
             if (resp.status === 403) {
                 alert('Страница устарела после перезапуска сервера. Сейчас обновим её - повторите действие.');
                 window.location.reload();
@@ -371,7 +400,7 @@ function submitActionFetch(fields) {
             if (data && data.errors && data.errors.length) {
                 alert(data.errors.join('\n'));
             }
-            return loadList();
+            return loadList(true);
         })
         .catch(() => {});
 }
@@ -404,11 +433,13 @@ function confirmAction(action, value, extraFields = {}, sourceEl = null) {
         'clearDownloads': 'Удалить все скачанные файлы безвозвратно?'
     };
 
-    if (!confirm(messages[action] || 'Выполнить действие?')) {
+    // Ссылка из очереди ничего не теряет - её вставят заново за секунду, а
+    // подтверждение на каждый крестик превращало чистку списка в мучение.
+    if (action !== 'removeQueued' && !confirm(messages[action] || 'Выполнить действие?')) {
         return;
     }
 
-    // Массовые действия ("Стоп ВСЕ", "Удалить Все") гасить построчно нечего -
+    // Массовые действия ("Стоп ВСЕ", "Очистить всё") гасить построчно нечего -
     // там кнопка живёт в подвале таблицы, а не в строке задачи.
     const pendingRow = (value === 'all' || value === 'recent' || value === 'queue')
         ? null
@@ -540,13 +571,6 @@ const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera
 const notificationsSupported = !isMobileDevice && ('Notification' in window);
 let isSoundMuted = localStorage.getItem('yt_sound_muted') === 'true';
 
-if (!isMobileDevice && !isSoundMuted) {
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', preloadNotificationSounds);
-    } else {
-        preloadNotificationSounds();
-    }
-}
 
 function isOnHomePage() {
     const hash = window.location.hash.toLowerCase();
@@ -642,66 +666,32 @@ function playNotificationSound(isSuccess) {
     });
 }
 
-// Канвас-салют при завершении (только видимая вкладка). Уважает prefers-reduced-motion, убирает себя из DOM сам.
-function fireConfetti() {
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+// Салюты и сценки снегиря живут в js/eggs.js (почти половина кода): грузим их
+// при первом салюте или когда появилась задача, чтобы к финишу всё было готово,
+// а не на каждом заходе.
+let eggsPromise = null;
+function loadEggs() {
+    if (eggsPromise) return eggsPromise;
+    eggsPromise = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        const version = typeof STATIC_VERSION === 'string' && STATIC_VERSION ? '?v=' + encodeURIComponent(STATIC_VERSION) : '';
+        script.src = 'js/eggs.min.js' + version;
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => {
+            eggsPromise = null; // дать шанс повторить при следующем салюте
+            script.remove();
+            reject(new Error('Не удалось загрузить салют'));
+        };
+        document.head.appendChild(script);
+    });
+    return eggsPromise;
+}
 
-    const canvas = document.createElement('canvas');
-    canvas.className = 'confetti-canvas';
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    document.body.appendChild(canvas);
-    const ctx = canvas.getContext('2d');
-
-    const colors = ['#e04b4b', '#e0a83f', '#4bb87a', '#4b8fe0', '#a05fe0'];
-    // Произвольная точка старта - не жёсткий центр-верх, а разброс по всему
-    // экрану (с отступом от самых краёв, чтобы залп не срезало сразу).
-    const originX = canvas.width * (0.15 + Math.random() * 0.7);
-    const originY = canvas.height * (0.15 + Math.random() * 0.55);
-    const particles = [];
-    for (let i = 0; i < 60; i++) {
-        particles.push({
-            x: originX + (Math.random() - 0.5) * 60,
-            y: originY,
-            vx: (Math.random() - 0.5) * 8,
-            vy: -Math.random() * 8 - 4,
-            size: 4 + Math.random() * 4,
-            color: colors[Math.floor(Math.random() * colors.length)],
-            rotation: Math.random() * Math.PI * 2,
-            vr: (Math.random() - 0.5) * 0.3,
-            life: 0
-        });
-    }
-
-    const gravity = 0.25;
-    const maxLife = 90;
-
-    function frame() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        let alive = false;
-        for (const p of particles) {
-            if (p.life > maxLife) continue;
-            alive = true;
-            p.vy += gravity;
-            p.x += p.vx;
-            p.y += p.vy;
-            p.rotation += p.vr;
-            p.life++;
-            ctx.save();
-            ctx.globalAlpha = Math.max(0, 1 - p.life / maxLife);
-            ctx.translate(p.x, p.y);
-            ctx.rotate(p.rotation);
-            ctx.fillStyle = p.color;
-            ctx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size * 0.6);
-            ctx.restore();
-        }
-        if (alive) {
-            requestAnimationFrame(frame);
-        } else {
-            canvas.remove();
-        }
-    }
-    requestAnimationFrame(frame);
+function fireConfetti(info = {}) {
+    // На «Домой» сценок нет: там Снежик и поле ввода, сценки - только на других вкладках
+    if (fxOff || isOnHomePage()) return;
+    loadEggs().then(() => runConfetti(info)).catch(e => console.warn(e.message));
 }
 
 // === Уведомления о готовности + прогресс в заголовке вкладки ===
@@ -718,7 +708,9 @@ function showCompletionNotification(successItems, failureItems) {
         title = failCount === 1 ? 'Не вышло скачать' : `Не вышло: ${failCount} шт.`;
         body = failCount === 1 ? (failureItems[0].file || '') : '';
     } else if (okCount && !failCount) {
-        title = okCount === 1 ? 'Готово, лови' : `Готово: ${okCount} шт.`;
+        title = okCount === 1
+            ? (Math.random() < DONE_TITLE_CHANCE ? pickRandom(DONE_TITLES) : 'Готово, лови')
+            : `Готово: ${okCount} шт.`;
         body = okCount === 1 ? (successItems[0].file || '') : '';
     } else {
         title = 'Загрузки завершились';
@@ -732,9 +724,19 @@ function showCompletionNotification(successItems, failureItems) {
             tag: 'yt-download',   // одна плашка на сайт, стек не копим
             silent: true          // свой звук уже играет, системный не дублируем
         });
+        // Один готовый файл - ведём прямо к нему, иначе в "Загрузки". Файл ищем в
+        // момент клика: плашка могла провисеть, пока он истёк или его удалили.
+        const onlyItem = (okCount === 1 && !failCount) ? successItems[0] : null;
         note.onclick = () => {
             window.focus();
-            window.location.hash = '#downloads';
+            const disk = onlyItem ? findDiskFile(onlyItem.file, onlyItem.type) : null;
+            if (disk) {
+                gotoFile(disk.key, disk.kind);
+            } else {
+                // Одна смена hash вкладку не переключала - её переключает клик по навигации
+                const nav = document.getElementById('dl_link');
+                if (nav) nav.click();
+            }
             note.close();
         };
     } catch (e) {}
@@ -841,6 +843,67 @@ if (notificationsSupported) {
     }
 }
 
+// Третья угловая кнопка: выключает Снежика, снег и салюты разом.
+// Класс на <html> ставим сразу, до DOMContentLoaded, чтобы не мелькали.
+const FX_OFF_KEY = 'yt_fx_off';
+let fxOff = false;
+// Источник правды - cookie: по ней PHP вообще не рисует Снежика и снег.
+// localStorage - для тех, кто выключил до появления cookie.
+const setFxCookie = on => { document.cookie = 'yt_fx_off=' + (on ? '1; max-age=31536000' : '; max-age=0') + '; path=/; SameSite=Lax'; };
+fxOff = document.documentElement.classList.contains('fx-off');
+try {
+    if (!fxOff && localStorage.getItem(FX_OFF_KEY) === 'true') { fxOff = true; setFxCookie(true); }
+} catch (e) {}
+document.documentElement.classList.toggle('fx-off', fxOff);
+
+let fxToggleBtn = null;
+
+function updateFxButton() {
+    if (!fxToggleBtn) return;
+    // Снежинка-эмодзи, как 🔊 и 🔔 у соседей; в выключенном виде CSS перечёркивает её, как в 🔇/🔕
+    fxToggleBtn.textContent = '❄️';
+    fxToggleBtn.title = fxOff ? 'Эффекты выключены. Нажмите, чтобы вернуть Снежика и снег.' : 'Выключить Снежика, снег и салюты.';
+    fxToggleBtn.classList.toggle('is-visible', isOnHomePage());
+}
+
+function initFxToggle() {
+    const btn = document.createElement('div');
+    btn.id = 'fx-toggle';
+    btn.className = 'fx-toggle' + (isMobileDevice ? ' fx-toggle-alone' : '');
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
+    fxToggleBtn = btn;
+    updateFxButton();
+
+    btn.addEventListener('click', () => {
+        fxOff = !fxOff;
+        try { localStorage.setItem(FX_OFF_KEY, fxOff); } catch (e) {}
+        setFxCookie(fxOff);
+        // Снежика с выключенными эффектами сервер не отдал - вернуть можно только перезагрузкой
+        if (!fxOff && !document.getElementById('snej')) { location.reload(); return; }
+        document.documentElement.classList.toggle('fx-off', fxOff);
+        // Идущий салют гасим сразу, а не ждём конца сценки
+        if (fxOff && typeof confettiRun !== 'undefined' && confettiRun) confettiRun.canvas.remove();
+        updateFxButton();
+    });
+    btn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            btn.click();
+        }
+    });
+    document.body.appendChild(btn);
+    window.addEventListener('hashchange', updateFxButton);
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initFxToggle);
+else initFxToggle();
+
+// Ушли на «Домой» посреди сценки - гасим её сразу
+window.addEventListener('hashchange', () => {
+    if (isOnHomePage() && typeof confettiRun !== 'undefined' && confettiRun) confettiRun.canvas.remove();
+});
+
 function getIconClass(type) {
     return type === "audio" ? "fa-music" : "fa-video-camera";
 }
@@ -852,7 +915,9 @@ function renderUrls(urlString, includeIcon = false, iconType = null, leadingBrea
     const key = `${urlString}|${includeIcon}|${iconType}|${leadingBreak}`;
     if (urlsCache.has(key)) return urlsCache.get(key);
 
-    const result = urlString.split(",")
+    // Пачка в очереди - одна запись со ссылками через "||" (формат dl_queue).
+    // Запятая не разделитель: она законна внутри ссылки ("?list=a,b").
+    const result = urlString.split(URL_FIELD_SEP)
         .filter(url => url.trim())
         .map((url, idx) => {
             const iconHtml = includeIcon ? `<i class="fa ${getIconClass(iconType)}"></i> ` : "";
@@ -903,6 +968,40 @@ function withViewTransition(fn) {
 
 // Разметка одной строки в живой узел. Через <template>: обычный createElement
 // не примет <tr> вне таблицы - браузер выкинет его при разборе.
+// Приводит живой узел to к виду from, трогая только отличия: атрибуты, текст,
+// детей по порядку. Где теги разошлись - заменяет поддерево целиком. Обработчики
+// у строк делегированные (на document), поэтому живому узлу ничего не теряется.
+function morphNode(to, from) {
+    if (to.nodeType !== from.nodeType || to.nodeName !== from.nodeName) {
+        to.replaceWith(from);
+        return;
+    }
+    if (to.nodeType === Node.TEXT_NODE || to.nodeType === Node.COMMENT_NODE) {
+        if (to.nodeValue !== from.nodeValue) to.nodeValue = from.nodeValue;
+        return;
+    }
+    if (to.nodeType !== Node.ELEMENT_NODE) return;
+    for (const { name } of Array.from(to.attributes)) {
+        if (!from.hasAttribute(name)) to.removeAttribute(name);
+    }
+    for (const { name, value } of Array.from(from.attributes)) {
+        if (to.getAttribute(name) !== value) to.setAttribute(name, value);
+    }
+    // Атрибут checked/value после действий человека свойство уже не двигает -
+    // переносим состояние, как это сделала бы замена узла
+    if (to instanceof HTMLInputElement) {
+        if (to.checked !== from.checked) to.checked = from.checked;
+        if (to.value !== from.value) to.value = from.value;
+    }
+    const toKids = Array.from(to.childNodes);
+    const fromKids = Array.from(from.childNodes);
+    fromKids.forEach((kid, i) => {
+        if (i < toKids.length) morphNode(toKids[i], kid);
+        else to.appendChild(kid);
+    });
+    for (let i = fromKids.length; i < toKids.length; i++) toKids[i].remove();
+}
+
 function rowNodeFromHtml(html, key) {
     const tpl = document.createElement('template');
     tpl.innerHTML = html.trim();
@@ -953,9 +1052,11 @@ function reconcileRows(container, desired) {
         if (!fresh) continue;
 
         if (found) {
-            container.replaceChild(fresh, found);
-            existing.set(item.key, fresh);
-            if (found === cursor) cursor = fresh.nextElementSibling;
+            // Переносим отличия в живую строку, а не меняем её целиком: так
+            // полоска прогресса получает старую и новую ширину и течёт
+            // CSS-переходом, а не прыгает, и у строки не слетают hover и фокус
+            morphNode(found, fresh);
+            if (found === cursor) cursor = found.nextElementSibling;
         } else {
             container.insertBefore(fresh, cursor);
         }
@@ -971,11 +1072,31 @@ function reconcileRows(container, desired) {
     }
 }
 
+// Кнопки "Удалить всё"/"Очистить всё"/"Стоп ВСЕ" - в tfoot, а не последней строкой tbody:
+// строкой они читались как ещё один элемент списка (зебра, подсветка). Внутри
+// таблицы, чтобы на телефоне прокручиваться вбок вместе с кнопками строк.
+function renderTableFooter(container, cols, html) {
+    const table = container.closest('table');
+    if (!table) return;
+    let footer = table.tFoot;
+    if (!footer) {
+        footer = table.createTFoot();
+        footer.className = 'table-footer-actions';
+    }
+    if (footer.dataset.html !== html) {
+        footer.dataset.html = html;
+        footer.innerHTML = `<tr><td colspan="${cols}">${html}</td></tr>`;
+    }
+    footer.hidden = !html;
+}
+
 function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerHtml = "", keyFn = null) {
     // #dlqueue отсутствует в DOM при disableQueue=true - без этой проверки TypeError тут обрывал бы весь остаток loadList().
     if (!container) return;
 
-    const hash = computeDataHash(items) + ':' + footerHtml;
+    renderTableFooter(container, cols, items && items.length ? footerHtml : "");
+
+    const hash = computeDataHash(items);
 
     if (container.dataset.lastHash === hash) {
         return;
@@ -992,7 +1113,6 @@ function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerH
             const key = keyFn ? String(keyFn(item)) : 'idx:' + idx;
             desired.push({ key, html });
         });
-        if (footerHtml) desired.push({ key: '__footer__', html: `<tr>${footerHtml}</tr>` });
     }
 
     // Плавно показываем только заметные глазу перестроения - появление и
@@ -1003,7 +1123,7 @@ function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerH
     // Перестроение бывает отложенным: startViewTransition зовёт колбэк не сразу,
     // а опрос успевает запланировать следующее. Метку версии ставим СИНХРОННО,
     // чтобы устаревший колбэк не разложил строки по неактуальным данным - так
-    // строка с кнопкой "Очистить всё" однажды оказалась выше файлов.
+    // строка с кнопкой "Удалить всё" однажды оказалась выше файлов.
     const generation = (Number(container.dataset.renderGen) || 0) + 1;
     container.dataset.renderGen = String(generation);
     container.dataset.lastHash = hash;
@@ -1011,6 +1131,8 @@ function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerH
     const apply = () => {
         if (Number(container.dataset.renderGen) !== generation) return;
         reconcileRows(container, desired);
+        // Отсчёт до старта в очереди заполняется сразу, а не на следующем тике
+        if (container === nativeUI.queue) tickQueueWaits();
     };
 
     if (structuralChange) {
@@ -1020,14 +1142,73 @@ function renderTable(container, items, cols, emptyMsg, rowHtmlGenerator, footerH
     }
 }
 
+// Полоска активной задачи. Видео и звук - отдельные отрезки: yt-dlp качает их
+// по очереди, у каждой дорожки проценты с нуля, и одна полоска откатывалась бы
+// назад. Ширину отрезков и общий процент считает сервер (Downloader::buildProgress).
+function renderJobProgress(p, statusText) {
+    const segs = (Array.isArray(p.segments) ? p.segments : []).map(s => {
+        const share = Math.max(0, Number(s.share) || 0);
+        const fill = Math.min(100, Math.max(0, Number(s.fill) || 0));
+        const kind = s.kind === 'audio' ? 'audio' : 'video';
+        return `<div class="job-seg job-seg-${kind}" style="flex-grow: ${share}"><div class="job-seg-fill" style="width: ${fill}%"></div></div>`;
+    }).join('');
+    const percent = Math.min(100, Math.max(0, Math.floor(Number(p.percent) || 0)));
+    // Процент и остаток времени - первыми: ради них на строку и смотрят
+    const meta = [`<b>${percent}%</b>`];
+    if (p.eta) meta.push(`<span>осталось ${escapeHtml(p.eta)}</span>`);
+    if (p.track) meta.push(`<span class="job-track">${escapeHtml(p.track)}</span>`);
+    for (const part of [p.size, p.speed]) {
+        if (part) meta.push(`<span>${escapeHtml(part)}</span>`);
+    }
+    // Без пробелов между блоками: у ячейки статуса white-space: pre-wrap (ради
+    // многострочных ошибок), и перенос строки в шаблоне рисовался пустой строкой.
+    return `<div class="job-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" title="${escapeHtml(statusText)}">${segs}</div>`
+        + `<div class="job-progress-meta">${meta.join('')}</div>`;
+}
+
+// Имя файла в "Загрузках" - главное, адрес источника - серая подпись под ним:
+// одного веса и размера они сливались. "Ща.." - заглушка сервера, пока yt-dlp
+// не узнал название.
+function renderJobFileName(file, innerHtml = null) {
+    if (!file || file === 'Ща..') return '<span class="job-file-name job-file-name-pending">Узнаю название…</span>';
+    return `<span class="job-file-name">${innerHtml ?? escapeHtml(file)}</span>`;
+}
+
+// Под именем уже стоит адрес источника, и хвост "_<id>" из шаблона имени
+// (Downloader: "%(title)s_%(id)s", у перевода ещё "_ru") вместе с расширением
+// только сбивали с толку - в "Загрузках" показываем одно название, полное имя
+// файла остаётся во вкладках "Видео"/"Музыка". Id режем, только если он и правда
+// есть в адресе: подчёркивания бывают и в самих названиях.
+function displayFileName(file, urlString) {
+    // ".f137" - промежуточная дорожка (как INTERMEDIATE_STREAM_RE на сервере),
+    // "(3 of 10)" - позиция в плейлисте, её оставляем
+    const m = /^(.+?)(?:\.f\d+(?:-[a-z0-9]+)?)?\.[a-z0-9]{2,4}(\s*\(\d+ of \d+\))?$/i.exec(String(file || '').trim());
+    if (!m) return file;
+    const base = m[1];
+    const listpos = m[2] || '';
+    let url = String(urlString || '');
+    try { url = decodeURIComponent(url); } catch (e) {}
+    for (let i = base.indexOf('_'); i > 0; i = base.indexOf('_', i + 1)) {
+        const id = base.slice(i + 1).replace(/_ru$/, '');
+        const title = base.slice(0, i).trim();
+        if (id.length >= 4 && title && url.includes(id)) return title + listpos;
+    }
+    return base + listpos;
+}
+
+function renderSourceUrls(urlString) {
+    return String(urlString || '').split(',').map(u => u.trim()).filter(Boolean)
+        .map(u => `<div class="job-source"><a href="${safeUrlAttr(u)}" title="${escapeHtml(u)}">${escapeHtml(u.replace(/^https?:\/\/(www\.)?/i, ''))}</a></div>`)
+        .join('');
+}
+
 function renderJobRow(job) {
     const iconClass = getIconClass(job.type);
-    const urlsHtml = renderUrls(job.url);
+    const statusHtml = job.progress ? renderJobProgress(job.progress, job.status) : escapeHtml(job.status);
     return `
     <tr>
-        <td style="vertical-align: middle;">${escapeHtml(job.site)}</td>
-        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${escapeHtml(job.file)} ${urlsHtml}</td>
-        <td style="vertical-align: middle;">${escapeHtml(job.status)}</td>
+        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${renderJobFileName(displayFileName(job.file, job.url))}${renderSourceUrls(job.url)}</td>
+        <td style="vertical-align: middle;">${statusHtml}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
                 <button type="button" style="width: 100px;" data-action="kill" data-value="${safePid(job.pid)}" class="btn btn-danger btn-xs">Стоп</button>
@@ -1039,6 +1220,11 @@ function renderJobRow(job) {
 // idx/arr приходят от map() автоматически - нужны, чтобы прятать "▲"/"▼" на первой/последней строке.
 function renderQueueRow(item, idx, arr) {
     const urlsHtml = renderUrls(item.url, true, item.type, false);
+    // Текст отсчёта заполняет tickQueueWaits(): в разметке только момент старта,
+    // иначе строка менялась бы каждую секунду и перерисовывалась под пальцем
+    const waitHtml = item.start_at
+        ? `<div class="job-status queue-wait" data-start-at="${Number(item.start_at) || 0}" data-wait-reason="${item.wait_reason === 'cooldown' ? 'cooldown' : 'gap'}"></div>`
+        : '';
     const isFirst = idx === 0;
     const isLast = !arr || idx === arr.length - 1;
     const pid = safePid(item.pid);
@@ -1046,37 +1232,76 @@ function renderQueueRow(item, idx, arr) {
     const downBtn = `<button type="button" style="width: 30px" data-reorder-pid="${pid}" data-reorder-dir="down" class="btn btn-default btn-xs reorder-btn"${isLast ? ' disabled' : ''} title="Опустить в очереди">▼</button>`;
     return `
     <tr>
-        <td style="vertical-align: middle;">${urlsHtml}</td>
+        <td style="vertical-align: middle;">${urlsHtml}${waitHtml}</td>
         <td style="vertical-align: middle;">${escapeHtml(item.dl_format)}</td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
                 ${upBtn}${downBtn}
-                <button type="button" style="width: 160px" data-action="removeQueued" data-value="${pid}" class="btn btn-danger btn-xs">Удалить</button>
+                <button type="button" style="width: 30px" data-action="removeQueued" data-value="${pid}" class="btn btn-default btn-xs queue-remove-btn" title="Убрать из очереди" aria-label="Убрать из очереди">×</button>
             </div>
         </td>
     </tr>`;
 }
 
+// Сколько секунд часы сервера впереди часов браузера (по последнему ?jobs)
+let serverClockSkew = 0;
+
+// Очередь ждёт не только слота: YouTube не чаще раза в 20 с, после 429 сайт
+// придержан на минуты. Без отсчёта такая строка выглядит зависшей.
+function tickQueueWaits() {
+    const now = Date.now() / 1000 + serverClockSkew;
+    document.querySelectorAll('.queue-wait[data-start-at]').forEach(el => {
+        const left = Math.ceil(Number(el.dataset.startAt) - now);
+        let text = '';
+        if (left > 0) {
+            const when = left < 60 ? left + ' с' : Math.ceil(left / 60) + ' мин';
+            text = el.dataset.waitReason === 'cooldown'
+                ? 'сайт попросил паузу, старт через ' + when
+                : 'старт через ' + when;
+        }
+        if (el.textContent !== text) el.textContent = text;
+    });
+}
+setInterval(tickQueueWaits, 1000);
+
+// Успех - без слов: строка в "Последних загрузках" со ссылкой на файл сама значит
+// "готово", а одинаковое "Готово" в каждой строке было шумом. Текст остаётся, только
+// когда есть что сказать: пояснение после "Готово" ("...сработало с куки"), отмена,
+// ожидание автоповтора ("пробую...") - серым; всё остальное - ошибка.
+function renderFinishedStatus(status) {
+    const text = String(status || '').trim();
+    if (!text) return '';
+    if (text.startsWith('Готово')) {
+        const note = text.split('\n').slice(1).join('\n').trim();
+        return note ? `<div class="job-status">${escapeHtml(note)}</div>` : '';
+    }
+    const neutral = text.startsWith('Отменено') || /пробую/i.test(text);
+    return `<div class="job-status${neutral ? '' : ' job-status-error'}">${escapeHtml(text)}</div>`;
+}
+
 function renderFinishedRow(item, logURL) {
     const iconClass = getIconClass(item.type);
-    const urlsHtml = renderUrls(item.url);
+    // Файл ещё на диске - имя ведёт к нему во вкладку "Видео"/"Музыка", а не
+    // заставляет искать его там глазами (diskKind/diskKey проставляет loadList)
+    const fileHtml = item.diskKey
+        ? `<a href="#${item.diskKind === 'm' ? 'music' : 'videos'}" class="finished-file-link" data-goto-file="${escapeHtml(item.diskKey)}" data-goto-kind="${item.diskKind}" title="Показать файл">${escapeHtml(displayFileName(item.file, item.url))}</a>`
+        : escapeHtml(displayFileName(item.file, item.url));
     let logButton = "";
-    let actionBtnWidth = "80px";
+    // 80px на "Удалить" и с "Логом": 60px было уже самого слова, и оно вылезало
+    // за края. Место под них берёт "↺" - тема и так ужимает его до 30px.
+    const actionBtnWidth = "80px";
 
     if (logURL && logURL !== "") {
-        actionBtnWidth = "60px";
-        logButton = `<a href="${safeUrlAttr(logURL)}/${safePid(item.pid)}" style="width: 40px;" target="_blank" rel="noopener noreferrer" class="btn btn-default btn-xs">Лог</a>`;
+        logButton = `<a href="${safeUrlAttr(logURL)}/${safePid(item.pid)}" style="width: 48px;" target="_blank" rel="noopener noreferrer" class="btn btn-default btn-xs">Лог</a>`;
     }
 
     return `
     <tr>
-        <td style="vertical-align: middle;">${escapeHtml(item.site)}</td>
-        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${escapeHtml(item.file)} ${urlsHtml}</td>
-        <td style="vertical-align: middle;">${escapeHtml(item.status)}</td>
+        <td style="vertical-align: middle;"><i class="fa ${iconClass}"></i> ${renderJobFileName(item.file, fileHtml)}<div class="job-meta">${renderSourceUrls(item.url)}${renderFinishedStatus(item.status)}</div></td>
         <td style="vertical-align: middle;">
             <div class="btn-group">
                 ${logButton}
-                <button type="button" style="width: ${actionBtnWidth}" data-action="restart" data-value="${safePid(item.pid)}" class="btn btn-success btn-xs">↺</button>
+                <button type="button" style="width: ${actionBtnWidth}" data-action="restart" data-value="${safePid(item.pid)}" class="btn btn-success btn-xs" title="Перекачать" aria-label="Перекачать">↺</button>
                 <button type="button" style="width: ${actionBtnWidth}" data-action="clear" data-value="${safePid(item.pid)}" class="btn btn-danger btn-xs">Удалить</button>
             </div>
         </td>
@@ -1099,24 +1324,39 @@ function buildFileActions(file) {
     // браузера. Ссылка относительная - абсолютной её делает тот же
     // buildAbsoluteFileUrl(), что и для QR.
     const copyIcon = `<svg class="copy-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>`;
+    // На телефоне та же кнопка открывает системное "Поделиться": ссылку оттуда
+    // сразу отправляют в мессенджер, без копирования и вставки.
+    const canShare = isMobileDevice && typeof navigator.share === 'function';
+    const shareIcon = `<svg class="copy-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11A2.99 2.99 0 0 0 21 5a3 3 0 1 0-5.91.7L8.04 9.81A2.99 2.99 0 0 0 3 12a3 3 0 0 0 5.04 2.19l7.12 4.16c-.05.21-.08.43-.08.65A2.92 2.92 0 1 0 18 16.08z"/></svg>`;
     const copyButton = file.downloadurl
-        ? `<button type="button" class="btn btn-default btn-xs copy-btn" title="Скопировать ссылку на файл" data-copy-url="${escapeHtml(file.downloadurl)}">${copyIcon}</button>`
+        ? `<button type="button" class="btn btn-default btn-xs copy-btn" title="${canShare ? 'Поделиться ссылкой на файл' : 'Скопировать ссылку на файл'}" data-copy-url="${escapeHtml(file.downloadurl)}"${canShare ? ' data-share="1"' : ''}>${canShare ? shareIcon : copyIcon}</button>`
         : '';
 
     const pinIcon = `<svg class="pin-btn-icon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M16 3l5 5-1.9 1.9-2.5-.6-3.6 3.6.9 3.7-1.9 1.9-3.5-3.5-4.8 4.8-1.4-1.4 4.8-4.8-3.5-3.5 1.9-1.9 3.7.9 3.6-3.6-.6-2.5z"/></svg>`;
     const pinned = !!file.pinned;
     const pinButton = file.name
-        ? `<button type="button" class="btn btn-default btn-xs pin-btn${pinned ? ' pin-btn-active' : ''}" title="${pinned ? 'Открепить' : 'Закрепить - не удалится по времени и при «Очистить всё»'}" data-pin-name="${file.name}" data-pin-type="${file.kind === 'audio' ? 'm' : 'v'}" data-pin-pinned="${pinned ? '1' : '0'}">${pinIcon}</button>`
+        ? `<button type="button" class="btn btn-default btn-xs pin-btn${pinned ? ' pin-btn-active' : ''}" title="${pinned ? 'Открепить' : 'Закрепить - не удалится по времени и при «Удалить всё»'}" data-pin-name="${file.name}" data-pin-type="${file.kind === 'audio' ? 'm' : 'v'}" data-pin-pinned="${pinned ? '1' : '0'}">${pinIcon}</button>`
         : '';
 
-    if (!playButton && !qrButton && !copyButton && !pinButton && !file.deleteurl) return '';
-    return `<div class="btn-group btn-group-file">${playButton}${qrButton}${copyButton}${pinButton}${file.deleteurl}</div>`;
+    // file.name приходит уже экранированным (JobsSnapshot::fileRow)
+    const deleteButton = (typeof allowFileDelete !== 'undefined' && allowFileDelete && file.name)
+        ? `<button type="button" data-action="delete" data-value="${file.name}" data-type="${file.kind === 'audio' ? 'm' : 'v'}" class="btn btn-danger btn-xs">Удалить</button>`
+        : '';
+    if (!playButton && !qrButton && !copyButton && !pinButton && !deleteButton) return '';
+    return `<div class="btn-group btn-group-file">${playButton}${qrButton}${copyButton}${pinButton}${deleteButton}</div>`;
 }
 
 // Ключ файла для отслеживания "новых" строк между опросами - downloadurl
-// стабилен и уникален per-файл, имя внутри HTML-ссылки как запасной вариант.
+// стабилен и уникален per-файл, имя как запасной вариант.
 function getFileKey(file) {
-    return file.downloadurl || file.file;
+    return file.downloadurl || file.name;
+}
+
+// Имя файла в строке: ссылкой на скачивание, если downloadPath задан
+function fileNameHtml(file) {
+    return file.downloadurl
+        ? `<a href="${escapeHtml(file.downloadurl)}" download>${file.name}</a>`
+        : file.name;
 }
 
 function renderFileRow(file, isNew) {
@@ -1129,20 +1369,22 @@ function renderFileRow(file, isNew) {
     const waveClass = isNew ? ' row-name-wave-cell' : '';
 
     if (typeof showFileLifetime !== 'undefined' && !showFileLifetime) {
-        return `<tr><td><span class="file-name-plain${enterClass}${waveClass}">${file.file}</span></td><td>${escapeHtml(file.size)}</td><td>${actions}</td></tr>`;
+        return `<tr><td><span class="file-name-plain${enterClass}${waveClass}">${fileNameHtml(file)}</span></td><td>${escapeHtml(file.size)}</td><td>${actions}</td></tr>`;
     }
 
     const pinned = !!file.pinned;
     let timeText, colorClass, percent;
 
+    // Закреплённый файл не тикает: полоска всегда была бы полной и ничего не сообщала,
+    // поэтому вместо неё только знак. Сам закреп показывает кнопка (.pin-btn-active).
     if (pinned) {
-        timeText = '📌 закреплён';
-        colorClass = 'bg-safe';
-        percent = 100;
+        timeText = '∞';
     } else {
-        const age = (typeof file.age_minutes === 'number' && !isNaN(file.age_minutes)) ? file.age_minutes : 0;
-        percent = (typeof file.lifetime_percent === 'number' && !isNaN(file.lifetime_percent)) ? file.lifetime_percent : 100;
+        // Часы сервера (serverClockSkew), а не клиента: mtime файла - серверный
         const retention = (typeof retentionMinutes !== 'undefined' && retentionMinutes > 0) ? retentionMinutes : 120;
+        const nowSec = Date.now() / 1000 + serverClockSkew;
+        const age = file.mtime > 0 ? Math.max(0, Math.floor((nowSec - file.mtime) / 60)) : 0;
+        percent = Math.max(0, Math.min(100, Math.round((retention - age) / retention * 100)));
         const remainingMinutes = Math.max(0, retention - age);
 
         if (percent > 60) colorClass = 'bg-safe';
@@ -1160,9 +1402,14 @@ function renderFileRow(file, isNew) {
         }
     }
 
-    const badge = `
+    const badge = pinned
+        ? `
+        <div class="lifetime-badge lifetime-badge-pinned" title="Закреплён - не удалится по времени">
+            <div class="lifetime-badge-text">${timeText}</div>
+        </div>`
+        : `
         <div class="lifetime-badge">
-            <div class="lifetime-badge-text">${pinned ? '' : '⏱ '}${timeText}</div>
+            <div class="lifetime-badge-text">⏱ ${timeText}</div>
             <div class="progress">
                 <div class="progress-bar progress-lifetime ${colorClass}" style="width: ${percent}%;"></div>
             </div>
@@ -1173,7 +1420,7 @@ function renderFileRow(file, isNew) {
             <td>
                 <div class="file-row-content${enterClass}">
                     ${badge}
-                    <span class="file-name${waveClass}">${file.file}</span>
+                    <span class="file-name${waveClass}">${fileNameHtml(file)}</span>
                 </div>
             </td>
             <td>${escapeHtml(file.size)}</td>
@@ -1275,9 +1522,9 @@ function reapplySelectionClasses(state) {
     }
 }
 
-// Ключ строки-файла отличается от служебных строк тем же tbody (у подвала
-// "Очистить всё" тоже есть data-row-key, ='__footer__' - иначе он бы ловил
-// long-press и попадал в счётчик выбранного как несуществующий файл).
+// Ключ строки-файла отличается от служебных строк тем же tbody (у строки
+// "Видео нет." тоже есть data-row-key, ='__empty__' - иначе она бы ловила
+// long-press и попадала в счётчик выбранного как несуществующий файл).
 function isSelectableFileRow(row) {
     return !!row && typeof row.dataset.rowKey === 'string' && row.dataset.rowKey.indexOf('file:') === 0;
 }
@@ -1329,23 +1576,76 @@ function initSelectionForTable(state) {
     // дважды, чтобы строка осталась выбранной).
     let suppressNextClick = false;
 
+    // Протяжка мышью по строкам, как в выборе плейлиста: якорь + диапазон от снимка
+    // на момент нажатия (повёл назад - строки возвращаются). Только мышь: на touch
+    // протяжка отдана прокрутке страницы.
+    let drag = null;
+    const fileRows = () => Array.from(tbody.children).filter(isSelectableFileRow);
+
+    function dragPaint(toRow) {
+        const rows = fileRows();
+        const to = rows.indexOf(toRow);
+        if (to < 0 || to === drag.last) return;
+        drag.last = to;
+        const lo = Math.min(drag.anchor, to), hi = Math.max(drag.anchor, to);
+        state.selected.clear();
+        drag.before.forEach(k => state.selected.add(k));
+        for (let i = lo; i <= hi; i++) {
+            const key = rows[i].dataset.rowKey;
+            if (drag.select) state.selected.add(key); else state.selected.delete(key);
+        }
+        reapplySelectionClasses(state);
+    }
+
+    function dragBegin(row, pointerId) {
+        suppressNextClick = true; // click после отпускания иначе вернул бы выбор строки
+        drag = {
+            anchor: fileRows().indexOf(row),
+            last: null,
+            before: new Set(state.selected),
+            select: !state.selected.has(row.dataset.rowKey),
+        };
+        try { tbody.setPointerCapture(pointerId); } catch (_) {}
+        window.getSelection().removeAllRanges();
+        dragPaint(row);
+    }
+
     tbody.addEventListener('pointerdown', (e) => {
+        suppressNextClick = false;
         const row = e.target.closest('tr[data-row-key]');
         // Жест, начатый на кнопке действия строки (play/qr/copy/pin/удалить),
         // не должен запускать выбор - у кнопок своё поведение.
         if (!isSelectableFileRow(row) || e.target.closest('button, a')) return;
+        const mouse = e.pointerType === 'mouse' && e.button === 0;
+        if (state.active && mouse && !state.queue) {
+            e.preventDefault(); // без этого браузер начнёт выделять текст
+            row.focus({ preventScroll: true });
+            dragBegin(row, e.pointerId);
+            return;
+        }
         startX = e.clientX; startY = e.clientY;
         clearTimeout(pressTimer);
+        const pointerId = e.pointerId;
         pressTimer = setTimeout(() => {
             pressTimer = null;
-            suppressNextClick = true;
             enterSelectionMode(state);
-            toggleRowSelection(state, row);
+            if (mouse) {
+                dragBegin(row, pointerId);
+            } else {
+                suppressNextClick = true;
+                toggleRowSelection(state, row);
+            }
             haptic('tick');
         }, LONG_PRESS_SELECT_TIME);
     });
 
     tbody.addEventListener('pointermove', (e) => {
+        if (drag) {
+            const el = document.elementFromPoint(e.clientX, e.clientY);
+            const row = el && el.closest('tr[data-row-key]');
+            if (isSelectableFileRow(row) && tbody.contains(row)) dragPaint(row);
+            return;
+        }
         if (!pressTimer) return;
         if (Math.abs(e.clientX - startX) > LONG_PRESS_MOVE_TOLERANCE || Math.abs(e.clientY - startY) > LONG_PRESS_MOVE_TOLERANCE) {
             clearTimeout(pressTimer);
@@ -1353,9 +1653,10 @@ function initSelectionForTable(state) {
         }
     });
 
-    const clearPress = () => { clearTimeout(pressTimer); pressTimer = null; };
+    const clearPress = () => { clearTimeout(pressTimer); pressTimer = null; drag = null; };
     tbody.addEventListener('pointerup', clearPress);
     tbody.addEventListener('pointercancel', clearPress);
+    tbody.addEventListener('lostpointercapture', () => { drag = null; });
     tbody.addEventListener('pointerleave', clearPress);
 
     // Короткий тап: вне режима выбора - обычное поведение строки (play/qr/...,
@@ -1618,6 +1919,44 @@ function buildAbsoluteFileUrl(relativeUrl) {
     }
 }
 
+// "Назад" на телефоне должен закрывать модалку (QR, плеер), а не уводить со страницы:
+// открытие кладёт в историю свою запись (тот же адрес), "Назад" её снимает. Закрытие
+// крестиком/фоном/Escape снимает её само через history.back(), чтобы в истории не
+// копились пустые записи. back() асинхронный: пока он не отработал (modalHistoryLeaving),
+// его popstate - наш собственный и модалку закрывать не должен.
+let modalHistoryHide = null;     // чем закрыть модалку, чья запись сейчас наверху истории
+let modalHistoryLeaving = false;
+let modalHistoryQueued = null;   // модалку открыли снова, пока снималась прошлая запись
+
+function pushModalHistory(hide) {
+    if (modalHistoryLeaving) { modalHistoryQueued = hide; return; }
+    if (modalHistoryHide) return;
+    history.pushState({ ytModal: true }, '');
+    modalHistoryHide = hide;
+}
+
+function popModalHistory(hide) {
+    if (modalHistoryQueued === hide) modalHistoryQueued = null;
+    if (modalHistoryHide !== hide) return;
+    modalHistoryHide = null;
+    modalHistoryLeaving = true;
+    history.back();
+}
+
+window.addEventListener('popstate', () => {
+    if (modalHistoryLeaving) {
+        modalHistoryLeaving = false;
+        const queued = modalHistoryQueued;
+        modalHistoryQueued = null;
+        if (queued) pushModalHistory(queued);
+        return;
+    }
+    const hide = modalHistoryHide;
+    if (!hide) return;
+    modalHistoryHide = null;
+    hide();
+});
+
 let qrModalEl = null;
 let qrLibPromise = null;
 
@@ -1716,6 +2055,7 @@ function showQrModal(relativeUrl) {
     // Модалку показываем сразу - моментальный отклик на клик; код рисуем, как
     // только подтянется библиотека (после первого раза она уже в памяти).
     overlay.classList.add('is-visible');
+    pushModalHistory(hideQrModal);
 
     const canvas = overlay.querySelector('.qr-modal-canvas');
     ensureQrLib()
@@ -1725,6 +2065,7 @@ function showQrModal(relativeUrl) {
 
 function hideQrModal() {
     if (qrModalEl) qrModalEl.classList.remove('is-visible');
+    popModalHistory(hideQrModal);
 }
 
 document.addEventListener('click', function (e) {
@@ -1844,6 +2185,19 @@ document.addEventListener('click', function (e) {
     if (!relative) return;
     const absolute = buildAbsoluteFileUrl(relative);
 
+    if (btn.dataset.share && navigator.share) {
+        let title = '';
+        try { title = decodeURIComponent(relative.split('/').pop()); } catch (err) {}
+        navigator.share({ title, url: absolute }).catch(err => {
+            // Закрыл меню - не ошибка; прочее (нет прав и т.п.) - хотя бы копируем
+            if (!err || err.name !== 'AbortError') copyLink(btn, absolute);
+        });
+        return;
+    }
+    copyLink(btn, absolute);
+});
+
+function copyLink(btn, absolute) {
     // clipboard.writeText требует защищённого контекста (https или localhost).
     // Качалка часто открыта по http на локальном адресе - там остаётся запасной
     // путь через скрытое поле и execCommand.
@@ -1873,7 +2227,7 @@ document.addEventListener('click', function (e) {
     } else {
         fallback();
     }
-});
+}
 
 // === Плеер прямо на странице ===
 // Модалка живёт вне таблиц Видео/Музыка: те перерисовываются целиком на каждом опросе ?jobs, живой <video>/<audio> внутри строки обрывался бы.
@@ -2044,11 +2398,14 @@ function showPlayerModal(relativeUrl, kind) {
 
     // Автоплей нарочно не включён - без внезапного звука на всю систему.
     overlay.classList.add('is-visible');
+    pushModalHistory(hidePlayerModal);
 }
 
 function hidePlayerModal() {
     if (!playerModalEl) return;
     playerModalEl.classList.remove('is-visible');
+
+    popModalHistory(hidePlayerModal);
 
     // Останавливаем оба плеера и снимаем src при закрытии - иначе браузер тянет файл в фоне.
     const video = playerModalEl.querySelector('.player-modal-video');
@@ -2080,13 +2437,39 @@ document.addEventListener('click', function (e) {
     if (name) togglePin(name, type, !currentlyPinned);
 });
 
+// Строка очереди переезжает сразу, не дожидаясь ответа сервера и опроса после
+// него (два запроса подряд - под нагрузкой это заметная пауза). Сервер потом
+// присылает тот же порядок; ошибка или отказ - следующий опрос вернёт настоящий.
+function moveQueueRowNow(row, dir) {
+    const tbody = row && row.parentElement;
+    if (!tbody) return;
+    const sibling = dir === 'up' ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling || !sibling.dataset.rowKey) return;
+    tbody.insertBefore(dir === 'up' ? row : sibling, dir === 'up' ? sibling : row);
+    const rows = Array.from(tbody.rows);
+    rows.forEach((r, i) => {
+        const up = r.querySelector('[data-reorder-dir="up"]');
+        const down = r.querySelector('[data-reorder-dir="down"]');
+        if (up) up.disabled = i === 0;
+        if (down) down.disabled = i === rows.length - 1;
+    });
+}
+
 document.addEventListener('click', function (e) {
     const btn = e.target.closest('.reorder-btn');
     if (!btn || btn.disabled) return;
     e.preventDefault();
+    const dir = btn.getAttribute('data-reorder-dir');
+    moveQueueRowNow(btn.closest('tr'), dir);
+    queueReorderPending++;
     submitActionFetch({
         reorderQueue: btn.getAttribute('data-reorder-pid'),
-        direction: btn.getAttribute('data-reorder-dir')
+        direction: dir
+    }).then(() => {
+        // Опрос, запущенный submitActionFetch после ответа, уже учтён в loadListSeq -
+        // с него очередь снова рисуется по данным сервера
+        queueFreshFromSeq = loadListSeq;
+        queueReorderPending--;
     });
 });
 
@@ -2105,6 +2488,18 @@ document.addEventListener('click', function (e) {
     // Свернуть/развернуть панель помощи в футере
     if (e.target.closest('[data-ui="help"]')) {
         helpPanel();
+        return;
+    }
+    // "Не нажимать" в подвале - салют по требованию
+    if (e.target.closest('[data-ui="confetti"]')) {
+        fireConfetti();
+        return;
+    }
+    // Имя готовой задачи в "Последних загрузках" - к самому файлу
+    const toFile = e.target.closest('[data-goto-file]');
+    if (toFile) {
+        e.preventDefault();
+        gotoFile(toFile.getAttribute('data-goto-file'), toFile.getAttribute('data-goto-kind'));
         return;
     }
     // Переход на вкладку по ссылкам из футера (data-goto = id ссылки в навигации)
@@ -2198,7 +2593,7 @@ let knownFileByUrl = new Map();
 
 function collectDiskFiles(data) {
     const onDisk = new Set();
-    for (const bucket of [data.videos, data.musics]) {
+    for (const bucket of [data.videos, data.music]) {
         for (const item of bucket || []) {
             if (item.name) onDisk.add(item.name);
         }
@@ -2214,6 +2609,68 @@ function collectDiskFiles(data) {
         });
     }
     return map;
+}
+
+// Имя файла -> где он лежит: вкладка ('v'/'m') и ключ его строки в таблице
+// (тот же 'file:' + getFileKey, что уходит в data-row-key через keyFn).
+let diskFileByName = new Map();
+
+// Имя без хвоста формата и расширения: в истории задачи остаётся имя последнего
+// скачанного потока ("x.f140.m4a", у Instagram "x.fdash-123a.m4a"), а на диске
+// после склейки лежит "x.mp4".
+function diskStem(name) {
+    return String(name || '').trim().replace(/(?:\.f[a-z0-9]+(?:-[a-z0-9]+)*)?\.[a-z0-9]{2,4}$/i, '');
+}
+
+function collectDiskFileRows(data) {
+    const map = new Map();
+    for (const [kind, bucket] of [['v', data.videos], ['m', data.music]]) {
+        for (const item of bucket || []) {
+            if (!item.name) continue;
+            const entry = { kind, key: 'file:' + getFileKey(item) };
+            map.set(item.name, entry);
+            const stem = kind + ':' + diskStem(item.name);
+            if (!map.has(stem)) map.set(stem, entry);
+        }
+    }
+    return map;
+}
+
+// Точное имя, иначе по основе имени - сначала в "своей" вкладке по типу задачи.
+function findDiskFile(file, type) {
+    const name = String(file || '').trim();
+    if (!name) return null;
+    const exact = diskFileByName.get(name);
+    if (exact) return exact;
+    const stem = diskStem(name);
+    const order = type === 'audio' ? ['m', 'v'] : ['v', 'm'];
+    for (const kind of order) {
+        const hit = diskFileByName.get(kind + ':' + stem);
+        if (hit) return hit;
+    }
+    return null;
+}
+
+// Из "Последних загрузок" к самому файлу: вкладка, прокрутка к строке и та же
+// волна по имени, которой встречают только что появившийся файл.
+function gotoFile(key, kind) {
+    const nav = document.getElementById(kind === 'm' ? 'music_link' : 'vid_link');
+    const tbody = document.getElementById(kind === 'm' ? 'musicfiles' : 'videofiles');
+    if (!nav || !tbody) return;
+    nav.click();
+    // Вкладка меняется через View Transition - строку ищем, когда панель уже видна
+    setTimeout(() => {
+        const row = [...tbody.rows].find(r => r.dataset.rowKey === key);
+        if (!row) return;
+        const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        row.scrollIntoView({ block: 'center', behavior: reduced ? 'auto' : 'smooth' });
+        const name = row.querySelector('.file-name, .file-name-plain');
+        if (!name) return;
+        name.classList.remove('row-name-wave-cell');
+        void name.offsetWidth; // без перерисовки повторный класс не перезапустил бы анимацию
+        name.classList.add('row-name-wave-cell');
+        name.addEventListener('animationend', () => name.classList.remove('row-name-wave-cell'), { once: true });
+    }, 350);
 }
 
 // Состояние минутного окна прокси из последнего ?jobs - хватает, чтобы сказать
@@ -2255,13 +2712,135 @@ function hidePollErrorBadge() {
     }
 }
 
-function loadList() {
-    fetch("index.php?jobs")
-        .then(resp => resp.json())
+// Ответы ?jobs приходят не обязательно по порядку: плановый опрос, ушедший до
+// нажатия, может вернуться позже опроса, запущенного самим действием. Старый ответ
+// перерисовал бы таблицы назад (убранная строка возвращалась на полторы секунды)
+// и откатил бы previousFinishedPids - звук и салют по готовой загрузке сыграли бы
+// второй раз. Поэтому ответ старше уже показанного выбрасываем.
+let loadListSeq = 0;
+let loadListShownSeq = 0;
+// Перестановка в очереди показывается сразу по нажатию (moveQueueRowNow). Пока
+// сервер её не применил, и для ответов на запросы, ушедшие раньше, очередь не
+// перерисовываем - иначе строка прыгала бы назад и обратно.
+let queueReorderPending = 0;
+let queueFreshFromSeq = 0;
+
+// Плановый опрос читает снапшот, который пишет воркер: nginx отдаёт его без PHP,
+// а неизменившийся - ответом 304 без тела. index.php?jobs (fresh) - после действия:
+// он пинает воркер и ждёт его прохода, иначе таблица на секунду показала бы
+// состояние до нажатия. Туда же уходим, когда снапшота нет или он протух - воркер
+// трогает файл раз в 10 с, застывший дольше значит, что воркер не жив.
+const SNAPSHOT_URL = 'state/jobs.json';
+const SNAPSHOT_STALE_MS = 30000;
+let snapshotEtag = null;
+let snapshotData = null;
+let freshInFlight = 0;
+
+function fetchJobs(fresh) {
+    if (fresh) return fetch('index.php?jobs').then(resp => resp.json());
+    const headers = snapshotData && snapshotEtag ? { 'If-None-Match': snapshotEtag } : {};
+    // no-store: 304 должен дойти до нас, а не раствориться в кэше браузера
+    return fetch(SNAPSHOT_URL, { cache: 'no-store', headers }).then(resp => {
+        const date = Date.parse(resp.headers.get('Date'));
+        const modified = Date.parse(resp.headers.get('Last-Modified'));
+        const usable = (resp.status === 200 || (resp.status === 304 && snapshotData))
+            && date - modified < SNAPSHOT_STALE_MS; // NaN - тоже нет
+        if (!usable) {
+            snapshotEtag = null;
+            snapshotData = null;
+            return fetchJobs(true);
+        }
+        // Часы сервера для отсчёта очереди - из заголовка Date, в снапшоте их нет
+        const now = Math.floor(date / 1000);
+        if (resp.status === 304) return { ...snapshotData, now };
+        return resp.json().then(data => {
+            snapshotEtag = resp.headers.get('ETag');
+            snapshotData = data;
+            return { ...data, now };
+        });
+    });
+}
+
+// Вкладка, открытая до выкатки, живёт со старым JS. Снапшот несёт версию кода
+// (build, см. JobsSnapshot::buildId): разошлась с BUILD_ID страницы - пора
+// перезагрузиться. Скрытая вкладка перезагружается сразу, видимая - когда
+// человек ничего не делает. Черновик поля ссылки переживает перезагрузку,
+// вкладка сайта (#hash) и прокрутку браузер восстанавливает сам.
+// ?noreload в адресе выключает механизм (отладка).
+const RELOAD_IDLE_MS = 10000;
+const RELOAD_STATE_KEY = 'yt_reload_state';
+const autoReloadEnabled = typeof BUILD_ID === 'string' && BUILD_ID !== ''
+    && !new URLSearchParams(location.search).has('noreload');
+let pendingBuild = null;
+let reloadedForBuild = null;
+let lastUserActivity = 0;
+let pointerHeld = false;
+
+['pointerdown', 'keydown', 'input', 'wheel', 'touchstart'].forEach(type => {
+    document.addEventListener(type, () => { lastUserActivity = Date.now(); }, { capture: true, passive: true });
+});
+document.addEventListener('pointerdown', () => { pointerHeld = true; }, true);
+['pointerup', 'pointercancel'].forEach(type => {
+    document.addEventListener(type, () => { pointerHeld = false; }, true);
+});
+
+function reloadBlocked() {
+    if (pointerHeld || Date.now() - lastUserActivity < RELOAD_IDLE_MS) return true;
+    return !!document.querySelector(
+        '.qr-modal-overlay.is-visible, #quality-popup.is-visible, .selection-toolbar:not([hidden])');
+}
+
+function checkBuild(build) {
+    if (!autoReloadEnabled || typeof build !== 'string' || build === '' || build === BUILD_ID) return;
+    // На эту версию уже перезагружались, а страница всё равно старая (кэш по
+    // дороге) - второй раз не дёргаем, иначе петля
+    if (build === reloadedForBuild) return;
+    pendingBuild = build;
+    tryAutoReload();
+}
+
+function tryAutoReload() {
+    if (pendingBuild === null || (!document.hidden && reloadBlocked())) return;
+    try {
+        sessionStorage.setItem(RELOAD_STATE_KEY, JSON.stringify({
+            build: pendingBuild,
+            draft: urlInput ? urlInput.value : '',
+        }));
+    } catch (e) {}
+    pendingBuild = null;
+    location.reload();
+}
+
+function restoreAfterReload() {
+    let state = null;
+    try {
+        state = JSON.parse(sessionStorage.getItem(RELOAD_STATE_KEY) || 'null');
+        sessionStorage.removeItem(RELOAD_STATE_KEY);
+    } catch (e) {}
+    if (!state || typeof state !== 'object') return;
+    reloadedForBuild = typeof state.build === 'string' ? state.build : null;
+    if (typeof state.draft === 'string' && state.draft !== '' && urlInput && !urlInput.value) {
+        setUrlFieldValue(urlInput, state.draft);
+    }
+}
+
+function loadList(fresh = false) {
+    // Пока свежий ответ в пути, снапшот может быть ещё до действия - не читаем его.
+    // Свежий ответ сам назначит следующий опрос.
+    if (!fresh && freshInFlight) return;
+    const seq = ++loadListSeq;
+    if (fresh) freshInFlight++;
+    fetchJobs(fresh)
+        .finally(() => { if (fresh) freshInFlight--; })
         .then(function (data) {
+        if (seq < loadListShownSeq) return;
+        loadListShownSeq = seq;
+        if (typeof data.now === 'number') serverClockSkew = data.now - Date.now() / 1000;
         hidePollErrorBadge();
+        checkBuild(data.build);
         knownDownloadedUrls = collectKnownUrls(data);
         knownFileByUrl = collectDiskFiles(data);
+        diskFileByName = collectDiskFileRows(data);
         lastProxyState = (data.proxy && data.proxy.enabled && !data.proxy.unset) ? (data.proxy.state || null) : null;
         const currentFinishedPids = new Set();
         for (const item of data.finished) {
@@ -2287,8 +2866,9 @@ function loadList() {
             } else if (newSuccess.length) {
                 playNotificationSound(true);
                 haptic('done');
-                if (!document.hidden) fireConfetti();
+                if (!document.hidden) fireConfetti({ audio: newSuccess.some(item => item.type === 'audio') });
             }
+            snejOnDone(newSuccess);
 
             // Плашкой зовём только при скрытой вкладке - иначе звука и таблицы хватает.
             if (document.hidden && (newSuccess.length || newFailure.length)) {
@@ -2297,26 +2877,39 @@ function loadList() {
         }
 
         previousFinishedPids = currentFinishedPids;
+        snejOnJobs(data.jobs);
+        snejOnStats(data.stats);
 
-        renderTable(nativeUI.progress, data.jobs, 4, "Активных загрузок нет.", renderJobRow, `
-            <td></td><td></td><td></td>
-            <td><div class="btn-group"><button type="button" id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" data-action="kill" data-value="all">Стоп ВСЕ</button></div></td>`,
+        renderTable(nativeUI.progress, data.jobs, 3, "Активных загрузок нет.", renderJobRow, `<button type="button" id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" data-action="kill" data-value="all">Стоп ВСЕ</button>`,
             job => 'job:' + job.pid);
 
-        renderTable(nativeUI.queue, data.queue, 3, "Очередь пуста.", renderQueueRow, `
-            <td></td><td></td>
-            <td><div class="btn-group"><button type="button" id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="queue">Удалить Все</button></div></td>`,
+        if (!queueReorderPending && seq >= queueFreshFromSeq) renderTable(nativeUI.queue, data.queue, 3, "Очередь пуста.", renderQueueRow, `<button type="button" id="clearallbutton-queue" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="queue">Очистить всё</button>`,
             item => 'queue:' + item.pid);
 
-        // Очередь продвигается только заходом на страницу (process_queue в index.php),
-        // поэтому при непустой очереди говорим об этом прямо, а не оставляем догадываться.
+        // При непустой очереди говорим, что она идёт сама (её двигает воркер на
+        // сервере) - иначе человек сидел бы с открытой вкладкой на всякий случай.
         const queueHint = document.getElementById('queue-hint');
         if (queueHint) queueHint.classList.toggle('is-hidden', !(data.queue && data.queue.length));
 
-        renderTable(nativeUI.completed, data.finished, 4, "Завершенных загрузок нет.", item => renderFinishedRow(item, data.logURL), `
-            <td></td><td></td><td></td>
-            <td><div class="btn-group"><button type="button" id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="recent">Удалить Все</button></div></td>`,
+        // Где лежит файл задачи - полями записи, а не справкой изнутри генератора
+        // строки: renderTable сравнивает данные, и строка перерисуется, когда
+        // файл удалят или он истечёт по сроку.
+        const finishedRows = (data.finished || []).map(item => {
+            const disk = findDiskFile(item.file, item.type);
+            return disk ? { ...item, diskKind: disk.kind, diskKey: disk.key } : item;
+        });
+        renderTable(nativeUI.completed, finishedRows, 2, "Завершенных загрузок нет.", item => renderFinishedRow(item, data.logURL), `<button type="button" id="clearallbutton-finished" style="width: 160px;" class="btn btn-danger btn-xs" data-action="clear" data-value="recent">Очистить всё</button>`,
             item => 'done:' + item.pid);
+
+        // Пустые разделы не показываем: три таблицы с шапками над строками "пусто"
+        // были шумом. "Текущие" остаются всегда - их пустая строка и сообщает,
+        // что ничего не качается, но шапка колонок над ней не нужна.
+        const queueSection = document.getElementById('queue-section');
+        if (queueSection) queueSection.hidden = !(data.queue && data.queue.length);
+        const recentSection = document.getElementById('recent-section');
+        if (recentSection) recentSection.hidden = !(data.finished && data.finished.length);
+        const progressHead = nativeUI.progress ? nativeUI.progress.closest('table').tHead : null;
+        if (progressHead) progressHead.hidden = !(data.jobs && data.jobs.length);
 
         // Анимация только для реально новых файлов, не при каждом обновлении (напр. смена % "времени жизни"). Первый опрос за сессию - база, не "новые".
         const currentVideoKeys = new Set((data.videos || []).map(getFileKey));
@@ -2330,11 +2923,9 @@ function loadList() {
         previousMusicKeys = currentMusicKeys;
 
         const clearVideosFooter = (typeof allowFileDelete !== 'undefined' && allowFileDelete)
-            ? `<td></td><td></td>
-            <td><button type="button" style="width: 120px;" class="btn btn-danger btn-xs" data-action="clearDownloads" data-value="all" data-type="v">Очистить всё</button></td>` : "";
+            ? `<button type="button" style="width: 120px;" class="btn btn-danger btn-xs" data-action="clearDownloads" data-value="all" data-type="v">Удалить всё</button>` : "";
         const clearMusicFooter = (typeof allowFileDelete !== 'undefined' && allowFileDelete)
-            ? `<td></td><td></td>
-            <td><button type="button" style="width: 120px;" class="btn btn-danger btn-xs" data-action="clearDownloads" data-value="all" data-type="m">Очистить всё</button></td>` : "";
+            ? `<button type="button" style="width: 120px;" class="btn btn-danger btn-xs" data-action="clearDownloads" data-value="all" data-type="m">Удалить всё</button>` : "";
 
         renderTable(nativeUI.videos, data.videos, 3, "Видео нет.", item => renderFileRow(item, newVideoKeys.has(getFileKey(item))), clearVideosFooter,
             item => 'file:' + getFileKey(item));
@@ -2355,8 +2946,18 @@ function loadList() {
         updateProxyStatus(data.proxy);
         updateTabTitleProgress(data.jobs);
 
-        const isActive = (data.jobs && data.jobs.length > 0) || (data.queue && data.queue.length > 0);
+        // retryPending - задача упала и ждёт отложенного авторетрея. В data.jobs её ещё
+        // нет, но затихать нельзя: перезапуск делает сервер на входящем GET, и без
+        // быстрого опроса он откладывается до следующего (12с), а на скрытой вкладке -
+        // до возвращения человека, то есть не происходит вовсе.
+        const isActive = (data.jobs && data.jobs.length > 0)
+            || (data.queue && data.queue.length > 0)
+            || !!data.retryPending;
         lastActiveState = isActive;
+        // Звуки нужны только к финишу задачи - качаем их, когда задача появилась,
+        // а не на каждом заходе
+        if (isActive && !isMobileDevice && !isSoundMuted) preloadNotificationSounds();
+        if (isActive && !fxOff) loadEggs().catch(() => {});
 
         // В фоне (вкладка скрыта) держим опрос живым, только пока реально ждём
         // финиша. Всё стихло - гасим сами, чтобы не молотить впустую.
@@ -2391,7 +2992,7 @@ function initCache() {
 function scheduleNextRefresh(delay) {
     clearTimeout(refreshTimer);
     if (!refreshActive) return;
-    refreshTimer = setTimeout(loadList, delay);
+    refreshTimer = setTimeout(() => loadList(), delay);
 }
 
 function startAutoRefresh() {
@@ -2409,6 +3010,7 @@ function stopAutoRefresh() {
 
 document.addEventListener('DOMContentLoaded', function () {
     initCache();
+    restoreAfterReload();
     initFileSelection();
     if (nativeUI.progress) {
         startAutoRefresh();
@@ -2432,7 +3034,15 @@ window.addEventListener('beforeunload', function () {
     stopAutoRefresh();
 });
 
+// Вкладка вернулась из bfcache (мобильные браузеры, "назад"): JS не
+// перезапускался, данные и версия могли устареть - опрашиваем сразу.
+window.addEventListener('pageshow', function (e) {
+    if (e.persisted && nativeUI.progress) loadList();
+});
+
 document.addEventListener('visibilitychange', function () {
+    // Ушли со вкладки, а новая версия уже ждёт - перезагружаемся, пока не смотрят
+    if (document.hidden) tryAutoReload();
     if (document.hidden) {
         // Уведомления включены и что-то качается - не глушим опрос, роняем в редкий
         // фоновый интервал, чтобы поймать финиш и позвать. Иначе как раньше: стоп.
@@ -2471,6 +3081,52 @@ function helpPanel() {
     if (header) header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
 }
 
+// Подвал на телефоне листается как колесо сейфа: грань карточки, уходящая под
+// верхнюю кромку панели, отдаёт мягкий щелчок вибрацией. Только там, где есть
+// Vibration API (Android); в Safari на iPhone его нет - там прокрутка тихая.
+// Chrome пускает vibrate() лишь после касания страницы, а панель как раз
+// открывают нажатием, так что к прокрутке разрешение уже есть.
+(function initFooterDetents() {
+    const panel = document.getElementById('helppanel');
+    if (!panel || !isMobileDevice || typeof navigator.vibrate !== 'function') return;
+    const TICK_MS = 10;     // короче - на части телефонов не ощущается, длиннее - уже жужжание
+    const MIN_GAP_MS = 60;  // быстрый бросок - трещотка из щелчков, а не сплошной гул
+    const MERGE_PX = 24;    // низ карточки и верх следующей - одна грань, а не двойной щелчок
+    let lastPassed = -1;
+    let lastTick = 0;
+
+    // Сколько граней уже ушло выше кромки панели
+    function passedEdges() {
+        const top = panel.getBoundingClientRect().top + panel.clientTop;
+        const edges = [];
+        panel.querySelectorAll('.footer-card, .footer-useful').forEach(el => {
+            const r = el.getBoundingClientRect();
+            edges.push(r.top - top, r.bottom - top);
+        });
+        edges.sort((a, b) => a - b);
+        let passed = 0;
+        for (let i = 0; i < edges.length; ) {
+            let j = i;
+            while (j + 1 < edges.length && edges[j + 1] - edges[j] < MERGE_PX) j++;
+            if ((edges[i] + edges[j]) / 2 <= 0) passed++;
+            i = j + 1;
+        }
+        return passed;
+    }
+
+    panel.addEventListener('scroll', () => {
+        const passed = passedEdges();
+        if (lastPassed >= 0 && passed !== lastPassed) {
+            const now = performance.now();
+            if (now - lastTick >= MIN_GAP_MS) {
+                lastTick = now;
+                navigator.vibrate(TICK_MS);
+            }
+        }
+        lastPassed = passed;
+    }, { passive: true });
+})();
+
 document.addEventListener('DOMContentLoaded', function () {
     const faviconContainer = document.getElementById('url-favicon');
     const faviconImg = document.getElementById('url-favicon-img');
@@ -2479,6 +3135,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const wrapper = document.querySelector('.url-input-wrapper');
 
     let inputTimer = null;
+    const URL_FIELD_MAX_LINES = 6;
     const INPUT_DELAY = 150;
     let isClearing = false;
 
@@ -2619,7 +3276,7 @@ document.addEventListener('DOMContentLoaded', function () {
             faviconCache.set(serviceDomain, { url, ok: true });
             const currentService = getBaseService((() => {
                 try {
-                    let v = urlInput.value.trim().split('||')[0].trim();
+                    let v = urlInput.value.trim().split(URL_FIELD_SEP)[0].trim();
                     if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
                     return new URL(v).hostname.replace(/^www\./i, '');
                 } catch (e) { return null; }
@@ -2659,6 +3316,7 @@ document.addEventListener('DOMContentLoaded', function () {
         faviconImg.onerror = null;
         clearTimeout(inputTimer);
         urlInput.value = '';
+        autosizeUrlField();
         faviconContainer.classList.remove('is-visible');
         wrapper.classList.remove('has-favicon');
         clearBtn.classList.remove('is-visible');
@@ -2667,7 +3325,32 @@ document.addEventListener('DOMContentLoaded', function () {
         setTimeout(() => { isClearing = false; }, 50);
     }
 
+    // Поле растёт по строкам до URL_FIELD_MAX_LINES, дальше - прокрутка
+    function autosizeUrlField() {
+        // Мелкий кегль (is-compact), когда текст не влезает в строку обычным:
+        // меряем без него, иначе поле не вернулось бы к крупному после правки
+        urlInput.classList.remove('is-compact');
+        urlInput.style.height = 'auto';
+        const base = getComputedStyle(urlInput);
+        const oneLine = parseFloat(base.lineHeight) + parseFloat(base.paddingTop) + parseFloat(base.paddingBottom);
+        // Пустое поле - всегда одна строка обычным кеглем. Chrome считает в
+        // scrollHeight и плейсхолдер: в узком поле он переносился, и пустое
+        // поле после blur (ушли со страницы) мельчало и раздувалось по высоте.
+        const hasText = urlInput.value.trim() !== '';
+        if (hasText && (urlInput.value.trim().includes('\n') || urlInput.scrollHeight > oneLine + 1)) {
+            urlInput.classList.add('is-compact');
+        }
+        const cs = getComputedStyle(urlInput);
+        const border = parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth);
+        const max = parseFloat(cs.lineHeight) * URL_FIELD_MAX_LINES
+            + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) + border;
+        const full = (hasText ? urlInput.scrollHeight : oneLine) + border;
+        urlInput.style.height = Math.min(full, max) + 'px';
+        urlInput.style.overflowY = full > max + 1 ? 'auto' : 'hidden';
+    }
+
     function checkUrl() {
+        autosizeUrlField();
         if (isClearing) return;
         const val = urlInput.value.trim();
         if (!val) {
@@ -2702,18 +3385,18 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    // Разбор многострочного текста (paste/drag-and-drop): дедуп, склейка через "||" - разделитель, понятный Downloader::addOneDownload().
+    // Разбор многострочного текста (paste/drag-and-drop): дедуп, по ссылке на строку.
     function mergeUrlLines(text) {
         const existing = urlInput.value.trim();
         const incoming = text.split(/\r\n|\r|\n/).map(s => s.trim()).filter(Boolean);
-        const combined = existing ? existing.split('||').map(s => s.trim()).filter(Boolean).concat(incoming) : incoming;
+        const combined = existing ? existing.split(URL_FIELD_SEP).map(s => s.trim()).filter(Boolean).concat(incoming) : incoming;
         const seen = new Set();
         return combined.filter(u => {
             const key = u.toLowerCase();
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
-        }).join('||');
+        }).join('\n');
     }
 
     // Обычный paste в <input> молча схлопывает \n - ловим сырой текст буфера сами.
@@ -2768,8 +3451,21 @@ document.addEventListener('DOMContentLoaded', function () {
         checkUrl();
     });
     urlInput.addEventListener('input', () => {
+        autosizeUrlField();
         clearTimeout(inputTimer);
         inputTimer = setTimeout(checkUrl, INPUT_DELAY);
+    });
+    // Поле многострочное, но Enter по-прежнему отправляет, как в обычном input;
+    // новая строка - Shift+Enter (списки и так приходят вставкой).
+    // Пустое поле с доступным буфером обрабатывает магия вставки ниже.
+    urlInput.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+        e.preventDefault();
+        if (!urlInput.value.trim() && navigator.clipboard && navigator.clipboard.readText) return;
+        const form = urlInput.form;
+        if (!form) return;
+        if (form.requestSubmit) form.requestSubmit();
+        else form.querySelector('[type="submit"]')?.click();
     });
     urlInput.addEventListener('blur', () => {
         if (isClearing) return;
@@ -2791,6 +3487,8 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    // Сервер после ошибки возвращает поле склеенным через "||" - раскладываем по строкам
+    if (urlInput.value.includes('||')) urlInput.value = normalizeUrlField(urlInput.value);
     if (urlInput.value.trim()) setTimeout(checkUrl, 50);
 
     // Магия буфера: подставляем ссылку из буфера при возврате на вкладку, только если домен есть в KNOWN_SERVICES.
@@ -3091,6 +3789,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     initSnejEasterEgg();
+    initQuietEasterEggs();
     initLongPressQualitySelector();
     initWinterSnow();
     checkStaticVersionBanner();
@@ -3113,12 +3812,20 @@ function checkStaticVersionBanner() {
     if (stored === null) return; // первый визит - не с чем сравнивать
 
     const banner = document.createElement('div');
-    banner.className = 'alert alert-info site-update-banner';
+    banner.className = 'site-update-banner';
     banner.innerHTML = `
         <span>Сайт обновили с прошлого визита ✨</span>
         <button type="button" class="site-update-banner-close" aria-label="Закрыть">&times;</button>`;
     document.body.insertBefore(banner, document.body.firstChild);
-    banner.querySelector('.site-update-banner-close').addEventListener('click', () => banner.remove());
+    // Плашка висит над содержимым: закрывается кликом в любом месте и сама
+    // через несколько секунд
+    const close = () => {
+        if (!banner.isConnected) return;
+        banner.classList.add('is-leaving');
+        setTimeout(() => banner.remove(), 300);
+    };
+    banner.addEventListener('click', close);
+    setTimeout(close, 6000);
 }
 
 // Снег у маскота только в зимнем режиме (.winter, $isWinterMascot). Иней на поле ввода - чистый CSS, JS не нужен.
@@ -3171,8 +3878,17 @@ document.addEventListener('DOMContentLoaded', function () {
     function showUrlError(message) {
         if (!urlError) return;
         urlError.textContent = message;
-        urlError.classList.remove('is-hidden');
+        urlError.classList.remove('is-hidden', 'is-info');
         if (urlWrapper) urlWrapper.classList.add('has-error');
+    }
+
+    // Та же строка, но не ошибка: поле не краснеет
+    function showUrlHint(message) {
+        if (!urlError) return;
+        urlError.textContent = message;
+        urlError.classList.remove('is-hidden');
+        urlError.classList.add('is-info');
+        if (urlWrapper) urlWrapper.classList.remove('has-error');
     }
 
     function hideUrlError() {
@@ -3181,15 +3897,64 @@ document.addEventListener('DOMContentLoaded', function () {
         if (urlWrapper) urlWrapper.classList.remove('has-error');
     }
 
-    urlField.addEventListener('input', hideUrlError);
+    // Что сервер сделает с этими ссылками прямо сейчас: очередь, пауза YouTube,
+    // недавний отказ хоста, полный диск - то, чего фронт сам не знает. Запрос -
+    // HTTP QUERY (см. index.php). Не вышло - молчим: это подсказка, отправку она
+    // не держит и не заменяет.
+    let preflightTimer = null;
+    let preflightAbort = null;
+
+    function cancelPreflight() {
+        clearTimeout(preflightTimer);
+        if (preflightAbort) preflightAbort.abort();
+        preflightAbort = null;
+    }
+
+    function runPreflight() {
+        const value = urlField.value;
+        const parsed = validateUrlField(value);
+        // Кривые ссылки - забота проверки на отправке, её текст точнее
+        if (!parsed.urls.length || parsed.bad.length) return;
+        preflightAbort = new AbortController();
+        fetch('index.php?preflight', {
+            method: 'QUERY',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ urls: parsed.urls }),
+            signal: preflightAbort.signal,
+        })
+            .then(resp => resp.ok ? resp.json() : null)
+            .then(result => {
+                if (!result || urlField.value !== value) return;
+                const note = result.message ? null : videoNote(parsed.urls);
+                if (note) showUrlHint(note);
+                else if (!result.message) hideUrlError();
+                else if (result.level === 'error') showUrlError(result.message);
+                else showUrlHint(result.message);
+            })
+            .catch(() => {});
+    }
+
+    urlField.addEventListener('input', function () {
+        hideUrlError();
+        cancelPreflight();
+        preflightTimer = setTimeout(runPreflight, 400);
+    });
 
     downloadForm.addEventListener('submit', function (e) {
+        cancelPreflight();
         // Ссылку разбираем прямо тут: обработчик вставки и так её парсит ради
         // фавикона, поэтому за ответом "ссылка кривая" незачем ходить на сервер
         // и получать полную перезагрузку страницы.
         const parsed = validateUrlField(urlField.value);
         if (parsed.bad.length) {
             e.preventDefault();
+            const joke = parsed.urls.length ? null : fieldJoke(urlField.value);
+            if (joke) {
+                showUrlError(joke.text);
+                joke.react();
+                urlField.focus();
+                return;
+            }
             const first = parsed.bad[0];
             const shown = first.length > 60 ? first.slice(0, 60) + '...' : first;
             showUrlError(parsed.bad.length === 1
@@ -3263,7 +4028,7 @@ document.addEventListener('DOMContentLoaded', function () {
         // на файл из download/ (там обычная прямая загрузка, см. isSelfUrl).
         if (urls.length && urls.every(isSelfUrl)) {
             e.preventDefault();
-            urlField.value = '';
+            setUrlFieldValue(urlField, '');
             showRecursionModal();
             return;
         }
@@ -3414,7 +4179,7 @@ function ensurePlaylistModal() {
                     <!-- role=presentation на таблице и tbody: без этого их
                          собственные роли разрывают связь listbox -> option,
                          и скринридер перестаёт видеть строки как варианты. -->
-                    <table class="table table-striped playlist-modal-table" role="presentation">
+                    <table class="table playlist-modal-table" role="presentation">
                         <tbody class="playlist-modal-rows" role="presentation"></tbody>
                     </table>
                 </div>
@@ -3453,7 +4218,11 @@ function ensurePlaylistModal() {
     });
 
     const rows = overlay.querySelector('.playlist-modal-rows');
+    initPlaylistDragSelect(overlay, rows);
     rows.addEventListener('click', (e) => {
+        // Мышь и палец уже отработаны протяжкой на pointerdown/touch - тут
+        // остаются клики без указателя (Enter на строке, экранный диктор)
+        if (e.detail !== 0) return;
         const row = e.target.closest('tr[data-row-idx]');
         if (row) togglePlaylistRow(row.dataset.rowIdx);
     });
@@ -3502,11 +4271,7 @@ function openPlaylistPicker(url, opener) {
     body.append('playlist', url);
     body.append('csrf_token', getCsrfToken());
 
-    fetch('index.php', {
-        method: 'POST',
-        body: body,
-        headers: { 'X-CSRF-Token': getCsrfToken(), 'X-Requested-With': 'fetch', 'Accept': 'application/json' }
-    })
+    csrfFetch(body, { 'X-Requested-With': 'fetch', 'Accept': 'application/json' })
         .then(resp => {
             const ctype = resp.headers.get('content-type') || '';
             if (!ctype.includes('application/json')) {
@@ -3681,6 +4446,169 @@ function togglePlaylistRow(rowIdx) {
     haptic('tick');
 }
 
+// Выбор протяжкой: нажал на строку и повёл - все строки по пути получают то
+// состояние, которое получила первая (выбрать или снять пачкой). Короткое
+// нажатие - обычное переключение одной строки.
+//
+// Мышь и перо - сразу. Палец - после удержания: без него протяжка отняла бы у
+// списка прокрутку, а плейлист в сотню роликов без прокрутки не пролистать.
+const PLAYLIST_TOUCH_HOLD_MS = 350;
+const PLAYLIST_TOUCH_SLOP = 8;
+const PLAYLIST_EDGE_PX = 36;
+
+function initPlaylistDragSelect(overlay, rows) {
+    const list = overlay.querySelector('.playlist-modal-list');
+    let drag = null;
+    let holdTimer = null;
+    let touchStart = null;
+    let edgeRaf = null;
+
+    function selectableIdx(row) {
+        if (!row || !rows.contains(row)) return null;
+        const idx = parseInt(row.dataset.rowIdx, 10);
+        const item = playlistState.frozenItems[idx];
+        return item && item.available !== false ? idx : null;
+    }
+
+    function rowAt(x, y) {
+        const el = document.elementFromPoint(x, y);
+        return el ? el.closest('tr[data-row-idx]') : null;
+    }
+
+    function paint(toIdx) {
+        if (toIdx === drag.last) return;
+        drag.last = toIdx;
+        const lo = Math.min(drag.anchor, toIdx);
+        const hi = Math.max(drag.anchor, toIdx);
+        // От снимка на момент нажатия: повёл назад - отпущенные строки
+        // возвращаются в прежнее состояние, а не остаются закрашенными
+        const selected = new Set(drag.before);
+        for (let i = lo; i <= hi; i++) {
+            const item = playlistState.frozenItems[i];
+            if (!item || item.available === false) continue;
+            const key = playlistItemKey(item, i);
+            if (drag.select) selected.add(key); else selected.delete(key);
+        }
+        playlistState.selectedIds = selected;
+        reapplyPlaylistSelection();
+        updatePlaylistBar();
+    }
+
+    function begin(idx) {
+        const key = playlistItemKey(playlistState.frozenItems[idx], idx);
+        drag = {
+            anchor: idx,
+            last: null,
+            before: new Set(playlistState.selectedIds),
+            select: !playlistState.selectedIds.has(key),
+            x: 0,
+            y: 0,
+        };
+        paint(idx);
+        haptic('tick');
+    }
+
+    // Список прокручивается сам, пока указатель у его верхнего или нижнего края
+    function edgeScroll() {
+        edgeRaf = null;
+        if (!drag) return;
+        const box = list.getBoundingClientRect();
+        let dy = 0;
+        if (drag.y < box.top + PLAYLIST_EDGE_PX) dy = -Math.ceil((box.top + PLAYLIST_EDGE_PX - drag.y) / 3);
+        else if (drag.y > box.bottom - PLAYLIST_EDGE_PX) dy = Math.ceil((drag.y - box.bottom + PLAYLIST_EDGE_PX) / 3);
+        if (!dy) return;
+        list.scrollTop += dy;
+        const y = Math.min(Math.max(drag.y, box.top + 1), box.bottom - 1);
+        const idx = selectableIdx(rowAt(drag.x, y));
+        if (idx !== null) paint(idx);
+        edgeRaf = requestAnimationFrame(edgeScroll);
+    }
+
+    function move(x, y) {
+        drag.x = x;
+        drag.y = y;
+        const idx = selectableIdx(rowAt(x, y));
+        if (idx !== null) paint(idx);
+        if (!edgeRaf) edgeRaf = requestAnimationFrame(edgeScroll);
+    }
+
+    function end() {
+        drag = null;
+        if (edgeRaf) cancelAnimationFrame(edgeRaf);
+        edgeRaf = null;
+    }
+
+    rows.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'touch' || e.button !== 0) return;
+        const row = e.target.closest('tr[data-row-idx]');
+        const idx = selectableIdx(row);
+        if (idx === null) return;
+        e.preventDefault(); // без этого браузер начнёт выделять текст
+        row.focus({ preventScroll: true }); // и не отдаст строке фокус для стрелок
+        rows.setPointerCapture(e.pointerId);
+        begin(idx);
+    });
+    rows.addEventListener('pointermove', (e) => {
+        if (drag && e.pointerType !== 'touch') move(e.clientX, e.clientY);
+    });
+    rows.addEventListener('pointerup', end);
+    rows.addEventListener('pointercancel', end);
+    rows.addEventListener('lostpointercapture', end);
+
+    rows.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const idx = selectableIdx(e.target.closest('tr[data-row-idx]'));
+        if (idx === null) return;
+        touchStart = { x: t.clientX, y: t.clientY, idx, moved: false };
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(() => {
+            holdTimer = null;
+            if (touchStart && !touchStart.moved) begin(touchStart.idx);
+        }, PLAYLIST_TOUCH_HOLD_MS);
+    }, { passive: true });
+
+    // Не passive: после удержания движение пальца - протяжка, и прокрутку
+    // списка надо гасить. До удержания событие не трогаем - это прокрутка.
+    rows.addEventListener('touchmove', (e) => {
+        const t = e.touches[0];
+        if (!t) return;
+        if (drag) {
+            e.preventDefault();
+            move(t.clientX, t.clientY);
+            return;
+        }
+        if (touchStart && Math.hypot(t.clientX - touchStart.x, t.clientY - touchStart.y) > PLAYLIST_TOUCH_SLOP) {
+            touchStart.moved = true;
+            clearTimeout(holdTimer);
+            holdTimer = null;
+        }
+    }, { passive: false });
+
+    rows.addEventListener('touchend', (e) => {
+        // Короткое касание без движения - обычное переключение строки. Клик,
+        // который браузер пришлёт следом, отсекается проверкой e.detail.
+        if (holdTimer && touchStart && !touchStart.moved) {
+            clearTimeout(holdTimer);
+            holdTimer = null;
+            togglePlaylistRow(touchStart.idx);
+            e.preventDefault();
+        }
+        touchStart = null;
+        end();
+    });
+    // Android на удержание открывает контекстное меню поверх протяжки
+    rows.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('tr[data-row-idx]')) e.preventDefault();
+    });
+    rows.addEventListener('touchcancel', () => {
+        clearTimeout(holdTimer);
+        holdTimer = null;
+        touchStart = null;
+        end();
+    });
+}
+
 // Кнопка и Ctrl/Cmd+A делают одно и то же - иначе они расходятся в состоянии:
 // раньше сочетание клавиш только добавляло и снять им выбор было нельзя.
 function togglePlaylistAll() {
@@ -3768,20 +4696,25 @@ function closePlaylistPicker() {
     if (opener && typeof opener.focus === 'function') opener.focus();
 }
 
+// Запись в поле из кода не порождает input, а на нём висит вся свита поля:
+// фавикон, крестик очистки, отступ под иконку. Без события они оставались от
+// уже отправленной ссылки - поле пустое, а иконка сервиса всё ещё горит.
+function setUrlFieldValue(field, value) {
+    field.value = value;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function sendDownloadForm(form, urlField) {
     const submitBtn = form.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
+    // Поле очищается раньше, чем дело дойдёт до реплики Снежика
+    const sentUrls = String(urlField.value || '').split('||');
 
-    fetch('index.php', {
-        method: 'POST',
-        body: new FormData(form),
-        headers: {
-            'X-CSRF-Token': getCsrfToken(),
-            'X-Requested-With': 'fetch',
-            // Accept - второй маркер для сервера на случай, если свой заголовок
-            // где-то потеряется по дороге (см. $wantsJson в index.php)
-            'Accept': 'application/json',
-        },
+    csrfFetch(new FormData(form), {
+        'X-Requested-With': 'fetch',
+        // Accept - второй маркер для сервера на случай, если свой заголовок
+        // где-то потеряется по дороге (см. $wantsJson в index.php)
+        'Accept': 'application/json',
     })
         .then(resp => {
             // Сервер мог увести редиректом на HTML - тогда resp.json() падал бы
@@ -3795,7 +4728,7 @@ function sendDownloadForm(form, urlField) {
         .then(result => {
             // Отклонённые ссылки остаются в поле, остальное поле отпускает -
             // видимого отчёта об отправке нет, состояние показывают таблицы.
-            urlField.value = result.keepInField || '';
+            setUrlFieldValue(urlField, result.keepInField || '');
 
             // Короткий тик - ссылка принята, длинный рисунок ошибки - не принята.
             haptic((result.errors || []).length ? 'error' : 'tick');
@@ -3804,7 +4737,7 @@ function sendDownloadForm(form, urlField) {
             if (errorBox) {
                 if ((result.errors || []).length) {
                     errorBox.textContent = result.errors[0];
-                    errorBox.classList.remove('is-hidden');
+                    errorBox.classList.remove('is-hidden', 'is-info');
                 } else {
                     errorBox.classList.add('is-hidden');
                 }
@@ -3815,11 +4748,12 @@ function sendDownloadForm(form, urlField) {
             // Опрос дёргаем всегда, а не только при успехе: даже отклонённая
             // отправка могла изменить очередь, а следующий плановый опрос в покое
             // приходит через 12 секунд - всё это время таблицы врут.
-            if (typeof loadList === 'function') loadList();
+            if (typeof loadList === 'function') loadList(true);
 
             // Переход на Загрузки, как делал прежний редирект. Сводка при этом не
             // теряется: её разметка лежит вне вкладок, под навигацией.
             if (result.started || result.queued) {
+                snejOnSubmit(sentUrls);
                 // showTab ждёт саму ссылку навигации, не строку
                 const tabLink = document.querySelector('#mainnav a[href="#downloads"]');
                 if (tabLink && typeof showTab === 'function') showTab(tabLink);
@@ -3831,7 +4765,7 @@ function sendDownloadForm(form, urlField) {
                 // Настоящая причина, а не общее "что-то пошло не так": молчаливый
                 // провал этого запроса выглядит как полностью мёртвая кнопка.
                 errorBox.textContent = 'Не удалось отправить ссылку: ' + (err && err.message ? err.message : 'нет связи');
-                errorBox.classList.remove('is-hidden');
+                errorBox.classList.remove('is-hidden', 'is-info');
             }
             console.error('Отправка формы не удалась:', err);
         })
@@ -3889,7 +4823,7 @@ function initSnejEasterEgg() {
             clickCount = 0;
             resetSnejShake(snejWrap);
             resetSnejEyeFlash(snejGlow);
-            fireSnejLaser(snejDiv);
+            fireSnejLaser(snejDiv, countSnejShot() % SNEJ_LUCKY_SHOT === 0);
             return;
         }
 
@@ -3952,8 +4886,8 @@ function resetSnejEyeFlash(snejGlow) {
     snejGlow.style.removeProperty('--glow-peak');
 }
 
-function fireSnejLaser(snejDiv) {
-    const isRare = Math.random() < SNEJ_RARE_CHANCE;
+function fireSnejLaser(snejDiv, forceRare = false) {
+    const isRare = forceRare || Math.random() < SNEJ_RARE_CHANCE;
     const isWinter = document.body.classList.contains('winter');
     const variantPool = isWinter ? SNEJ_RARE_VARIANTS.concat(SNEJ_WINTER_RARE_VARIANT) : SNEJ_RARE_VARIANTS;
     const variant = isRare
@@ -3998,4 +4932,436 @@ function spawnSnejSnowBurst(snejDiv) {
     }
     eyeWrap.appendChild(container);
     return container;
+}
+
+// Тихие пасхалки: ни одна не меняет вид страницы, пока её не нашли.
+// Сверяем e.code - физическую клавишу: на русской раскладке e.key у B и A это "и" и "ф".
+const KONAMI_CODE = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'KeyB', 'KeyA'];
+// Имя снегиря латиницей вслепую, вне полей ввода. Тоже по клавишам, не по буквам.
+const SNEJ_NAME_CODE = ['KeyS', 'KeyN', 'KeyE', 'KeyJ'];
+// Каждый N-й выстрел за всё время - гарантированно редкий. Счётчик в localStorage.
+const SNEJ_LUCKY_SHOT = 10;
+const SNEJ_SHOTS_KEY = 'snejShots';
+
+// Реплики Снежика. Цепляются за обычные действия - отправку, готовую загрузку,
+// долгое ожидание, - поэтому находятся сами. Редкость держит их сюрпризом:
+// ситуативная реплика - раз в сутки, остальные - по жребию.
+const NIGHT_LINES = [
+    'Качаю. А ты ложись, утром будет готово.',
+    'Снежик тоже не спит. Ему положено.',
+    'Ночью качается быстрее. Наверное.',
+];
+
+const DATE_LINES = {
+    '01-01': 'С Новым годом. Снежик не выспался.',
+    '01-07': 'С Рождеством. Снежик доедает оливье.',
+    '01-25': 'Татьянин день. Студентам - видео вместо лекций.',
+    '02-23': 'С 23 Февраля. Носки не дарим, видео качаем.',
+    '02-29': 'Такой день бывает раз в четыре года. Качай, пока можно.',
+    '03-08': 'С 8 Марта! Мимоза не скачивается, а видео - да.',
+    '03-14': 'День числа π. Прогресс-бар тоже иррационален.',
+    '04-01': 'Сегодня всё скачается с первого раза. Шутка.',
+    '04-12': 'Поехали!',
+    '05-01': 'Мир, труд, май, скачать.',
+    '05-04': 'May the 4th be with you.',
+    '05-07': 'День радио. Попов передаёт привет yt-dlp.',
+    '05-25': 'День полотенца. Без паники.',
+    '08-02': 'Фонтаны сегодня заняты. Качаем дома.',
+    '09-01': 'День знаний. Учиться никогда не поздно, качать - тем более.',
+    '09-03': 'Третье сентября. Календарь переворачивать не надо, он сам.',
+    '10-31': 'Сегодня Снежик - летучая мышь. Снаружи не видно.',
+    '12-31': 'Оливье нарезан? Тогда можно и покачать.',
+};
+
+// Отечественные площадки - реплика по жребию, не каждый раз
+const RU_HOSTS = /(?:^|\.)(?:rutube\.ru|vk\.com|vkvideo\.ru|vk\.ru|ok\.ru|dzen\.ru|yandex\.ru|my\.mail\.ru)$/i;
+const RU_HOST_LINES = [
+    'Отечественный производитель. Уважаю.',
+    'Импортозамещение одобрено Снежиком.',
+    'Своё, родное. Качаю бережно.',
+];
+const RU_HOST_CHANCE = 0.2;
+
+const MUSIC_LINES = [
+    'Опять на repeat поставишь?',
+    'Хорошая песня. Наверное. Я снегирь, мне всё нравится.',
+    'Громкость на максимум - соседи поймут.',
+];
+const MUSIC_CHANCE = 0.08;
+
+// Вехи общего счёта сервера (stats в ?jobs, Downloader::downloadStats). Трек
+// в среднем 3,5 минуты - отсюда поезда.
+const STATS_MILESTONES = {
+    videos: {
+        100: 'Сотое видео на этой Качалке. Снежик гордится.',
+        1000: 'Тысячное видео. Снежику пора давать зарплату.',
+        10000: 'Десять тысяч видео. Это уже не качалка, а Госфильмофонд.',
+    },
+    tracks: {
+        70: 'Музыки накачали уже на Сапсан до Питера.',
+        400: 'Музыки хватит на поезд Москва - Сочи.',
+        2900: 'Музыки - на Москва - Владивосток без повторов.',
+    },
+    bytes: {
+        700e6: 'Набралась целая болванка CD. Раньше на такую «Бригаду» писали.',
+        4.7e9: 'Целый DVD. Можно подписывать маркером.',
+        100e9: 'Сто гигов. Как весь жёсткий диск в 2005-м.',
+        1e12: 'Терабайт! Снежик зауважал.',
+        10e12: 'Десять терабайт. Где-то тихо плачет один провайдер.',
+    },
+};
+const SNEJ_LONG_PRESS_MS = 700;
+
+const LONG_JOB_MS = 10 * 60 * 1000;
+const LONG_JOB_LINES = [
+    'Долго качается. Снежик не спит, Снежик бдит.',
+    'Большой файл попался. Чайник поставь.',
+    'Качается. Медленно, но по-русски основательно.',
+];
+
+const RETURN_GAP_MS = 14 * 24 * 60 * 60 * 1000;
+const LAST_VISIT_KEY = 'snejLastVisit';
+
+// Готово одним файлом в плашке ОС - изредка говорим по-другому
+const DONE_TITLES = ['Готово, лови', 'Лови, горяченькое', 'Готово. Снежик старался', 'Скачал. С тебя чай'];
+const DONE_TITLE_CHANCE = 0.25;
+
+function pickRandom(list) {
+    return list[Math.floor(Math.random() * list.length)];
+}
+
+function storageGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+}
+
+function storageSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) {}
+}
+
+// Ключ сегодняшнего дня по местному времени
+function todayKey(now) {
+    return now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+}
+
+// true один раз за сутки на ключ. Без хранилища - false: лучше промолчать,
+// чем повторять одно и то же на каждой отправке.
+function onceToday(key, now) {
+    const full = 'snejOnce:' + key;
+    const today = todayKey(now);
+    try {
+        if (localStorage.getItem(full) === today) return false;
+        localStorage.setItem(full, today);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+function specialDayLine(now) {
+    // День программиста - 256-й день года (0x100), 12 или 13 сентября
+    const dayOfYear = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(now.getFullYear(), 0, 0)) / 86400000);
+    if (dayOfYear === 256) return 'С Днём программиста. 256-й день, он же 0x100.';
+    if (now.getDate() === 13 && now.getDay() === 5) return 'Пятница, 13-е. Ничего не обещаю.';
+    const key = String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+    return DATE_LINES[key] || null;
+}
+
+// Ситуация дня: возвращает [ключ, реплика] или null. Праздник важнее буднего
+// ритма, будни важнее ночи.
+function situationLine(now) {
+    const special = specialDayLine(now);
+    if (special) return ['date', special];
+    const hour = now.getHours();
+    const day = now.getDay();
+    const date = now.getDate();
+    if (day >= 1 && day <= 5 && hour === 13) return ['lunch', 'Приятного аппетита. Пока жуёшь - докачаю.'];
+    if (day === 5 && hour >= 17) return ['friday', 'Сериал на выходные? Одобряю.'];
+    if (day === 1 && hour < 12) return ['monday', 'Понедельник. Тяжёлый день - тяжёлые файлы.'];
+    if (date === 10 || date === 25) return ['payday', 'Аванс пришёл? А видео всё равно бесплатно.'];
+    if (hour >= 1 && hour < 5) return ['night', pickRandom(NIGHT_LINES)];
+    return null;
+}
+
+// Снежик говорит через тот же тост, что и сводка массовой загрузки
+function snejSays(text) {
+    showBulkDownloadSummary(text);
+    snejWink();
+}
+
+// После принятой отправки. Не больше одной реплики за раз.
+function snejOnSubmit(urls) {
+    const now = new Date();
+    const situation = situationLine(now);
+    if (situation && onceToday(situation[0], now)) {
+        snejSays(situation[1]);
+        return;
+    }
+    const ruHost = urls.some(u => {
+        try { return RU_HOSTS.test(new URL(u).hostname); } catch (e) { return false; }
+    });
+    if (ruHost && Math.random() < RU_HOST_CHANCE) snejSays(pickRandom(RU_HOST_LINES));
+}
+
+// Новые готовые загрузки из опроса
+function snejOnDone(newSuccess) {
+    if (newSuccess.some(item => item.type === 'audio') && Math.random() < MUSIC_CHANCE) {
+        snejSays(pickRandom(MUSIC_LINES));
+    }
+}
+
+// Общий счёт из опроса. Первый опрос только запоминает точку отсчёта: веху
+// услышит тот, при ком её перешагнули, а не каждый открывший страницу.
+// Счёт назад не ходит - уменьшение (файл не прочитался) просто пропускаем.
+let lastStats = null;
+
+function snejOnStats(stats) {
+    if (!stats) return;
+    const prev = lastStats;
+    lastStats = prev ? {
+        videos: Math.max(prev.videos, stats.videos),
+        tracks: Math.max(prev.tracks, stats.tracks),
+        bytes: Math.max(prev.bytes, stats.bytes),
+    } : { ...stats };
+    if (!prev) return;
+    for (const key of Object.keys(STATS_MILESTONES)) {
+        // Пачка могла перешагнуть веху, а не попасть в неё ровно
+        const hit = Object.keys(STATS_MILESTONES[key]).map(Number)
+            .filter(m => m > prev[key] && m <= lastStats[key]).pop();
+        if (hit) {
+            snejSays(STATS_MILESTONES[key][hit]);
+            return;
+        }
+    }
+}
+
+function formatStatsBytes(bytes) {
+    if (bytes >= 1e12) return (bytes / 1e12).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' ТБ';
+    return (bytes / 1e9).toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' ГБ';
+}
+
+// Скрытая сводка: долгое нажатие на Снежика или snej.stats() в консоли
+function statsSummary() {
+    if (!lastStats) return 'Снежик ещё считает. Загляни через пару секунд.';
+    const { videos, tracks, bytes } = lastStats;
+    const n = v => v.toLocaleString('ru-RU');
+    const dvd = Math.floor(bytes / 4.7e9);
+    const hours = Math.round(tracks * 3.5 / 60);
+    let text = `Качалка скачала: видео - ${n(videos)}, треков - ${n(tracks)}, всего ${formatStatsBytes(bytes)}.`;
+    if (dvd >= 1) text += ` Это ${n(dvd)} DVD.`;
+    if (hours >= 1) text += ` Музыки на ${n(hours)} ч.`;
+    return text;
+}
+
+// Загрузка висит дольше LONG_JOB_MS, пока на неё смотрят - Снежик подаёт
+// голос один раз на задачу. Время старта сервер не отдаёт, считаем с момента,
+// когда задачу впервые увидели на этой странице.
+const jobFirstSeen = new Map();
+const jobLongNoticed = new Set();
+
+function snejOnJobs(jobs) {
+    const now = Date.now();
+    const alive = new Set();
+    for (const job of jobs || []) {
+        const pid = String(job.pid);
+        alive.add(pid);
+        if (!jobFirstSeen.has(pid)) jobFirstSeen.set(pid, now);
+        if (!document.hidden && !jobLongNoticed.has(pid) && now - jobFirstSeen.get(pid) >= LONG_JOB_MS) {
+            jobLongNoticed.add(pid);
+            snejSays(pickRandom(LONG_JOB_LINES));
+        }
+    }
+    for (const pid of jobFirstSeen.keys()) {
+        if (!alive.has(pid)) { jobFirstSeen.delete(pid); jobLongNoticed.delete(pid); }
+    }
+}
+
+// Первый заход после долгого перерыва
+function snejOnVisit() {
+    const now = Date.now();
+    const last = parseInt(storageGet(LAST_VISIT_KEY), 10) || 0;
+    storageSet(LAST_VISIT_KEY, String(now));
+    if (last && now - last >= RETURN_GAP_MS) {
+        setTimeout(() => snejSays('Давно не виделись. Снежик скучал.'), 1500);
+    }
+}
+
+function fireSnejFromEgg() {
+    const snejDiv = document.querySelector('#snej');
+    if (!snejDiv || snejDiv.classList.contains('snej-laser-active')) return false;
+    fireSnejLaser(snejDiv, true);
+    return true;
+}
+
+// Номер выстрела за всё время. Хранилище недоступно - считаем, что выстрел
+// первый: пасхалка просто не сработает, остальное не заметит.
+function countSnejShot() {
+    try {
+        const n = (parseInt(localStorage.getItem(SNEJ_SHOTS_KEY), 10) || 0) + 1;
+        localStorage.setItem(SNEJ_SHOTS_KEY, String(n));
+        return n;
+    } catch (e) {
+        return 1;
+    }
+}
+
+// Слушает последовательность клавиш вне полей ввода и зовёт action на её конце.
+function listenKeySequence(codes, action) {
+    let pos = 0;
+    document.addEventListener('keydown', (e) => {
+        const t = e.target;
+        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        if (e.code === codes[pos]) {
+            pos++;
+            if (pos === codes.length) {
+                pos = 0;
+                action();
+            }
+        } else {
+            pos = e.code === codes[0] ? 1 : 0;
+        }
+    });
+}
+
+// Долгое нажатие на Снежика показывает сводку. Клик, который придёт следом,
+// гасим, чтобы он не засчитался в счётчик лазера.
+function initSnejLongPress() {
+    const hit = document.querySelector('#snej-click .snej-hit-area');
+    if (!hit) return;
+    let timer = null;
+    let fired = false;
+    const cancel = () => { clearTimeout(timer); timer = null; };
+    hit.addEventListener('pointerdown', () => {
+        fired = false;
+        cancel();
+        timer = setTimeout(() => {
+            fired = true;
+            snejSays(statsSummary());
+        }, SNEJ_LONG_PRESS_MS);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(evt => hit.addEventListener(evt, cancel));
+    // На телефоне долгое нажатие иначе открывает меню
+    hit.addEventListener('contextmenu', e => e.preventDefault());
+    hit.addEventListener('click', e => {
+        if (!fired) return;
+        fired = false;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+    }, true);
+}
+
+function initQuietEasterEggs() {
+    // Konami-код стреляет сразу редким лазером, без 30 кликов
+    listenKeySequence(KONAMI_CODE, fireSnejFromEgg);
+    // Позвать по имени - Снежик откликается сальтухой
+    listenKeySequence(SNEJ_NAME_CODE, snejWink);
+
+    initSnejLongPress();
+
+    // Для тех, кто открыл DevTools
+    window.snej = () => (fireSnejFromEgg() ? 'пиу' : 'перезаряжаюсь');
+    window.snej.stats = () => statsSummary();
+    console.log(
+        '%c  (o>\n  //\\\n  V_/_%c  Снежик на связи.\n\nНашёл баг - напиши в "Жмак". Хочешь пострелять - snej()\nГоворят, есть ещё код из восьмидесятых.',
+        'color:#c0392b;font-weight:bold', 'color:inherit'
+    );
+
+    snejOnVisit();
+    // Картинка для пролёта Снежика в салюте - заранее, она уже в кэше
+}
+
+// Ответы на то, что ссылкой не является, но набрано явно нарочно.
+// Сверяется со всем полем: разбор на ссылки режет команду на куски.
+// Порядок важен: частные случаи выше общих (sandwich выше sudo).
+const FIELD_JOKES = [
+    [/^sudo\s+make\s+me\s+a\s+sandwich/i, 'Ладно.'],
+    [/^make\s+me\s+a\s+sandwich/i, 'Сделай сам.'],
+    [/^sudo\b/i, 'sudo не поможет: тут никто не рут, даже я.'],
+    [/^rm\s+-(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r)\b/i, 'Хорошая попытка.'],
+    [/^git\s+push\s+(?:-f|--force)\b/i, 'Только не в пятницу.'],
+    [/^:(?:q|wq|x)!?$/i, 'Это не vim. Хотя выйти отсюда тоже непросто.'],
+    [/^(?:exit|quit|logout)$/i, 'Выход там же, где вход: крестик у вкладки.'],
+    [/^(?:ls|dir)$/i, 'Тут не терминал. Файлы - во вкладках ниже.'],
+    [/^ping(?:\s|$)/i, 'pong'],
+    [/^xyzzy$/i, 'Ничего не произошло.'],
+    [/<script/i, 'XSS? Тут всё экранируется. Но попытка засчитана.'],
+    [/drop\s+table|'\s*or\s+'?1'?\s*=\s*'?1/i, 'Бобби Таблс, ты? Базы тут нет вообще.'],
+    [/^(?:снежик|снежок|snej)[!.?]*$/iu, 'Я тут. Ссылку давай.'],
+    [/^(?:помощь|справка|help)[!.?]*$/iu, 'Помощь внизу, в «Жмак».'],
+    [/^(?:спасибо|thanks|thank you)(?![\p{L}\d])/iu, 'Пожалуйста. Обращайся, но со ссылкой.'],
+    [/^(?:test|тест)[!.?]*$/iu, 'Тест пройден. Теперь ссылку.'],
+    [/^(?:asdf|qwerty|йцукен|фыва)/iu, 'Клавиатура в порядке, проверил.'],
+    [/^(?:семки\s+есть|есть\s+ч[ёео]|есть\s+закурить)/iu, 'А если найду?'],
+    [/почта\s+росс/iu, 'Ваше видео прибыло в сортировочный центр. Шутка: тут качается сразу.'],
+    [/^(?:авось|на\s+авось)/iu, 'На авось - это без ссылки. С ссылкой надёжнее.'],
+    [/^(?:халява|халявы)/iu, 'Халява, приди! Пришла. Ссылку только дай.'],
+    [/^бесплатно/iu, 'Бесплатно только сыр в мышеловке. И эта качалка.'],
+    [/^(?:а\s+)?можно[?!.]*$/iu, 'Можно. Со ссылкой - тем более.'],
+    [/^надо[,\s]+федя/iu, 'Надо, Федя. Надо. Ссылку.'],
+    [/заливная\s+рыба|какая\s+гадость/iu, 'Какая гадость эта ваша заливная рыба. Видео получше будет.'],
+    [/^ну[,\s]+погоди/iu, 'Погожу. Но недолго: ссылку давай.'],
+    [/^(?:красота|благодать)[!.]*$/iu, 'Лепота! Красота-то какая. Только ссылки нет.'],
+    [/^(?:я\s+)?(?:устал|ухожу)/iu, 'Отдохни. Чай, плед, видео - его скачаю я.'],
+    [/^(?:бабушка|бабуля)/iu, 'Бабушка сказала, что ты похудел. Скачай ей сериал.'],
+    [/^(?:дача|на\s+дачу)/iu, 'На даче интернета нет. Качай заранее.'],
+    [/^(?:шапку\s+надень|надень\s+шапку)/iu, 'Надел. Снежик без шапки зимой не выходит.'],
+    [/^(?:чай|чаю)[!.?]*$/iu, 'Чайник уже на плите. Пока закипает - давай ссылку.'],
+    [/^(?:всё\s+пропало|гипс\s+снимают)/iu, 'Клиент уезжает! Спокойно, видео не пропадёт.'],
+    [/^(?:превед|медвед)[!.]*$/iu, 'Превед, медвед! Ссылку давай.'],
+    [/^абырвалг[!.]*$/iu, 'Главрыба. Шариков, ссылку!'],
+    [/славянский\s+шкаф/iu, 'Шкаф продан. Могу предложить никелированную кровать.'],
+    [/^(?:пароль|password)[!.?]*$/iu, 'У вас продаётся славянский шкаф?'],
+    [/^где\s+деньги/iu, 'Денег нет, но вы держитесь.'],
+    [/^кто\s+виноват/iu, 'Провайдер. Всегда провайдер.'],
+    [/^что\s+делать/iu, 'Вставить ссылку. Чернышевский бы одобрил.'],
+    [/^тварь\s+дрожащая/iu, 'Право имеешь. Качай.'],
+    [/^поехали[!.]*$/iu, 'Гагарин одобряет. Ссылку бы ещё.'],
+    [/^ур+а+[!.]*$/iu, 'Ура! А теперь ссылку.', () => fireConfetti()],
+    [/^вжух[!.]*$/iu, 'Вжух - и ничего. Магия работает только со ссылкой.'],
+    [/^ал+[оё][!.?]*$/iu, 'Алло, это Снежик. Ссылку диктуйте.'],
+    [/^(?:ау+|есть\s+кто)(?![\p{L}\d])/iu, 'Есть. Снежик. Он тут всегда.'],
+    [/^ты\s+кто/iu, 'Снегирь. Качаю видео. А ты?'],
+    [/^(?:кек|лол|ахах\p{L}*|хаха\p{L}*)[!.)]*$/iu, 'Смешно. Ссылку тоже давай.'],
+    [/^ой\s+вс[её][!.]*$/iu, 'Не всё. Ссылку забыл.'],
+    [/^бобр[!.]*$/iu, 'Бобр, курва! Но ссылку всё равно давай.'],
+    [/^(?:кот|котик|котики)[!.]*$/iu, 'Котиков качаем охотно. Ссылку на котика давай.'],
+    [/^погода(?![\p{L}\d])/iu, 'Погоду не качаю. Посмотри в окно.'],
+    [/^(?:ссылка|ссылку|ссыль)[!.]*$/iu, 'Не слово «ссылка», а саму ссылку: адрес из строки браузера.'],
+    [/^давай[!.]*$/iu,'Давай ты первый: ссылку.'],
+    [/^(?:привет|здравствуй|hello|hi)(?![\p{L}\d])/iu, 'Привет. А ссылку?'],
+];
+
+// Третий элемент записи - своя реакция вместо сальтухи Снежика.
+function fieldJoke(value) {
+    const v = String(value ?? '').trim();
+    const hit = FIELD_JOKES.find(([re]) => re.test(v));
+    return hit ? { text: hit[1], react: hit[2] || snejWink } : null;
+}
+
+// Подписи к особым роликам. Качать не мешают - это та же строка подсказки,
+// что у предпроверки, и только когда серверу сказать нечего.
+const VIDEO_NOTES = {
+    dQw4w9WgXcQ: 'Меня не зарикроллишь. Но скачаю.',
+    jNQXAC9IVRw: 'Самое первое видео YouTube, 2005 год. Уважаю археологов.',
+    '9bZkp7q19f0': 'Первый ролик с миллиардом просмотров. Плюс один.',
+    kJQP7kiw5Fk: 'Despacito. Качаю тоже despacito, но стараюсь.',
+    'QH2-TGUlwu4': 'Ня.',
+    jofNR_WkoCE: 'Что говорит лиса - так и не выяснили. Зато скачаем.',
+    'ZZ5LpwO-An4': 'И тебе привет. Что происходит?',
+    y6120QOlsfU: 'Darude - Sandstorm. Да, это он.',
+    L_jWHffIx5E: 'Шрек одобряет.',
+    '2Z4m4lnjxkY': 'Трололо. Эдуард Хиль одобряет выбор.',
+    KYniUCGPGLs: 'Маша плюс каша. Медведь тоже не против.',
+    mDFBTdToRmw: 'Скибиди-вапапа. Качаю, пританцовывая.',
+};
+
+function videoNote(urls) {
+    if (urls.length !== 1) return null;
+    try {
+        const url = new URL(urls[0]);
+        if (!isYoutubeHost(url.hostname)) return null;
+        const id = url.searchParams.get('v');
+        return id && Object.hasOwn(VIDEO_NOTES, id) ? VIDEO_NOTES[id] : null;
+    } catch (e) {
+        return null;
+    }
 }
