@@ -1558,8 +1558,13 @@ tr.row-selected > td:first-child::before {
 .bulk-download-toast {
     position: fixed;
     left: 50%;
-    bottom: 24px;
+    bottom: calc(24px + env(safe-area-inset-bottom, 0px));
     transform: translateX(-50%) translateY(12px);
+    /* left: 50% даёт блоку лишь полэкрана - без этого текст жмётся в столбик */
+    width: max-content;
+    max-width: calc(100vw - 32px);
+    box-sizing: border-box;
+    text-align: center;
     background: #1e180c;
     color: #fffdf7;
     padding: 10px 18px;

@@ -2868,7 +2868,6 @@ function loadList(fresh = false) {
                 haptic('done');
                 if (!document.hidden) fireConfetti({ audio: newSuccess.some(item => item.type === 'audio') });
             }
-            snejOnDone(newSuccess);
 
             // Плашкой зовём только при скрытой вкладке - иначе звука и таблицы хватает.
             if (document.hidden && (newSuccess.length || newFailure.length)) {
@@ -2877,7 +2876,6 @@ function loadList(fresh = false) {
         }
 
         previousFinishedPids = currentFinishedPids;
-        snejOnJobs(data.jobs);
         snejOnStats(data.stats);
 
         renderTable(nativeUI.progress, data.jobs, 3, "Активных загрузок нет.", renderJobRow, `<button type="button" id="killallbutton" style="width: 100px;" class="btn btn-danger btn-xs" data-action="kill" data-value="all">Стоп ВСЕ</button>`,
@@ -4707,8 +4705,6 @@ function setUrlFieldValue(field, value) {
 function sendDownloadForm(form, urlField) {
     const submitBtn = form.querySelector('button[type="submit"]');
     if (submitBtn) submitBtn.disabled = true;
-    // Поле очищается раньше, чем дело дойдёт до реплики Снежика
-    const sentUrls = String(urlField.value || '').split('||');
 
     csrfFetch(new FormData(form), {
         'X-Requested-With': 'fetch',
@@ -4753,7 +4749,6 @@ function sendDownloadForm(form, urlField) {
             // Переход на Загрузки, как делал прежний редирект. Сводка при этом не
             // теряется: её разметка лежит вне вкладок, под навигацией.
             if (result.started || result.queued) {
-                snejOnSubmit(sentUrls);
                 // showTab ждёт саму ссылку навигации, не строку
                 const tabLink = document.querySelector('#mainnav a[href="#downloads"]');
                 if (tabLink && typeof showTab === 'function') showTab(tabLink);
@@ -4943,84 +4938,7 @@ const SNEJ_NAME_CODE = ['KeyS', 'KeyN', 'KeyE', 'KeyJ'];
 const SNEJ_LUCKY_SHOT = 10;
 const SNEJ_SHOTS_KEY = 'snejShots';
 
-// Реплики Снежика. Цепляются за обычные действия - отправку, готовую загрузку,
-// долгое ожидание, - поэтому находятся сами. Редкость держит их сюрпризом:
-// ситуативная реплика - раз в сутки, остальные - по жребию.
-const NIGHT_LINES = [
-    'Качаю. А ты ложись, утром будет готово.',
-    'Снежик тоже не спит. Ему положено.',
-    'Ночью качается быстрее. Наверное.',
-];
-
-const DATE_LINES = {
-    '01-01': 'С Новым годом. Снежик не выспался.',
-    '01-07': 'С Рождеством. Снежик доедает оливье.',
-    '01-25': 'Татьянин день. Студентам - видео вместо лекций.',
-    '02-23': 'С 23 Февраля. Носки не дарим, видео качаем.',
-    '02-29': 'Такой день бывает раз в четыре года. Качай, пока можно.',
-    '03-08': 'С 8 Марта! Мимоза не скачивается, а видео - да.',
-    '03-14': 'День числа π. Прогресс-бар тоже иррационален.',
-    '04-01': 'Сегодня всё скачается с первого раза. Шутка.',
-    '04-12': 'Поехали!',
-    '05-01': 'Мир, труд, май, скачать.',
-    '05-04': 'May the 4th be with you.',
-    '05-07': 'День радио. Попов передаёт привет yt-dlp.',
-    '05-25': 'День полотенца. Без паники.',
-    '08-02': 'Фонтаны сегодня заняты. Качаем дома.',
-    '09-01': 'День знаний. Учиться никогда не поздно, качать - тем более.',
-    '09-03': 'Третье сентября. Календарь переворачивать не надо, он сам.',
-    '10-31': 'Сегодня Снежик - летучая мышь. Снаружи не видно.',
-    '12-31': 'Оливье нарезан? Тогда можно и покачать.',
-};
-
-// Отечественные площадки - реплика по жребию, не каждый раз
-const RU_HOSTS = /(?:^|\.)(?:rutube\.ru|vk\.com|vkvideo\.ru|vk\.ru|ok\.ru|dzen\.ru|yandex\.ru|my\.mail\.ru)$/i;
-const RU_HOST_LINES = [
-    'Отечественный производитель. Уважаю.',
-    'Импортозамещение одобрено Снежиком.',
-    'Своё, родное. Качаю бережно.',
-];
-const RU_HOST_CHANCE = 0.2;
-
-const MUSIC_LINES = [
-    'Опять на repeat поставишь?',
-    'Хорошая песня. Наверное. Я снегирь, мне всё нравится.',
-    'Громкость на максимум - соседи поймут.',
-];
-const MUSIC_CHANCE = 0.08;
-
-// Вехи общего счёта сервера (stats в ?jobs, Downloader::downloadStats). Трек
-// в среднем 3,5 минуты - отсюда поезда.
-const STATS_MILESTONES = {
-    videos: {
-        100: 'Сотое видео на этой Качалке. Снежик гордится.',
-        1000: 'Тысячное видео. Снежику пора давать зарплату.',
-        10000: 'Десять тысяч видео. Это уже не качалка, а Госфильмофонд.',
-    },
-    tracks: {
-        70: 'Музыки накачали уже на Сапсан до Питера.',
-        400: 'Музыки хватит на поезд Москва - Сочи.',
-        2900: 'Музыки - на Москва - Владивосток без повторов.',
-    },
-    bytes: {
-        700e6: 'Набралась целая болванка CD. Раньше на такую «Бригаду» писали.',
-        4.7e9: 'Целый DVD. Можно подписывать маркером.',
-        100e9: 'Сто гигов. Как весь жёсткий диск в 2005-м.',
-        1e12: 'Терабайт! Снежик зауважал.',
-        10e12: 'Десять терабайт. Где-то тихо плачет один провайдер.',
-    },
-};
 const SNEJ_LONG_PRESS_MS = 700;
-
-const LONG_JOB_MS = 10 * 60 * 1000;
-const LONG_JOB_LINES = [
-    'Долго качается. Снежик не спит, Снежик бдит.',
-    'Большой файл попался. Чайник поставь.',
-    'Качается. Медленно, но по-русски основательно.',
-];
-
-const RETURN_GAP_MS = 14 * 24 * 60 * 60 * 1000;
-const LAST_VISIT_KEY = 'snejLastVisit';
 
 // Готово одним файлом в плашке ОС - изредка говорим по-другому
 const DONE_TITLES = ['Готово, лови', 'Лови, горяченькое', 'Готово. Снежик старался', 'Скачал. С тебя чай'];
@@ -5030,88 +4948,14 @@ function pickRandom(list) {
     return list[Math.floor(Math.random() * list.length)];
 }
 
-function storageGet(key) {
-    try { return localStorage.getItem(key); } catch (e) { return null; }
-}
-
-function storageSet(key, value) {
-    try { localStorage.setItem(key, value); } catch (e) {}
-}
-
-// Ключ сегодняшнего дня по местному времени
-function todayKey(now) {
-    return now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
-}
-
-// true один раз за сутки на ключ. Без хранилища - false: лучше промолчать,
-// чем повторять одно и то же на каждой отправке.
-function onceToday(key, now) {
-    const full = 'snejOnce:' + key;
-    const today = todayKey(now);
-    try {
-        if (localStorage.getItem(full) === today) return false;
-        localStorage.setItem(full, today);
-        return true;
-    } catch (e) {
-        return false;
-    }
-}
-
-function specialDayLine(now) {
-    // День программиста - 256-й день года (0x100), 12 или 13 сентября
-    const dayOfYear = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate()) - new Date(now.getFullYear(), 0, 0)) / 86400000);
-    if (dayOfYear === 256) return 'С Днём программиста. 256-й день, он же 0x100.';
-    if (now.getDate() === 13 && now.getDay() === 5) return 'Пятница, 13-е. Ничего не обещаю.';
-    const key = String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-    return DATE_LINES[key] || null;
-}
-
-// Ситуация дня: возвращает [ключ, реплика] или null. Праздник важнее буднего
-// ритма, будни важнее ночи.
-function situationLine(now) {
-    const special = specialDayLine(now);
-    if (special) return ['date', special];
-    const hour = now.getHours();
-    const day = now.getDay();
-    const date = now.getDate();
-    if (day >= 1 && day <= 5 && hour === 13) return ['lunch', 'Приятного аппетита. Пока жуёшь - докачаю.'];
-    if (day === 5 && hour >= 17) return ['friday', 'Сериал на выходные? Одобряю.'];
-    if (day === 1 && hour < 12) return ['monday', 'Понедельник. Тяжёлый день - тяжёлые файлы.'];
-    if (date === 10 || date === 25) return ['payday', 'Аванс пришёл? А видео всё равно бесплатно.'];
-    if (hour >= 1 && hour < 5) return ['night', pickRandom(NIGHT_LINES)];
-    return null;
-}
-
 // Снежик говорит через тот же тост, что и сводка массовой загрузки
 function snejSays(text) {
     showBulkDownloadSummary(text);
     snejWink();
 }
 
-// После принятой отправки. Не больше одной реплики за раз.
-function snejOnSubmit(urls) {
-    const now = new Date();
-    const situation = situationLine(now);
-    if (situation && onceToday(situation[0], now)) {
-        snejSays(situation[1]);
-        return;
-    }
-    const ruHost = urls.some(u => {
-        try { return RU_HOSTS.test(new URL(u).hostname); } catch (e) { return false; }
-    });
-    if (ruHost && Math.random() < RU_HOST_CHANCE) snejSays(pickRandom(RU_HOST_LINES));
-}
-
-// Новые готовые загрузки из опроса
-function snejOnDone(newSuccess) {
-    if (newSuccess.some(item => item.type === 'audio') && Math.random() < MUSIC_CHANCE) {
-        snejSays(pickRandom(MUSIC_LINES));
-    }
-}
-
-// Общий счёт из опроса. Первый опрос только запоминает точку отсчёта: веху
-// услышит тот, при ком её перешагнули, а не каждый открывший страницу.
-// Счёт назад не ходит - уменьшение (файл не прочитался) просто пропускаем.
+// Общий счёт из опроса для скрытой сводки. Счёт назад не ходит - уменьшение
+// (файл не прочитался) просто пропускаем.
 let lastStats = null;
 
 function snejOnStats(stats) {
@@ -5122,16 +4966,6 @@ function snejOnStats(stats) {
         tracks: Math.max(prev.tracks, stats.tracks),
         bytes: Math.max(prev.bytes, stats.bytes),
     } : { ...stats };
-    if (!prev) return;
-    for (const key of Object.keys(STATS_MILESTONES)) {
-        // Пачка могла перешагнуть веху, а не попасть в неё ровно
-        const hit = Object.keys(STATS_MILESTONES[key]).map(Number)
-            .filter(m => m > prev[key] && m <= lastStats[key]).pop();
-        if (hit) {
-            snejSays(STATS_MILESTONES[key][hit]);
-            return;
-        }
-    }
 }
 
 function formatStatsBytes(bytes) {
@@ -5150,39 +4984,6 @@ function statsSummary() {
     if (dvd >= 1) text += ` Это ${n(dvd)} DVD.`;
     if (hours >= 1) text += ` Музыки на ${n(hours)} ч.`;
     return text;
-}
-
-// Загрузка висит дольше LONG_JOB_MS, пока на неё смотрят - Снежик подаёт
-// голос один раз на задачу. Время старта сервер не отдаёт, считаем с момента,
-// когда задачу впервые увидели на этой странице.
-const jobFirstSeen = new Map();
-const jobLongNoticed = new Set();
-
-function snejOnJobs(jobs) {
-    const now = Date.now();
-    const alive = new Set();
-    for (const job of jobs || []) {
-        const pid = String(job.pid);
-        alive.add(pid);
-        if (!jobFirstSeen.has(pid)) jobFirstSeen.set(pid, now);
-        if (!document.hidden && !jobLongNoticed.has(pid) && now - jobFirstSeen.get(pid) >= LONG_JOB_MS) {
-            jobLongNoticed.add(pid);
-            snejSays(pickRandom(LONG_JOB_LINES));
-        }
-    }
-    for (const pid of jobFirstSeen.keys()) {
-        if (!alive.has(pid)) { jobFirstSeen.delete(pid); jobLongNoticed.delete(pid); }
-    }
-}
-
-// Первый заход после долгого перерыва
-function snejOnVisit() {
-    const now = Date.now();
-    const last = parseInt(storageGet(LAST_VISIT_KEY), 10) || 0;
-    storageSet(LAST_VISIT_KEY, String(now));
-    if (last && now - last >= RETURN_GAP_MS) {
-        setTimeout(() => snejSays('Давно не виделись. Снежик скучал.'), 1500);
-    }
 }
 
 function fireSnejFromEgg() {
@@ -5265,7 +5066,6 @@ function initQuietEasterEggs() {
         'color:#c0392b;font-weight:bold', 'color:inherit'
     );
 
-    snejOnVisit();
     // Картинка для пролёта Снежика в салюте - заранее, она уже в кэше
 }
 
