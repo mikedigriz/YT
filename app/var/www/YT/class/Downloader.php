@@ -2533,6 +2533,9 @@ class Downloader
         // /u на второй альтернативе - та же причина, что у HOPELESS_WAIT_PATTERNS.
         ['/not a bot|Sign in to confirm you.re not a bot/iu', "YouTube принял нас за бота 🤖\nIP PROXY засвечен - лучше подождать"],
 
+        // === Блок правообладателя (выше сетевых: финальный ERROR, а 429 перед ним - лишь WARNING) ===
+        ['/blocked due to the claimed content|blocked it in your country|blocked it on copyright grounds/i', "Заблокировано правообладателем 🚫\nВидео недоступно в стране PROXY"],
+
         // === Сетевые ошибки ===
         ['/Name or service not known|Could not resolve host|No address associated with hostname/i', "DNS не резолвил хост 🌐\nПроверь ссылку или интернет"],
         ['/Connection refused|ECONNREFUSED/i', "Сервер сказал «нет» 🚪\nConnection refused"],
@@ -2549,16 +2552,20 @@ class Downloader
         ['/Unable to connect to|Connection aborted/i', "Соединение оборвалось 🔌\nПопробуй ещё раз"],
 
         // === Доступность контента ===
+        // YouTube пишет "Video unavailable. <причина>" - частные причины обязаны стоять
+        // выше общего правила, иначе оно их поглощает.
+        ['/region-locked|not available in your country|geo-blocked|geo.restrict|country-specific|not available from your location|not made this video available in your country/i', "Гео-блок 🌍\nВидео недоступно в регионе Качалки"],
+        ['/no longer available due to a copyright claim/i', "Удалено по жалобе правообладателя ©️\nВидео недоступно навсегда"],
+        ['/account associated with this video has been terminated/i', "Канал автора удалён 📭\nВидео недоступно навсегда"],
+        ['/has been removed|removed by the uploader/i', "Видео удалено автором 🗑️"],
         ['/Video unavailable|This video is not available|video is unavailable/i', "Видео недоступно 🙈"],
         ['/Private video|this video is private/i', "Приватное видео 🔐\nТолько для своих"],
-        ['/has been removed|removed by the uploader/i', "Видео удалено автором 🗑️"],
         ['/age-restricted|Sign in to confirm your age|confirm your age/i', "18+ контент 🔞\nНужны куки авторизованного аккаунта"],
         ['/only available for registered users|login required|Sign in to/i', "Нужна авторизация 👤\nНужны куки авторизованного аккаунта"],
         ['/members-only|Members only content/i', "Members-only 💎\nНужна подписка на канал тем же аккаунтом, чьи куки настроены"],
         ['/Music Premium|YouTube Music Premium/i', "YTMusic Premium 🎵\nТребуется лухари подписка"],
         ['/requires payment|paid content|purchase this/i', "Платный контент 💰\nСкачивание невозможно \nГде деньги?"],
         ['/live event will begin|Premieres in|is live and is being watched/i', "Ну начинается - пойду поссу, пойду посру 📡"],
-        ['/region-locked|not available in your country|geo-blocked|country-specific/i', "Гео-блок 🌍\nВидео недоступно в регионе Качалки"],
         ['/This channel is not available|channel does not exist/i', "Канал не существует или удалён 📭"],
 
         // === Форматы и извлечение ===
@@ -2593,9 +2600,18 @@ class Downloader
             return "Куки $siteLabel протухли 🍪\nНадо зайти под тем же аккаунтом и обновить cookies.txt на сервере";
         }
 
-        foreach (self::ERROR_RULES as [$pattern, $message]) {
-            if (preg_match($pattern, $log)) {
-                return $message;
+        // Сначала только строки ERROR: иначе пережитый WARNING (429 перед финальной
+        // ошибкой) или название ролика в "Destination:" перебивают настоящую причину,
+        // а вместе со статусом молча глохнет и авторетрей с куками. Весь лог - фоллбэк.
+        $scopes = [$log];
+        if (preg_match_all('/^ERROR:.*$/mu', $log, $m)) {
+            array_unshift($scopes, implode("\n", $m[0]));
+        }
+        foreach ($scopes as $scope) {
+            foreach (self::ERROR_RULES as [$pattern, $message]) {
+                if (preg_match($pattern, $scope)) {
+                    return $message;
+                }
             }
         }
 
